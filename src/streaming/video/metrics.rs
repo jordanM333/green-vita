@@ -24,7 +24,9 @@ pub(crate) struct VideoMetrics {
     pub(crate) ui_loop_count: AtomicU64,
     pub(crate) ui_loop_max_us: AtomicU64,
     pub(crate) texture_superseded: AtomicU64,
-    pub(crate) stale_presentation: AtomicU64,
+    pub(crate) display_age_sum_us: AtomicU64,
+    pub(crate) display_age_count: AtomicU64,
+    pub(crate) display_age_max_us: AtomicU64,
     pub(crate) handoff_replaced: AtomicU64,
     pub(crate) stale_generation: AtomicU64,
     pub(crate) decoder_unavailable: AtomicU64,
@@ -61,7 +63,9 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     ui_loop_count: AtomicU64::new(0),
     ui_loop_max_us: AtomicU64::new(0),
     texture_superseded: AtomicU64::new(0),
-    stale_presentation: AtomicU64::new(0),
+    display_age_sum_us: AtomicU64::new(0),
+    display_age_count: AtomicU64::new(0),
+    display_age_max_us: AtomicU64::new(0),
     handoff_replaced: AtomicU64::new(0),
     stale_generation: AtomicU64::new(0),
     decoder_unavailable: AtomicU64::new(0),
@@ -101,10 +105,14 @@ pub fn video_performance_summary() -> String {
     let ui_loop_count = METRICS.ui_loop_count.swap(0, Ordering::Relaxed);
     let ui_loop_average = ui_loop_sum.checked_div(ui_loop_count).unwrap_or(0) / 1000;
     let ui_loop_max = METRICS.ui_loop_max_us.swap(0, Ordering::Relaxed) / 1000;
+    let display_age_sum = METRICS.display_age_sum_us.swap(0, Ordering::Relaxed);
+    let display_age_count = METRICS.display_age_count.swap(0, Ordering::Relaxed);
+    let display_age_average = display_age_sum.checked_div(display_age_count).unwrap_or(0) / 1000;
+    let display_age_max = METRICS.display_age_max_us.swap(0, Ordering::Relaxed) / 1000;
     format!(
         "Q depth/max:{}/{} AUage:{au_age_average}/{au_age_max}ms dec:{decode_average}/{decode_max}ms paint:{paint_average}/{paint_max}ms ui:{ui_loop_average}/{ui_loop_max}ms\n\
          FPS hwCall:{} decoded:{} shown:{} ui:{paint_count} pic:{} noPic:{} noOut:{} qFull/s:{} asm:{rtp_average}/{rtp_max}ms\n\
-         Stage texRepl:{} stalePres:{} staleAU:{} noDec:{} mailRepl:{} handoffRepl:{} resync:{} reset:{}",
+         Stage texRepl:{} showAge:{display_age_average}/{display_age_max}ms staleAU:{} noDec:{} mailRepl:{} handoffRepl:{} resync:{} reset:{}",
         METRICS.au_queue_depth.load(Ordering::Relaxed),
         METRICS.au_queue_max.load(Ordering::Relaxed),
         METRICS.decode_calls.swap(0, Ordering::Relaxed),
@@ -115,7 +123,6 @@ pub fn video_performance_summary() -> String {
         METRICS.skipped.swap(0, Ordering::Relaxed),
         METRICS.queue_full.swap(0, Ordering::Relaxed),
         METRICS.texture_superseded.load(Ordering::Relaxed),
-        METRICS.stale_presentation.load(Ordering::Relaxed),
         METRICS.stale_generation.load(Ordering::Relaxed),
         METRICS.decoder_unavailable.load(Ordering::Relaxed),
         METRICS.replaced.swap(0, Ordering::Relaxed),

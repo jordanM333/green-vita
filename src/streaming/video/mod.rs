@@ -18,6 +18,7 @@ pub(crate) use worker::SubmitResult;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
+use std::time::Instant;
 
 #[derive(Clone, Copy)]
 pub(crate) struct VideoTextureTarget {
@@ -29,7 +30,7 @@ pub(crate) struct VideoTextureTarget {
 struct DirectVideoOutputState {
     targets: Option<Vec<VideoTextureTarget>>,
     displayed: Option<usize>,
-    pending: Option<(usize, u64)>,
+    pending: Option<(usize, u64, Instant)>,
     next_generation: u64,
 }
 
@@ -74,23 +75,26 @@ impl DirectVideoOutput {
         }
     }
 
-    pub(crate) fn mark_displayed(&self, index: usize, generation: u64) -> bool {
+    /// The UI takes the newest completed texture under the same lock used by the decoder.
+    /// Passing decoded-frame handles through the RTC and app mailboxes can make them stale
+    /// before the UI reads them, causing it to skip a render even when a newer frame is ready.
+    pub(crate) fn take_latest_for_display(&self) -> Option<usize> {
         let Ok(mut state) = self.state.lock() else {
-            return false;
+            return None;
         };
-        if state.pending != Some((index, generation)) {
-            metrics::METRICS.stale_presentation.fetch_add(1, Ordering::Relaxed);
-            return false;
-        }
+        let (index, _, decoded_at) = state.pending.take()?;
         state.displayed = Some(index);
-        state.pending = None;
-        true
+        let age_us = decoded_at.elapsed().as_micros() as u64;
+        metrics::METRICS.display_age_sum_us.fetch_add(age_us, Ordering::Relaxed);
+        metrics::METRICS.display_age_count.fetch_add(1, Ordering::Relaxed);
+        metrics::METRICS.display_age_max_us.fetch_max(age_us, Ordering::Relaxed);
+        Some(index)
     }
 
     pub(super) fn lock_decode_target(&self) -> Option<DirectVideoTargetGuard<'_>> {
         let state = self.state.lock().ok()?;
         let targets = state.targets.as_ref()?;
-        let pending_index = state.pending.map(|(index, _)| index);
+        let pending_index = state.pending.map(|(index, _, _)| index);
         // Decoder reference state must advance even when the UI cannot show every frame.
         // Prefer the spare texture; if the UI is behind, replace the pending frame only.
         // Never decode into the texture currently displayed by the renderer.
@@ -119,7 +123,7 @@ impl DirectVideoTargetGuard<'_> {
         }
         self.state.next_generation = self.state.next_generation.wrapping_add(1);
         let generation = self.state.next_generation;
-        self.state.pending = Some((self.index, generation));
+        self.state.pending = Some((self.index, generation, Instant::now()));
         (self.index, generation)
     }
 }
@@ -142,7 +146,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stale_presentation_cannot_select_a_texture_replaced_by_decode() {
+    fn renderer_takes_newest_completed_frame_without_waiting_for_rtc_handoff() {
         let output = DirectVideoOutput::new(HW_OUTPUT_WIDTH, HW_OUTPUT_HEIGHT);
         output.set_targets(vec![VideoTextureTarget {
             ptr: 0,
@@ -150,15 +154,15 @@ mod tests {
             capacity: 960 * 544 * 2,
         }; 3]);
 
-        let (first, first_generation) = output.lock_decode_target().unwrap().publish();
-        let (second, second_generation) = output.lock_decode_target().unwrap().publish();
+        let (first, _) = output.lock_decode_target().unwrap().publish();
+        let (second, _) = output.lock_decode_target().unwrap().publish();
         assert_ne!(first, second);
-        assert!(!output.mark_displayed(first, first_generation));
-        assert!(output.mark_displayed(second, second_generation));
+        assert_eq!(output.take_latest_for_display(), Some(second));
+        assert_eq!(output.take_latest_for_display(), None);
 
-        let (third, third_generation) = output.lock_decode_target().unwrap().publish();
+        let (third, _) = output.lock_decode_target().unwrap().publish();
         assert_ne!(second, third);
-        assert!(output.mark_displayed(third, third_generation));
+        assert_eq!(output.take_latest_for_display(), Some(third));
     }
 
     #[test]
@@ -170,8 +174,8 @@ mod tests {
             capacity: 960 * 544 * 2,
         }; 2]);
 
-        let (displayed, generation) = output.lock_decode_target().unwrap().publish();
-        assert!(output.mark_displayed(displayed, generation));
+        let (displayed, _) = output.lock_decode_target().unwrap().publish();
+        assert_eq!(output.take_latest_for_display(), Some(displayed));
         for _ in 0..4 {
             let (next, _) = output.lock_decode_target().unwrap().publish();
             assert_ne!(next, displayed);

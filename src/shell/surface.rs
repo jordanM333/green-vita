@@ -19,7 +19,6 @@ pub struct VitaSurface {
     direct_video_output: Option<Arc<DirectVideoOutput>>,
     video_width: u32,
     video_height: u32,
-    last_frame_id: u64,
     egui_painter: SdlEguiPainter,
 }
 
@@ -48,7 +47,6 @@ impl VitaSurface {
             direct_video_output: None,
             video_width: 0,
             video_height: 0,
-            last_frame_id: 0,
             egui_painter: SdlEguiPainter::default(),
         })
     }
@@ -65,20 +63,15 @@ impl VitaSurface {
         };
         self.ensure_direct_video_output(streaming)?;
 
-        let Some((frame_id, frame)) = streaming.video_frame() else {
+        // The decoder publishes a completed texture directly to this shared output. The
+        // frame handle that travels through RTC and app mailboxes can already be obsolete.
+        let Some(index) = self
+            .direct_video_output
+            .as_ref()
+            .and_then(|output| output.take_latest_for_display())
+        else {
             return Ok(());
         };
-        if frame_id == self.last_frame_id {
-            return Ok(());
-        }
-        let index = frame.texture_index;
-        if let Some(output) = &self.direct_video_output {
-            if !output.mark_displayed(index, frame.generation) {
-                // The decoder has already replaced this unshown frame with a newer one.
-                self.last_frame_id = frame_id;
-                return Ok(());
-            }
-        }
         if index >= self.video_textures.as_ref().map_or(0, Vec::len) {
             anyhow::bail!("decoder returned invalid direct texture index {index}");
         }
@@ -86,7 +79,6 @@ impl VitaSurface {
         crate::streaming::video::metrics::METRICS
             .presented
             .fetch_add(1, Ordering::Relaxed);
-        self.last_frame_id = frame_id;
         Ok(())
     }
 
@@ -144,7 +136,6 @@ impl VitaSurface {
         self.direct_video_output = Some(output);
         self.video_width = width;
         self.video_height = height;
-        self.last_frame_id = 0;
         Ok(())
     }
 
@@ -156,7 +147,6 @@ impl VitaSurface {
         self.displayed_video_texture = None;
         self.video_width = 0;
         self.video_height = 0;
-        self.last_frame_id = 0;
     }
 
     pub fn draw_scene(&mut self, show_video: bool) -> Result<()> {
