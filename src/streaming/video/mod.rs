@@ -3,8 +3,8 @@ mod memory;
 pub(crate) mod metrics;
 mod worker;
 
-pub const STREAM_WIDTH: u32 = 1280;
-pub const STREAM_HEIGHT: u32 = 720;
+pub const STREAM_WIDTH: u32 = 960;
+pub const STREAM_HEIGHT: u32 = 540;
 pub const HW_OUTPUT_WIDTH: u32 = 960;
 pub const HW_OUTPUT_HEIGHT: u32 = 544;
 

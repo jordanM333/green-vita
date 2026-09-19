@@ -3,6 +3,7 @@
 RUSTFLAGS ?= -C target-feature=-neon
 CARGO_VITA ?= cargo +nightly vita
 VPK := target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk
+TEST_VPK := target/armv7-sony-vita-newlibeabihf/release/GreenVita-540p-2000k-Test.vpk
 VITA_UPLOAD_DIR ?= ux0:/data/
 
 vpk:
@@ -15,7 +16,8 @@ upload-vpk: vpk
 ifndef VITA_IP
 	$(error Usage: make upload-vpk VITA_IP=192.168.0.103)
 endif
-	$(CARGO_VITA) upload --vita-ip $(VITA_IP) --source $(VPK) --destination $(VITA_UPLOAD_DIR)
+	cp $(VPK) $(TEST_VPK)
+	$(CARGO_VITA) upload --vita-ip $(VITA_IP) --source $(TEST_VPK) --destination $(VITA_UPLOAD_DIR)
 
 update-run-vita:
 ifndef VITA_IP

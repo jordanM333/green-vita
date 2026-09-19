@@ -1,11 +1,11 @@
-//! User-editable settings, persisted to `ux0:data/xcloud-rust/settings.json` on each change.
+//! User-editable settings, persisted to `ux0:data/green-vita-540-test/settings.json` on each change.
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-const SETTINGS_DIR: &str = "ux0:data/xcloud-rust";
-const SETTINGS_PATH: &str = "ux0:data/xcloud-rust/settings.json";
+const SETTINGS_DIR: &str = "ux0:data/green-vita-540-test";
+const SETTINGS_PATH: &str = "ux0:data/green-vita-540-test/settings.json";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Locale {

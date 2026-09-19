@@ -12,10 +12,10 @@
     <frame id="frame3" multi="o" autoflip="0" rev="2">
         <liveitem default="on">
             <text align="center" valign="top" text-align="center" text-valign="top" margin-top="12">
-                <str color="#ffffff" size="32" bold="on" shadow="on">GreenVita</str>
+                <str color="#ffffff" size="32" bold="on" shadow="on">GreenVita 540 Test</str>
             </text>
             <text align="center" valign="bottom" text-align="center" text-valign="bottom" margin-bottom="12">
-                <str color="#ffffff" size="18" bold="on" shadow="on">GitHub Source: Day-OS/green-vita</str>
+                <str color="#ffffff" size="18" bold="on" shadow="on">Based on Day-OS/green-vita</str>
             </text>
             <target>https://github.com/Day-OS/green-vita</target>
         </liveitem>

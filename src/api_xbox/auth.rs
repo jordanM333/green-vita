@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 const CLIENT_ID: &str = "1f907974-e22b-4810-a9de-d9647380c97e";
 const OAUTH_SCOPE: &str = "xboxlive.signin openid profile offline_access";
-const TOKEN_STORE_DIR: &str = "ux0:data/xcloud-rust";
-const TOKEN_STORE_PATH: &str = "ux0:data/xcloud-rust/xcloud-tokens.json";
+const TOKEN_STORE_DIR: &str = "ux0:data/green-vita-540-test";
+const TOKEN_STORE_PATH: &str = "ux0:data/green-vita-540-test/xcloud-tokens.json";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const TOKEN_STORE_VERSION: u8 = 1;
 const TOKEN_KEY_MAGIC: &[u8; 8] = b"GVTKEY01";

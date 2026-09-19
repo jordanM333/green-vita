@@ -31,6 +31,6 @@ ring = { git = "https://github.com/vita-rust/ring.git", branch = "v0.17.14-vita"
 rtc-shared = { git = "https://github.com/Day-OS/rtc.git", branch = "vita" }
 
 [package.metadata.vita]
-title_id = "GREENVITA"
-title_name = "GreenVita"
+title_id = "GRNVTEST1"
+title_name = "GreenVita 540 Test"
 assets = "static"

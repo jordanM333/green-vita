@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-const CATALOG_CACHE_DIR: &str = "ux0:data/green-vita/cache/catalog-v1";
+const CATALOG_CACHE_DIR: &str = "ux0:data/green-vita-540-test/cache/catalog-v1";
 
 pub(super) fn provider_path(namespace: &str, filename: &str) -> String {
     format!(
