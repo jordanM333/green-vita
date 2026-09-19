@@ -5,6 +5,9 @@ mod worker;
 
 pub const STREAM_WIDTH: u32 = 960;
 pub const STREAM_HEIGHT: u32 = 540;
+// Preserve the stock Vita AVC decoder capacity independently of the requested stream size.
+pub const HW_DECODER_WIDTH: u32 = 1280;
+pub const HW_DECODER_HEIGHT: u32 = 720;
 pub const HW_OUTPUT_WIDTH: u32 = 960;
 pub const HW_OUTPUT_HEIGHT: u32 = 544;
 

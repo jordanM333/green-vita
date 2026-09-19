@@ -50,7 +50,7 @@ impl AvcdecLibrary {
                     sceSysmoduleUnloadModule(SCE_SYSMODULE_AVCDEC);
                 }
             }
-            bail!("sceVideodecInitLibrary failed: {ret:#x}");
+            bail!("sceVideodecInitLibrary({width}x{height}) failed: {ret:#x}");
         }
 
         Ok(Self { module_loaded })
@@ -89,6 +89,8 @@ pub struct HwVideoDecoder {
 impl HwVideoDecoder {
     pub fn new(config: DecoderConfig) -> Result<Self> {
         unsafe {
+            // Decoder capacity is the stock 1280x720 setting; Xbox can send a smaller 960x540
+            // stream. Keep the library initialization and memory query at the same capacity.
             let library = AvcdecLibrary::initialize(config.decode_width, config.decode_height)?;
 
             let query = SceAvcdecQueryDecoderInfo {
