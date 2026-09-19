@@ -42,6 +42,8 @@ pub(crate) struct VideoMetrics {
     pub(crate) audio_pcm_pending: AtomicU64,
     pub(crate) audio_underruns: AtomicU64,
     pub(crate) audio_queue_resets: AtomicU64,
+    pub(crate) audio_latency_trims: AtomicU64,
+    pub(crate) audio_pcm_discarded: AtomicU64,
     pub(crate) audio_opus_dropped: AtomicU64,
     pub(crate) audio_batch_dropped: AtomicU64,
     pub(crate) audio_batch_age_sum_us: AtomicU64,
@@ -97,6 +99,8 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     audio_pcm_pending: AtomicU64::new(0),
     audio_underruns: AtomicU64::new(0),
     audio_queue_resets: AtomicU64::new(0),
+    audio_latency_trims: AtomicU64::new(0),
+    audio_pcm_discarded: AtomicU64::new(0),
     audio_opus_dropped: AtomicU64::new(0),
     audio_batch_dropped: AtomicU64::new(0),
     audio_batch_age_sum_us: AtomicU64::new(0),
@@ -175,11 +179,13 @@ pub fn video_performance_summary() -> String {
         METRICS.resets.load(Ordering::Relaxed),
     );
     format!(
-        "{base}\nDelay SDL:{}ms opusQ:{} pcmQ:{} batchAge:{batch_age_avg}/{batch_age_max}ms underrun:{} clr:{} lost:{}\nInput local:{input_age_avg}/{input_age_max}ms RTCpump:{rtc_pump_avg}/{rtc_pump_max}ms",
+        "{base}\nDelay SDL:{}ms opusQ:{} pcmQ:{} batchAge:{batch_age_avg}/{batch_age_max}ms underrun:{} trim:{} skip:{} clr:{} lost:{}\nInput local:{input_age_avg}/{input_age_max}ms RTCpump:{rtc_pump_avg}/{rtc_pump_max}ms",
         METRICS.audio_sdl_queue_ms.load(Ordering::Relaxed),
         METRICS.audio_opus_pending.load(Ordering::Relaxed),
         METRICS.audio_pcm_pending.load(Ordering::Relaxed),
         METRICS.audio_underruns.load(Ordering::Relaxed),
+        METRICS.audio_latency_trims.load(Ordering::Relaxed),
+        METRICS.audio_pcm_discarded.load(Ordering::Relaxed),
         METRICS.audio_queue_resets.load(Ordering::Relaxed),
         METRICS.audio_opus_dropped.load(Ordering::Relaxed)
             + METRICS.audio_batch_dropped.load(Ordering::Relaxed),

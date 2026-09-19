@@ -51,7 +51,10 @@ For the latency test build, enable **Show streaming debug info** to see Delay SD
 batchAge (RTC-to-app audio handoff), Input local (sample-to-RTC send), and
 RTCpump (local WebRTC processing). These are local measurements, not the
 Xbox-to-screen or controller-to-Xbox round-trip time. The audio startup prebuffer
-is 40 ms in this test build; the 240 ms maximum SDL queue limit is unchanged.
+is 40 ms in this test build. If SDL's queued audio plus fresh decoded audio
+exceeds 160 ms, the renderer discards stale queued PCM and retains up to 80 ms
+of the newest decoded PCM; trim and skip count these recovery events. This can
+produce a brief audible discontinuity. The 240 ms emergency limit remains.
 
 > [!IMPORTANT]
 > Enable **Unsafe Homebrew** in HENkaku Settings. GreenVita needs access to the

@@ -11,6 +11,10 @@ const AUDIO_CHANNELS: usize = 2;
 
 const AUDIO_BYTES_PER_SECOND: u32 = AUDIO_SAMPLE_RATE as u32 * AUDIO_CHANNELS as u32 * 2;
 const MAX_QUEUED_AUDIO_BYTES: u32 = AUDIO_BYTES_PER_SECOND * 240 / 1_000;
+// The on-device trace showed SDL holding 196-220 ms continuously. Prefer
+// recent decoded audio once it exceeds 160 ms; keep up to 80 ms of fresh PCM.
+const AUDIO_TRIM_THRESHOLD_BYTES: u32 = AUDIO_BYTES_PER_SECOND * 160 / 1_000;
+const AUDIO_TRIM_TARGET_BYTES: u32 = AUDIO_BYTES_PER_SECOND * 80 / 1_000;
 // Two typical 20 ms Opus frames are enough to start playback. The former 80 ms
 // prebuffer added a fixed delay even when incoming audio was on time.
 const AUDIO_START_BUFFER_BYTES: u32 = AUDIO_BYTES_PER_SECOND * 40 / 1_000;
@@ -157,31 +161,60 @@ impl AudioRenderer {
             }
         }
 
+        let mut fresh_pcm = Vec::new();
         loop {
             match self.samples_rx.try_recv() {
                 Ok(samples) => {
                     METRICS.audio_pcm_pending.fetch_sub(1, Ordering::Relaxed);
-                    let sample_bytes = (samples.len() * size_of::<i16>()) as u32;
-                    if self.queue.size().saturating_add(sample_bytes) > MAX_QUEUED_AUDIO_BYTES {
-                        self.queue.pause();
-                        self.queue.clear();
-                        self.started = false;
-                        METRICS.audio_queue_resets.fetch_add(1, Ordering::Relaxed);
-                    }
-                    if let Err(error) = self.queue.queue_audio(&samples) {
-                        eprintln!("Failed to queue SDL audio: {error}");
-                    }
-                    if !self.started && self.queue.size() >= AUDIO_START_BUFFER_BYTES {
-                        self.queue.resume();
-                        self.started = true;
-                    }
+                    fresh_pcm.push(samples);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     eprintln!("Audio decode worker output disconnected; restarting");
                     self.restart_decode_worker();
-                    break;
+                    return;
                 }
+            }
+        }
+
+        let mut fresh_bytes = fresh_pcm
+            .iter()
+            .fold(0u32, |total, samples| {
+                total.saturating_add((samples.len() * size_of::<i16>()) as u32)
+            });
+        if fresh_bytes > 0
+            && self.queue.size().saturating_add(fresh_bytes) > AUDIO_TRIM_THRESHOLD_BYTES
+        {
+            // SDL cannot remove only the oldest queued PCM. Reset once and keep
+            // the newest decoded buffers in their original order. Never stop
+            // decoding Opus: its prediction state must advance continuously.
+            self.queue.pause();
+            self.queue.clear();
+            self.started = false;
+            METRICS.audio_latency_trims.fetch_add(1, Ordering::Relaxed);
+            while fresh_pcm.len() > 1 && fresh_bytes > AUDIO_TRIM_TARGET_BYTES {
+                let stale = fresh_pcm.remove(0);
+                fresh_bytes -= (stale.len() * size_of::<i16>()) as u32;
+                METRICS.audio_pcm_discarded.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        for samples in fresh_pcm {
+            let sample_bytes = (samples.len() * size_of::<i16>()) as u32;
+            if self.queue.size().saturating_add(sample_bytes) > MAX_QUEUED_AUDIO_BYTES {
+                // A safety limit for unusually large frames, independent of
+                // the normal 160 ms latency recovery threshold.
+                self.queue.pause();
+                self.queue.clear();
+                self.started = false;
+                METRICS.audio_queue_resets.fetch_add(1, Ordering::Relaxed);
+            }
+            if let Err(error) = self.queue.queue_audio(&samples) {
+                eprintln!("Failed to queue SDL audio: {error}");
+            }
+            if !self.started && self.queue.size() >= AUDIO_START_BUFFER_BYTES {
+                self.queue.resume();
+                self.started = true;
             }
         }
         METRICS.audio_sdl_queue_ms.store(
