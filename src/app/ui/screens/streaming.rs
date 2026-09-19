@@ -38,56 +38,58 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
             });
         }
 
-        // Always expose the pipeline counters in the GRNVTEST1 diagnostic build, including
-        // sessions that never deliver a visible frame. Remove this after the on-device test.
-        ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-            ui.add_space(12.0);
-            egui::Frame::default()
-                .fill(egui::Color32::from_black_alpha(192))
-                .inner_margin(egui::Margin::same(6))
-                .show(ui, |ui| {
-                    let buttons = METRICS.local_button_mask.load(Ordering::Relaxed);
-                    let stick = METRICS.local_left_stick.load(Ordering::Relaxed);
-                    let lx = stick as u16 as i16;
-                    let ly = (stick >> 16) as u16 as i16;
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "LIVE A:{} B:{} RT:{} LX:{lx:+} LY:{ly:+} | input accepted:{} failed:{}",
-                            buttons & 1,
-                            (buttons >> 1) & 1,
-                            (buttons >> 2) & 1,
-                            METRICS.input_sent_total.load(Ordering::Relaxed),
-                            METRICS.input_failed_total.load(Ordering::Relaxed),
-                        ))
-                        .color(egui::Color32::LIGHT_GREEN)
-                        .size(15.0),
-                    );
-                    // Put the audio latency readings where a normal phone recording can
-                    // capture them; the full detailed log remains below for still photos.
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Audio RTPbuf:{}ms SDL:{}ms Opus/PCM:{}/{} gaps:{} late:{} lost:{} trim:{} skip:{}",
-                            METRICS.audio_rtp_backlog_ms.load(Ordering::Relaxed),
-                            METRICS.audio_sdl_queue_ms.load(Ordering::Relaxed),
-                            METRICS.audio_opus_pending.load(Ordering::Relaxed),
-                            METRICS.audio_pcm_pending.load(Ordering::Relaxed),
-                            METRICS.audio_rtp_gaps.load(Ordering::Relaxed),
-                            METRICS.audio_rtp_late.load(Ordering::Relaxed),
-                            METRICS.audio_rtp_lost.load(Ordering::Relaxed),
-                            METRICS.audio_latency_trims.load(Ordering::Relaxed),
-                            METRICS.audio_pcm_discarded.load(Ordering::Relaxed),
-                        ))
-                        .color(theme.text_bright)
-                        .size(15.0),
-                    );
-                    ui.label(
-                        egui::RichText::new(&streaming.status)
-                            .color(theme.text)
-                            .size(11.0),
-                    );
-                });
-            ui.add_space(12.0);
-        });
+        // Keep collecting metrics when hidden so the quick menu can restore the live overlay
+        // without restarting the stream or resetting its counters.
+        if app.settings.show_stream_debug_info {
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                ui.add_space(12.0);
+                egui::Frame::default()
+                    .fill(egui::Color32::from_black_alpha(192))
+                    .inner_margin(egui::Margin::same(6))
+                    .show(ui, |ui| {
+                        let buttons = METRICS.local_button_mask.load(Ordering::Relaxed);
+                        let stick = METRICS.local_left_stick.load(Ordering::Relaxed);
+                        let lx = stick as u16 as i16;
+                        let ly = (stick >> 16) as u16 as i16;
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "LIVE A:{} B:{} RT:{} LX:{lx:+} LY:{ly:+} | input accepted:{} failed:{}",
+                                buttons & 1,
+                                (buttons >> 1) & 1,
+                                (buttons >> 2) & 1,
+                                METRICS.input_sent_total.load(Ordering::Relaxed),
+                                METRICS.input_failed_total.load(Ordering::Relaxed),
+                            ))
+                            .color(egui::Color32::LIGHT_GREEN)
+                            .size(15.0),
+                        );
+                        // Put the audio latency readings where a normal phone recording can
+                        // capture them; the full detailed log remains below for still photos.
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Audio RTPbuf:{}ms SDL:{}ms Opus/PCM:{}/{} gaps:{} late:{} lost:{} trim:{} skip:{}",
+                                METRICS.audio_rtp_backlog_ms.load(Ordering::Relaxed),
+                                METRICS.audio_sdl_queue_ms.load(Ordering::Relaxed),
+                                METRICS.audio_opus_pending.load(Ordering::Relaxed),
+                                METRICS.audio_pcm_pending.load(Ordering::Relaxed),
+                                METRICS.audio_rtp_gaps.load(Ordering::Relaxed),
+                                METRICS.audio_rtp_late.load(Ordering::Relaxed),
+                                METRICS.audio_rtp_lost.load(Ordering::Relaxed),
+                                METRICS.audio_latency_trims.load(Ordering::Relaxed),
+                                METRICS.audio_pcm_discarded.load(Ordering::Relaxed),
+                            ))
+                            .color(theme.text_bright)
+                            .size(15.0),
+                        );
+                        ui.label(
+                            egui::RichText::new(&streaming.status)
+                                .color(theme.text)
+                                .size(11.0),
+                        );
+                    });
+                ui.add_space(12.0);
+            });
+        }
     });
 
     if let Some(progress) = hold_progress {

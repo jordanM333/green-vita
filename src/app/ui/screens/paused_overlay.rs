@@ -8,13 +8,15 @@ use anyhow::Result;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     Resume,
+    ToggleDiagnostics,
     Settings,
     PressGuideButton,
     ExitGame,
 }
 
-pub const MENU_ITEMS: [Command; 4] = [
+pub const MENU_ITEMS: [Command; 5] = [
     Command::Resume,
+    Command::ToggleDiagnostics,
     Command::Settings,
     Command::PressGuideButton,
     Command::ExitGame,
@@ -24,6 +26,7 @@ impl Command {
     fn icon(self) -> &'static str {
         match self {
             Self::Resume => "\u{25b6}",
+            Self::ToggleDiagnostics => "\u{2630}",
             Self::Settings => "\u{2699}",
             Self::PressGuideButton => "\u{2302}",
             Self::ExitGame => "\u{2715}",
@@ -33,6 +36,7 @@ impl Command {
     fn label_key(self) -> &'static str {
         match self {
             Self::Resume => "paused-resume",
+            Self::ToggleDiagnostics => "paused-diagnostics",
             Self::Settings => "menu-settings",
             Self::PressGuideButton => "paused-xbox-button",
             Self::ExitGame => "paused-exit-game",
@@ -65,11 +69,24 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 if index > 0 {
                     ui.add_space(6.0);
                 }
+                let label = if item == Command::ToggleDiagnostics {
+                    format!(
+                        "{}: {}",
+                        i18n.text(item.label_key()),
+                        i18n.text(if app.settings.show_stream_debug_info {
+                            "paused-diagnostics-on"
+                        } else {
+                            "paused-diagnostics-off"
+                        }),
+                    )
+                } else {
+                    i18n.text(item.label_key())
+                };
                 if menu_item(
                     ui,
                     theme,
                     item.icon(),
-                    &i18n.text(item.label_key()),
+                    &label,
                     matches!(&app.state, AppState::Streaming(streaming) if streaming.pause_selected == index),
                 ) {
                     commands.push(item.into());
@@ -122,6 +139,14 @@ impl App {
     pub(crate) async fn handle_paused_overlay_command(&mut self, command: Command) -> Result<()> {
         match command {
             Command::Resume => {
+                if let Some(streaming) = self.state.streaming_mut() {
+                    streaming.set_paused(false);
+                }
+                self.menu.open = false;
+            }
+            Command::ToggleDiagnostics => {
+                self.settings.show_stream_debug_info = !self.settings.show_stream_debug_info;
+                self.settings.save();
                 if let Some(streaming) = self.state.streaming_mut() {
                     streaming.set_paused(false);
                 }

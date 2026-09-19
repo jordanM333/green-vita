@@ -30,6 +30,9 @@ mode-select-cloud-subtitle = Stream Xbox Cloud Gaming titles
 mode-select-home-subtitle-experimental = Stream from your home Xbox (experimental)
 
 paused-resume = Return to game
+paused-diagnostics = Diagnostics
+paused-diagnostics-on = ON
+paused-diagnostics-off = OFF
 paused-xbox-button = Xbox button
 paused-exit-game = Exit game
 
