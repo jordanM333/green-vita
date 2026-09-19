@@ -23,6 +23,7 @@ pub(crate) struct RtcSessionConfig {
     pub route_probe: &'static str,
     pub audio_sample_rate: u32,
     pub audio_payload_type: u8,
+    pub requested_video_size: (u32, u32),
     pub decoder: DecoderConfig,
 }
 
@@ -56,6 +57,7 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     initial_video_watchdog_started_at: Option<Instant>,
     last_initial_video_keyframe_request: Option<Instant>,
     pub status: String,
+    requested_video_size: (u32, u32),
 }
 
 impl<B: RtcSessionBackend> RtcSession<B> {
@@ -80,6 +82,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             initial_video_watchdog_started_at: None,
             last_initial_video_keyframe_request: None,
             status: "Negotiating WebRTC connection".to_owned(),
+            requested_video_size: config.requested_video_size,
         })
     }
 
@@ -133,11 +136,15 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         }
         self.request_keyframe(keyframe_requested, now);
         if let Some(status) = self.video.status(now) {
-            self.status = if let Some((width, height)) = self.backend.server_video_size() {
-                format!("srv:{width}x{height} {status}")
-            } else {
-                format!("srv:? {status}")
-            };
+            let (requested_width, requested_height) = self.requested_video_size;
+            let server_size = self
+                .backend
+                .server_video_size()
+                .map(|(width, height)| format!("{width}x{height}"))
+                .unwrap_or_else(|| "?".to_owned());
+            self.status = format!(
+                "Xbox requested:{requested_width}x{requested_height} server:{server_size}\n{status}"
+            );
             eprintln!("{}", self.status);
         }
 

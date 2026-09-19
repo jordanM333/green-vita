@@ -13,8 +13,13 @@ const STREAM_STATS_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
 struct VideoStats {
+    packets: u64,
+    assembled: u64,
+    submitted: u64,
     dropped: u64,
+    over_capacity: u64,
     decode_errors: u64,
+    last_decode_error: Option<String>,
     last_sample_duration_us: Option<u64>,
     encoded_resolution: Option<(u32, u32)>,
 }
@@ -30,6 +35,7 @@ pub(crate) struct VideoReceiver {
     pub(crate) received_packet: bool,
     last_stats_report: Instant,
     stats: VideoStats,
+    decoder_config: DecoderConfig,
 }
 
 impl VideoReceiver {
@@ -41,13 +47,14 @@ impl VideoReceiver {
             track_id: None,
             receiver_id: None,
             ssrc: None,
-            rtp: rtp::VideoRtp::new(),
+            rtp: rtp::VideoRtp::new(config.decode_width, config.decode_height),
             decoder: VideoDecodeWorker::spawn(config, direct_output)?,
             latest_frame: None,
             next_frame_id: 0,
             received_packet: false,
             last_stats_report: Instant::now(),
             stats: VideoStats::default(),
+            decoder_config: config,
         })
     }
 
@@ -68,11 +75,24 @@ impl VideoReceiver {
 
     pub(crate) fn receive(&mut self, packet: Packet, keyframe_requested: &mut bool) {
         self.received_packet = true;
+        self.stats.packets = self.stats.packets.saturating_add(1);
         let sample_stats = self.rtp.receive(&self.decoder, packet, keyframe_requested);
+        self.stats.assembled = self
+            .stats
+            .assembled
+            .saturating_add(sample_stats.assembled as u64);
+        self.stats.submitted = self
+            .stats
+            .submitted
+            .saturating_add(sample_stats.submitted as u64);
         self.stats.dropped = self
             .stats
             .dropped
             .saturating_add(sample_stats.dropped as u64);
+        self.stats.over_capacity = self
+            .stats
+            .over_capacity
+            .saturating_add(sample_stats.over_capacity as u64);
         if sample_stats.source_frame_duration_us.is_some() {
             self.stats.last_sample_duration_us = sample_stats.source_frame_duration_us;
         }
@@ -97,6 +117,7 @@ impl VideoReceiver {
                 }
                 Err(error) => {
                     eprintln!("Failed to decode H264 video frame: {error}");
+                    self.stats.last_decode_error = Some(error);
                     decode_errors = decode_errors.saturating_add(1);
                     *keyframe_requested = true;
                 }
@@ -141,10 +162,27 @@ impl VideoReceiver {
             .encoded_resolution
             .map(|(width, height)| format!("{width}x{height}"))
             .unwrap_or_else(|| "?".to_owned());
+        let config = self.decoder_config;
+        let last_error = self
+            .stats
+            .last_decode_error
+            .as_deref()
+            .map(|error| format!("\nlast decode error: {error}"))
+            .unwrap_or_default();
         Some(format!(
-            "enc:{encoded_resolution} srcfps:{source_fps} {performance} wait:{} drop:{} err:{}",
-            u8::from(self.rtp.waiting_for_keyframe()),
+            "SPS:{encoded_resolution} decoder:{}x{} output:{}x{} source-fps:{source_fps}\n\
+             RTP packets:{} AUs:{} submitted:{} dropped:{} too-big:{} wait:{}\n\
+             {performance} errors:{}{last_error}",
+            config.decode_width,
+            config.decode_height,
+            config.output_width,
+            config.output_height,
+            self.stats.packets,
+            self.stats.assembled,
+            self.stats.submitted,
             self.stats.dropped,
+            self.stats.over_capacity,
+            u8::from(self.rtp.waiting_for_keyframe()),
             self.stats.decode_errors,
         ))
     }

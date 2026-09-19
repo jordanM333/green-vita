@@ -6,6 +6,7 @@ use crate::api_xbox::streaming::rtc::{AUDIO_PAYLOAD_TYPE, ROUTE_PROBE, STUN_SERV
 use crate::streaming::audio::AUDIO_SAMPLE_RATE;
 use crate::streaming::video::{
     DecoderConfig, HW_DECODER_HEIGHT, HW_DECODER_WIDTH, HW_OUTPUT_HEIGHT, HW_OUTPUT_WIDTH,
+    STREAM_HEIGHT, STREAM_WIDTH,
 };
 use anyhow::Result;
 use rtc::peer_connection::RTCPeerConnection;
@@ -28,6 +29,7 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
             route_probe: ROUTE_PROBE,
             audio_sample_rate: AUDIO_SAMPLE_RATE as u32,
             audio_payload_type: AUDIO_PAYLOAD_TYPE,
+            requested_video_size: (STREAM_WIDTH, STREAM_HEIGHT),
             decoder: DecoderConfig {
                 decode_width: HW_DECODER_WIDTH,
                 decode_height: HW_DECODER_HEIGHT,

@@ -36,16 +36,22 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
             });
         }
 
-        if app.settings.show_stream_debug_info {
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                ui.add_space(12.0);
-                ui.colored_label(
-                    theme.text.gamma_multiply(0.75),
-                    egui::RichText::new(&streaming.status).size(12.0),
-                );
-                ui.add_space(12.0);
-            });
-        }
+        // Always expose the pipeline counters in the GRNVTEST1 diagnostic build, including
+        // sessions that never deliver a visible frame. Remove this after the on-device test.
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+            ui.add_space(12.0);
+            egui::Frame::default()
+                .fill(egui::Color32::from_black_alpha(192))
+                .inner_margin(egui::Margin::same(6))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(&streaming.status)
+                            .color(theme.text)
+                            .size(11.0),
+                    );
+                });
+            ui.add_space(12.0);
+        });
     });
 
     if let Some(progress) = hold_progress {

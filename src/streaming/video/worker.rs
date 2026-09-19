@@ -211,6 +211,7 @@ fn decode_queued_access_unit(
         return;
     };
     // Measure the hardware call and contain an unexpected decoder panic inside its worker.
+    metrics::METRICS.decode_calls.fetch_add(1, Ordering::Relaxed);
     let decode_started_at = Instant::now();
     let decode_result = catch_unwind(AssertUnwindSafe(|| {
         decoder
@@ -243,7 +244,9 @@ fn decode_queued_access_unit(
                 }),
             );
         }
-        Ok(Ok(false)) => {}
+        Ok(Ok(false)) => {
+            metrics::METRICS.no_picture.fetch_add(1, Ordering::Relaxed);
+        }
         Ok(Err(error)) => {
             *decoder = None;
             publish_result(latest_result, result_ready, Err(error.to_string()));

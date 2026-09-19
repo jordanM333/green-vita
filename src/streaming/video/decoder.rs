@@ -1,6 +1,6 @@
 //! PS Vita hardware H.264 decoder (`sceVideodec`/`sceAvcdec`).
 use super::memory::{CdramBlock, release_reserved_decoder_cdram};
-use super::{DecoderConfig, VideoTextureTarget};
+use super::{DecoderConfig, VideoTextureTarget, metrics};
 use anyhow::{Result, bail};
 use std::os::raw::c_void;
 use vitasdk_sys::*;
@@ -84,6 +84,7 @@ pub struct HwVideoDecoder {
     _library: AvcdecLibrary,
     width: u32,
     height: u32,
+    reported_first_picture: bool,
 }
 
 impl HwVideoDecoder {
@@ -123,6 +124,14 @@ impl HwVideoDecoder {
                 bail!("sceAvcdecCreateDecoder failed: {ret:#x}");
             }
             let decoder = AvcdecDecoder(decoder_control);
+            eprintln!(
+                "Vita AVC decoder initialized: capacity {}x{}, output {}x{}, frame memory {} bytes",
+                config.decode_width,
+                config.decode_height,
+                config.output_width,
+                config.output_height,
+                decoder_info.frameMemSize,
+            );
 
             Ok(Self {
                 decoder,
@@ -130,6 +139,7 @@ impl HwVideoDecoder {
                 _library: library,
                 width: config.output_width,
                 height: config.output_height,
+                reported_first_picture: false,
             })
         }
     }
@@ -204,6 +214,19 @@ impl HwVideoDecoder {
             if array_picture.numOfOutput == 0 {
                 return Ok(false);
             }
+            if !self.reported_first_picture {
+                eprintln!(
+                    "Vita AVC first picture: frame {}x{}, visible {}x{}, pitch {} pixels, output surface {}x{}",
+                    picture.frame.frameWidth,
+                    picture.frame.frameHeight,
+                    picture.frame.horizontalSize,
+                    picture.frame.verticalSize,
+                    picture.frame.framePitch,
+                    self.width,
+                    self.height,
+                );
+                self.reported_first_picture = true;
+            }
 
             // `framePitch` is in pixels. Validate the complete byte size before trusting the
             // decoder-provided pitch to write into the SDL texture.
@@ -223,6 +246,11 @@ impl HwVideoDecoder {
                     output_capacity
                 );
             }
+            metrics::METRICS.picture_dimensions.store(
+                (u64::from(picture.frame.frameWidth) << 32)
+                    | u64::from(picture.frame.frameHeight),
+                std::sync::atomic::Ordering::Relaxed,
+            );
             Ok(true)
         }
     }

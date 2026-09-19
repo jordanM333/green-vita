@@ -1,4 +1,4 @@
-use crate::streaming::video::{STREAM_HEIGHT, STREAM_WIDTH, VideoDecodeWorker};
+use crate::streaming::video::VideoDecodeWorker;
 use bytes::Bytes;
 use h264_reader::annexb::AnnexBReader;
 use h264_reader::nal::sps::SeqParameterSet;
@@ -22,6 +22,9 @@ const HIGH_FPS_DAMAGE_LIMIT: u8 = 3;
 #[derive(Default)]
 pub(super) struct VideoSampleStats {
     pub dropped: u32,
+    pub assembled: u32,
+    pub submitted: u32,
+    pub over_capacity: u32,
     pub source_frame_duration_us: Option<u64>,
     pub encoded_resolution: Option<(u32, u32)>,
 }
@@ -64,6 +67,8 @@ pub(super) struct VideoRtp {
     damage_score: u8,
     stream_too_large: bool,
     waiting_for_keyframe: bool,
+    decoder_capacity: (u32, u32),
+    last_sps_resolution: Option<(u32, u32)>,
 }
 
 struct PendingVideoFrame {
@@ -152,7 +157,7 @@ impl PendingVideoFrame {
 }
 
 impl VideoRtp {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(decode_width: u32, decode_height: u32) -> Self {
         Self {
             depacketizer: H264Packet::default(),
             pending: None,
@@ -162,6 +167,8 @@ impl VideoRtp {
             damage_score: 0,
             stream_too_large: false,
             waiting_for_keyframe: false,
+            decoder_capacity: (decode_width, decode_height),
+            last_sps_resolution: None,
         }
     }
 
@@ -240,6 +247,7 @@ impl VideoRtp {
                 marker_sequence,
             } => (data, marker_sequence),
         };
+        stats.assembled = 1;
         let completed = self.pending.take().expect("assembled pending video frame");
         // Record both average and worst-case RTP assembly time for the stream HUD.
         let assembly_us = completed.first_packet_at.elapsed().as_micros() as u64;
@@ -268,15 +276,31 @@ impl VideoRtp {
 
         let unit = inspect_h264_access_unit(&data);
         stats.encoded_resolution = unit.resolution;
+        if let Some((width, height)) = unit.resolution
+            && self.last_sps_resolution != unit.resolution
+        {
+            eprintln!(
+                "H264 SPS detected: {width}x{height}; Vita decoder capacity: {}x{}",
+                self.decoder_capacity.0, self.decoder_capacity.1
+            );
+            self.last_sps_resolution = unit.resolution;
+        }
+        // Xbox may return a 1280x720 SPS despite a 960x540 capability request. Only the
+        // initialized hardware decoder capacity limits which access units we can accept.
         let sample_too_large = unit
             .resolution
-            .is_some_and(|(width, height)| width > STREAM_WIDTH || height > STREAM_HEIGHT);
+            .is_some_and(|(width, height)| {
+                width > self.decoder_capacity.0 || height > self.decoder_capacity.1
+            });
         if sample_too_large {
-            eprintln!(
-                "Dropping H264 access unit larger than decoder: {:?} > {}x{}",
-                unit.resolution, STREAM_WIDTH, STREAM_HEIGHT
-            );
+            if !self.stream_too_large {
+                eprintln!(
+                    "Dropping H264 access unit {:?} beyond Vita decoder capacity {}x{}",
+                    unit.resolution, self.decoder_capacity.0, self.decoder_capacity.1
+                );
+            }
             self.stream_too_large = true;
+            stats.over_capacity = 1;
             // Flush queued decoder work once, then wait for a compatible IDR instead of feeding
             // frames that the Vita hardware cannot decode.
             *keyframe_requested = true;
@@ -309,7 +333,9 @@ impl VideoRtp {
             self.damage_score = self.damage_score.saturating_sub(1);
         }
 
-        if !worker.submit_access_unit(data.to_vec(), self.source_frame_duration_us) {
+        if worker.submit_access_unit(data.to_vec(), self.source_frame_duration_us) {
+            stats.submitted = 1;
+        } else {
             eprintln!("Video decoder queue is full; continuing while requesting a keyframe");
             *keyframe_requested = true;
             stats.dropped = stats.dropped.saturating_add(1);
