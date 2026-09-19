@@ -5,6 +5,9 @@ pub(crate) struct VideoMetrics {
     pub(crate) rtp_assembly_count: AtomicU64,
     pub(crate) rtp_assembly_max_us: AtomicU64,
     pub(crate) decode_us: AtomicU64,
+    pub(crate) decode_sum_us: AtomicU64,
+    pub(crate) decode_count: AtomicU64,
+    pub(crate) decode_max_us: AtomicU64,
     pub(crate) pipeline_age_us: AtomicU64,
     pub(crate) decode_calls: AtomicU64,
     pub(crate) no_picture: AtomicU64,
@@ -14,11 +17,14 @@ pub(crate) struct VideoMetrics {
     pub(crate) au_age_sum_us: AtomicU64,
     pub(crate) au_age_count: AtomicU64,
     pub(crate) au_age_max_us: AtomicU64,
-    pub(crate) render_wait_sum_us: AtomicU64,
-    pub(crate) render_wait_count: AtomicU64,
-    pub(crate) render_wait_max_us: AtomicU64,
-    pub(crate) render_backlog: AtomicU64,
+    pub(crate) paint_sum_us: AtomicU64,
+    pub(crate) paint_count: AtomicU64,
+    pub(crate) paint_max_us: AtomicU64,
+    pub(crate) ui_loop_sum_us: AtomicU64,
+    pub(crate) ui_loop_count: AtomicU64,
+    pub(crate) ui_loop_max_us: AtomicU64,
     pub(crate) texture_superseded: AtomicU64,
+    pub(crate) stale_presentation: AtomicU64,
     pub(crate) handoff_replaced: AtomicU64,
     pub(crate) stale_generation: AtomicU64,
     pub(crate) decoder_unavailable: AtomicU64,
@@ -36,6 +42,9 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     rtp_assembly_count: AtomicU64::new(0),
     rtp_assembly_max_us: AtomicU64::new(0),
     decode_us: AtomicU64::new(0),
+    decode_sum_us: AtomicU64::new(0),
+    decode_count: AtomicU64::new(0),
+    decode_max_us: AtomicU64::new(0),
     pipeline_age_us: AtomicU64::new(0),
     decode_calls: AtomicU64::new(0),
     no_picture: AtomicU64::new(0),
@@ -45,11 +54,14 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     au_age_sum_us: AtomicU64::new(0),
     au_age_count: AtomicU64::new(0),
     au_age_max_us: AtomicU64::new(0),
-    render_wait_sum_us: AtomicU64::new(0),
-    render_wait_count: AtomicU64::new(0),
-    render_wait_max_us: AtomicU64::new(0),
-    render_backlog: AtomicU64::new(0),
+    paint_sum_us: AtomicU64::new(0),
+    paint_count: AtomicU64::new(0),
+    paint_max_us: AtomicU64::new(0),
+    ui_loop_sum_us: AtomicU64::new(0),
+    ui_loop_count: AtomicU64::new(0),
+    ui_loop_max_us: AtomicU64::new(0),
     texture_superseded: AtomicU64::new(0),
+    stale_presentation: AtomicU64::new(0),
     handoff_replaced: AtomicU64::new(0),
     stale_generation: AtomicU64::new(0),
     decoder_unavailable: AtomicU64::new(0),
@@ -77,18 +89,24 @@ pub fn video_performance_summary() -> String {
     let au_age_count = METRICS.au_age_count.swap(0, Ordering::Relaxed);
     let au_age_average = au_age_sum.checked_div(au_age_count).unwrap_or(0) / 1000;
     let au_age_max = METRICS.au_age_max_us.swap(0, Ordering::Relaxed) / 1000;
-    let render_wait_sum = METRICS.render_wait_sum_us.swap(0, Ordering::Relaxed);
-    let render_wait_count = METRICS.render_wait_count.swap(0, Ordering::Relaxed);
-    let render_wait_average = render_wait_sum.checked_div(render_wait_count).unwrap_or(0) / 1000;
-    let render_wait_max = METRICS.render_wait_max_us.swap(0, Ordering::Relaxed) / 1000;
+    let decode_sum = METRICS.decode_sum_us.swap(0, Ordering::Relaxed);
+    let decode_count = METRICS.decode_count.swap(0, Ordering::Relaxed);
+    let decode_average = decode_sum.checked_div(decode_count).unwrap_or(0) / 1000;
+    let decode_max = METRICS.decode_max_us.swap(0, Ordering::Relaxed) / 1000;
+    let paint_sum = METRICS.paint_sum_us.swap(0, Ordering::Relaxed);
+    let paint_count = METRICS.paint_count.swap(0, Ordering::Relaxed);
+    let paint_average = paint_sum.checked_div(paint_count).unwrap_or(0) / 1000;
+    let paint_max = METRICS.paint_max_us.swap(0, Ordering::Relaxed) / 1000;
+    let ui_loop_sum = METRICS.ui_loop_sum_us.swap(0, Ordering::Relaxed);
+    let ui_loop_count = METRICS.ui_loop_count.swap(0, Ordering::Relaxed);
+    let ui_loop_average = ui_loop_sum.checked_div(ui_loop_count).unwrap_or(0) / 1000;
+    let ui_loop_max = METRICS.ui_loop_max_us.swap(0, Ordering::Relaxed) / 1000;
     format!(
-        "Q depth/max:{}/{} AUage:{au_age_average}/{au_age_max}ms renderWait:{render_wait_average}/{render_wait_max}ms hold:{} texRepl:{}\n\
-         FPS hwCall:{} decoded:{} shown:{} pic:{} noPic:{} noOut:{} qFull/s:{} asm:{rtp_average}/{rtp_max}ms\n\
-         Stage stale:{} noDec:{} mailRepl:{} handoffRepl:{} resync:{} reset:{}",
+        "Q depth/max:{}/{} AUage:{au_age_average}/{au_age_max}ms dec:{decode_average}/{decode_max}ms paint:{paint_average}/{paint_max}ms ui:{ui_loop_average}/{ui_loop_max}ms\n\
+         FPS hwCall:{} decoded:{} shown:{} ui:{paint_count} pic:{} noPic:{} noOut:{} qFull/s:{} asm:{rtp_average}/{rtp_max}ms\n\
+         Stage texRepl:{} stalePres:{} staleAU:{} noDec:{} mailRepl:{} handoffRepl:{} resync:{} reset:{}",
         METRICS.au_queue_depth.load(Ordering::Relaxed),
         METRICS.au_queue_max.load(Ordering::Relaxed),
-        METRICS.render_backlog.load(Ordering::Relaxed),
-        METRICS.texture_superseded.load(Ordering::Relaxed),
         METRICS.decode_calls.swap(0, Ordering::Relaxed),
         METRICS.decoded.swap(0, Ordering::Relaxed),
         METRICS.presented.swap(0, Ordering::Relaxed),
@@ -96,6 +114,8 @@ pub fn video_performance_summary() -> String {
         METRICS.no_picture.swap(0, Ordering::Relaxed),
         METRICS.skipped.swap(0, Ordering::Relaxed),
         METRICS.queue_full.swap(0, Ordering::Relaxed),
+        METRICS.texture_superseded.load(Ordering::Relaxed),
+        METRICS.stale_presentation.load(Ordering::Relaxed),
         METRICS.stale_generation.load(Ordering::Relaxed),
         METRICS.decoder_unavailable.load(Ordering::Relaxed),
         METRICS.replaced.swap(0, Ordering::Relaxed),

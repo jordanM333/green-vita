@@ -17,12 +17,7 @@ pub use worker::VideoDecodeWorker;
 pub(crate) use worker::SubmitResult;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
-
-// Let a short render hitch absorb at most two 30 fps intervals. Together with the
-// frame already pending for presentation, this caps the microbuffer at three frames.
-const MAX_PENDING_TEXTURE_WAIT: Duration = Duration::from_millis(67);
+use std::sync::{Mutex, MutexGuard};
 
 #[derive(Clone, Copy)]
 pub(crate) struct VideoTextureTarget {
@@ -32,18 +27,17 @@ pub(crate) struct VideoTextureTarget {
 }
 
 struct DirectVideoOutputState {
-    targets: Option<[VideoTextureTarget; 2]>,
+    targets: Option<Vec<VideoTextureTarget>>,
     displayed: Option<usize>,
     pending: Option<(usize, u64)>,
     next_generation: u64,
 }
 
-/// Synchronizes the decoder thread with the two SDL/GXM textures owned by the render thread.
+/// Synchronizes the decoder thread with the SDL/GXM textures owned by the render thread.
 /// Pointers are stored as integers so the platform-specific unsafe boundary stays in the code
 /// that registers and consumes the textures.
 pub(crate) struct DirectVideoOutput {
     state: Mutex<DirectVideoOutputState>,
-    frame_displayed: Condvar,
     pub(crate) decoder_ready: AtomicBool,
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -58,14 +52,13 @@ impl DirectVideoOutput {
                 pending: None,
                 next_generation: 0,
             }),
-            frame_displayed: Condvar::new(),
             decoder_ready: AtomicBool::new(false),
             width,
             height,
         }
     }
 
-    pub(crate) fn set_targets(&self, targets: [VideoTextureTarget; 2]) {
+    pub(crate) fn set_targets(&self, targets: Vec<VideoTextureTarget>) {
         if let Ok(mut state) = self.state.lock() {
             state.targets = Some(targets);
             state.displayed = None;
@@ -79,50 +72,35 @@ impl DirectVideoOutput {
             state.displayed = None;
             state.pending = None;
         }
-        self.frame_displayed.notify_all();
     }
 
-    pub(crate) fn mark_displayed(&self, index: usize, generation: u64) {
-        let mut cleared_pending = false;
-        if let Ok(mut state) = self.state.lock() {
-            state.displayed = Some(index);
-            if state.pending == Some((index, generation)) {
-                state.pending = None;
-                cleared_pending = true;
-            }
+    pub(crate) fn mark_displayed(&self, index: usize, generation: u64) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        if state.pending != Some((index, generation)) {
+            metrics::METRICS.stale_presentation.fetch_add(1, Ordering::Relaxed);
+            return false;
         }
-        if cleared_pending {
-            self.frame_displayed.notify_one();
-        }
+        state.displayed = Some(index);
+        state.pending = None;
+        true
     }
 
     pub(super) fn lock_decode_target(&self) -> Option<DirectVideoTargetGuard<'_>> {
-        let mut state = self.state.lock().ok()?;
-        if state.pending.is_some() {
-            let wait_started = Instant::now();
-            let (waited_state, _) = self
-                .frame_displayed
-                .wait_timeout_while(state, MAX_PENDING_TEXTURE_WAIT, |state| {
-                    state.targets.is_some() && state.pending.is_some()
-                })
-                .ok()?;
-            state = waited_state;
-            let waited_us = wait_started.elapsed().as_micros() as u64;
-            metrics::METRICS.render_wait_sum_us.fetch_add(waited_us, Ordering::Relaxed);
-            metrics::METRICS.render_wait_count.fetch_add(1, Ordering::Relaxed);
-            metrics::METRICS.render_wait_max_us.fetch_max(waited_us, Ordering::Relaxed);
-            if state.pending.is_some() {
-                metrics::METRICS.render_backlog.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        let targets = state.targets?;
-        let index = state
-            .pending
-            .map(|(index, _)| index)
-            .unwrap_or_else(|| state.displayed.map_or(0, |displayed| 1 - displayed));
+        let state = self.state.lock().ok()?;
+        let targets = state.targets.as_ref()?;
+        let pending_index = state.pending.map(|(index, _)| index);
+        // Decoder reference state must advance even when the UI cannot show every frame.
+        // Prefer the spare texture; if the UI is behind, replace the pending frame only.
+        // Never decode into the texture currently displayed by the renderer.
+        let index = (0..targets.len())
+            .find(|index| Some(*index) != state.displayed && Some(*index) != pending_index)
+            .or(pending_index.filter(|index| Some(*index) != state.displayed))?;
+        let target = *targets.get(index)?;
         Some(DirectVideoTargetGuard {
             state,
-            target: targets[index],
+            target,
             index,
         })
     }
@@ -157,4 +135,46 @@ pub struct DecoderConfig {
     pub decode_height: u32,
     pub output_width: u32,
     pub output_height: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_presentation_cannot_select_a_texture_replaced_by_decode() {
+        let output = DirectVideoOutput::new(HW_OUTPUT_WIDTH, HW_OUTPUT_HEIGHT);
+        output.set_targets(vec![VideoTextureTarget {
+            ptr: 0,
+            pitch: 1920,
+            capacity: 960 * 544 * 2,
+        }; 3]);
+
+        let (first, first_generation) = output.lock_decode_target().unwrap().publish();
+        let (second, second_generation) = output.lock_decode_target().unwrap().publish();
+        assert_ne!(first, second);
+        assert!(!output.mark_displayed(first, first_generation));
+        assert!(output.mark_displayed(second, second_generation));
+
+        let (third, third_generation) = output.lock_decode_target().unwrap().publish();
+        assert_ne!(second, third);
+        assert!(output.mark_displayed(third, third_generation));
+    }
+
+    #[test]
+    fn a_two_texture_fallback_never_decodes_into_the_displayed_texture() {
+        let output = DirectVideoOutput::new(HW_OUTPUT_WIDTH, HW_OUTPUT_HEIGHT);
+        output.set_targets(vec![VideoTextureTarget {
+            ptr: 0,
+            pitch: 1920,
+            capacity: 960 * 544 * 2,
+        }; 2]);
+
+        let (displayed, generation) = output.lock_decode_target().unwrap().publish();
+        assert!(output.mark_displayed(displayed, generation));
+        for _ in 0..4 {
+            let (next, _) = output.lock_decode_target().unwrap().publish();
+            assert_ne!(next, displayed);
+        }
+    }
 }

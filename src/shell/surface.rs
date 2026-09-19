@@ -7,13 +7,14 @@ use sdl2::render::{Canvas, Texture};
 use sdl2::video::Window;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 pub const WIDTH: u32 = 960;
 pub const HEIGHT: u32 = 544;
 
 pub struct VitaSurface {
     pub(crate) canvas: Canvas<Window>,
-    video_textures: Option<[Texture; 2]>,
+    video_textures: Option<Vec<Texture>>,
     displayed_video_texture: Option<usize>,
     direct_video_output: Option<Arc<DirectVideoOutput>>,
     video_width: u32,
@@ -71,11 +72,15 @@ impl VitaSurface {
             return Ok(());
         }
         let index = frame.texture_index;
-        if index >= 2 {
-            anyhow::bail!("decoder returned invalid direct texture index {index}");
-        }
         if let Some(output) = &self.direct_video_output {
-            output.mark_displayed(index, frame.generation);
+            if !output.mark_displayed(index, frame.generation) {
+                // The decoder has already replaced this unshown frame with a newer one.
+                self.last_frame_id = frame_id;
+                return Ok(());
+            }
+        }
+        if index >= self.video_textures.as_ref().map_or(0, Vec::len) {
+            anyhow::bail!("decoder returned invalid direct texture index {index}");
         }
         self.displayed_video_texture = Some(index);
         crate::streaming::video::metrics::METRICS
@@ -109,23 +114,21 @@ impl VitaSurface {
                 .map_err(anyhow::Error::msg)
                 .context("failed to create direct SDL BGR565 video texture")
         };
-        let mut textures = [create_texture()?, create_texture()?];
-        let mut targets = [
-            VideoTextureTarget {
+        let mut textures = vec![create_texture()?, create_texture()?];
+        match create_texture() {
+            Ok(spare) => textures.push(spare),
+            Err(error) => eprintln!("No spare video texture ({error:#}); using two textures"),
+        }
+        let mut targets = Vec::with_capacity(textures.len());
+        for texture in &mut textures {
+            let mut target = VideoTextureTarget {
                 ptr: 0,
                 pitch: 0,
                 capacity: 0,
-            },
-            VideoTextureTarget {
-                ptr: 0,
-                pitch: 0,
-                capacity: 0,
-            },
-        ];
-        for (index, texture) in textures.iter_mut().enumerate() {
+            };
             texture
                 .with_lock(None, |pixels, pitch| {
-                    targets[index] = VideoTextureTarget {
+                    target = VideoTextureTarget {
                         ptr: pixels.as_mut_ptr() as usize,
                         pitch: pitch as u32,
                         capacity: pixels.len().min(u32::MAX as usize) as u32,
@@ -133,6 +136,7 @@ impl VitaSurface {
                 })
                 .map_err(anyhow::Error::msg)
                 .context("failed to lock direct SDL video texture")?;
+            targets.push(target);
         }
         output.set_targets(targets);
         self.video_textures = Some(textures);
@@ -182,6 +186,7 @@ impl VitaSurface {
         primitives: &[egui::ClippedPrimitive],
         textures_delta: &egui::TexturesDelta,
     ) -> Result<()> {
+        let paint_started = Instant::now();
         self.egui_painter.paint(
             &mut self.canvas,
             [WIDTH, HEIGHT],
@@ -190,6 +195,11 @@ impl VitaSurface {
             textures_delta,
         )?;
         self.canvas.present();
+        let paint_us = paint_started.elapsed().as_micros() as u64;
+        let metrics = &crate::streaming::video::metrics::METRICS;
+        metrics.paint_sum_us.fetch_add(paint_us, Ordering::Relaxed);
+        metrics.paint_count.fetch_add(1, Ordering::Relaxed);
+        metrics.paint_max_us.fetch_max(paint_us, Ordering::Relaxed);
         Ok(())
     }
 

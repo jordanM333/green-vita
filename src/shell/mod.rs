@@ -242,6 +242,11 @@ pub async fn run(mut app: App) -> Result<()> {
             &clipped_primitives,
             &full_output.textures_delta,
         )?;
+        let loop_us = loop_started_at.elapsed().as_micros() as u64;
+        let metrics = &crate::streaming::video::metrics::METRICS;
+        metrics.ui_loop_sum_us.fetch_add(loop_us, std::sync::atomic::Ordering::Relaxed);
+        metrics.ui_loop_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        metrics.ui_loop_max_us.fetch_max(loop_us, std::sync::atomic::Ordering::Relaxed);
         let frame_deadline = loop_started_at + TARGET_FRAME_TIME;
         if Instant::now() < frame_deadline {
             while Instant::now() < frame_deadline {

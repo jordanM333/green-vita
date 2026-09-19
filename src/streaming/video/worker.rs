@@ -241,10 +241,11 @@ fn decode_queued_access_unit(
             .expect("decoder recreated above")
             .decode(&access_unit.data, direct_target.target)
     }));
-    metrics::METRICS.decode_us.store(
-        decode_started_at.elapsed().as_micros() as u64,
-        Ordering::Relaxed,
-    );
+    let decode_us = decode_started_at.elapsed().as_micros() as u64;
+    metrics::METRICS.decode_us.store(decode_us, Ordering::Relaxed);
+    metrics::METRICS.decode_sum_us.fetch_add(decode_us, Ordering::Relaxed);
+    metrics::METRICS.decode_count.fetch_add(1, Ordering::Relaxed);
+    metrics::METRICS.decode_max_us.fetch_max(decode_us, Ordering::Relaxed);
     if access_unit.generation != generation.load(Ordering::Acquire) {
         metrics::METRICS.stale_generation.fetch_add(1, Ordering::Relaxed);
         return;
