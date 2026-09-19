@@ -46,6 +46,22 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                 .fill(egui::Color32::from_black_alpha(192))
                 .inner_margin(egui::Margin::same(6))
                 .show(ui, |ui| {
+                    let buttons = METRICS.local_button_mask.load(Ordering::Relaxed);
+                    let stick = METRICS.local_left_stick.load(Ordering::Relaxed);
+                    let lx = stick as u16 as i16;
+                    let ly = (stick >> 16) as u16 as i16;
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "LIVE A:{} B:{} RT:{} LX:{lx:+} LY:{ly:+} | input accepted:{} failed:{}",
+                            buttons & 1,
+                            (buttons >> 1) & 1,
+                            (buttons >> 2) & 1,
+                            METRICS.input_sent_total.load(Ordering::Relaxed),
+                            METRICS.input_failed_total.load(Ordering::Relaxed),
+                        ))
+                        .color(egui::Color32::LIGHT_GREEN)
+                        .size(15.0),
+                    );
                     // Put the audio latency readings where a normal phone recording can
                     // capture them; the full detailed log remains below for still photos.
                     ui.label(

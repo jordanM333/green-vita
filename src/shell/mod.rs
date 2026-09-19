@@ -304,5 +304,18 @@ fn send_stream_gamepad_state(
 
     // Back is relayed separately after the hold gesture resolves.
     frame.view = f32::from(relay_back_as_view);
+    // Keep a local, per-render-frame marker so a phone recording can compare the physical
+    // input with the first corresponding movement in Xbox's video. No stream settings change.
+    let mask = u64::from(frame.a > 0.0)
+        | (u64::from(frame.b > 0.0) << 1)
+        | (u64::from(frame.right_trigger > 0.2) << 2);
+    let lx = (frame.left_thumb_x_axis * 100.0).round().clamp(-100.0, 100.0) as i16;
+    let ly = (frame.left_thumb_y_axis * 100.0).round().clamp(-100.0, 100.0) as i16;
+    let metrics = &crate::streaming::video::metrics::METRICS;
+    metrics.local_button_mask.store(mask, std::sync::atomic::Ordering::Relaxed);
+    metrics.local_left_stick.store(
+        (lx as u16 as u64) | ((ly as u16 as u64) << 16),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     streaming.send_gamepad_frame(frame, settings);
 }

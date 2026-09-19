@@ -1,6 +1,8 @@
+use crate::api::streaming::rtc::clock::RtpClockProbe;
 use crate::api::streaming::rtc::media::{AudioReceiver, VideoReceiver};
 use crate::api::streaming::rtc::transport::RtcTransport;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
+use crate::streaming::video::metrics::METRICS;
 use crate::streaming::video::{DecoderConfig, DirectVideoOutput};
 use anyhow::{Context, Result};
 use rtc::peer_connection::RTCPeerConnection;
@@ -11,6 +13,10 @@ use rtc::peer_connection::state::RTCPeerConnectionState;
 use rtc::peer_connection::transport::RTCIceCandidateInit;
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use rtc::sansio::Protocol;
+use rtc::statistics::report::RTCStatsReportEntry;
+use rtc::statistics::StatsSelector;
+use rtcp::sender_report::SenderReport;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -58,6 +64,8 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     last_initial_video_keyframe_request: Option<Instant>,
     pub status: String,
     requested_video_size: (u32, u32),
+    video_clock: RtpClockProbe,
+    audio_clock: RtpClockProbe,
 }
 
 impl<B: RtcSessionBackend> RtcSession<B> {
@@ -83,6 +91,8 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             last_initial_video_keyframe_request: None,
             status: "Negotiating WebRTC connection".to_owned(),
             requested_video_size: config.requested_video_size,
+            video_clock: RtpClockProbe::new(90_000),
+            audio_clock: RtpClockProbe::new(i64::from(config.audio_sample_rate)),
         })
     }
 
@@ -136,6 +146,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         }
         self.request_keyframe(keyframe_requested, now);
         if let Some(status) = self.video.status(now) {
+            let link = self.connection_debug(now);
             let (requested_width, requested_height) = self.requested_video_size;
             let server_size = self
                 .backend
@@ -143,12 +154,49 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                 .map(|(width, height)| format!("{width}x{height}"))
                 .unwrap_or_else(|| "?".to_owned());
             self.status = format!(
-                "Xbox requested:{requested_width}x{requested_height} server:{server_size}\n{status}"
+                "Xbox requested:{requested_width}x{requested_height} server:{server_size}\n{status}\n{link}"
             );
             eprintln!("{}", self.status);
         }
 
         Ok(gathered_candidates)
+    }
+
+    fn connection_debug(&mut self, now: Instant) -> String {
+        // This report is queried once per second, when the video status is updated.
+        let stats = self.peer.get_stats(now, StatsSelector::None);
+        let pair = stats
+            .transport()
+            .and_then(|transport| stats.get(&transport.selected_candidate_pair_id))
+            .and_then(|entry| match entry {
+                RTCStatsReportEntry::IceCandidatePair(pair) => Some(pair),
+                _ => None,
+            });
+        let ice = if let Some(pair) = pair {
+            let remote = stats
+                .get(&pair.remote_candidate_id)
+                .and_then(|entry| match entry {
+                    RTCStatsReportEntry::RemoteCandidate(candidate) => {
+                        Some(format!("{:?}", candidate.candidate_type))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| "?".to_owned());
+            format!("{}ms/{remote}", (pair.current_round_trip_time * 1_000.0) as u32)
+        } else {
+            "?".to_owned()
+        };
+        let av_age = match (self.video_clock.age_ms(), self.audio_clock.age_ms()) {
+            (Some(video), Some(audio)) => format!("{}ms", video - audio),
+            _ => "?".to_owned(),
+        };
+        format!(
+            "Link ICE:{ice} DCbuf:{}/{} | sender age* V:{} A:{} V-A:{av_age}",
+            METRICS.input_buffered_high.load(Ordering::Relaxed),
+            METRICS.input_buffered_events.load(Ordering::Relaxed),
+            self.video_clock.summary(now),
+            self.audio_clock.summary(now),
+        )
     }
 
     fn initial_video_keyframe_due(&mut self, now: Instant) -> bool {
@@ -219,6 +267,17 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                 RTCPeerConnectionEvent::OnDataChannel(RTCDataChannelEvent::OnOpen(channel_id)) => {
                     self.backend.handle_channel_open(&mut self.peer, channel_id);
                 }
+                RTCPeerConnectionEvent::OnDataChannel(
+                    RTCDataChannelEvent::OnBufferedAmountHigh(_),
+                ) => {
+                    METRICS.input_buffered_high.store(1, Ordering::Relaxed);
+                    METRICS.input_buffered_events.fetch_add(1, Ordering::Relaxed);
+                }
+                RTCPeerConnectionEvent::OnDataChannel(
+                    RTCDataChannelEvent::OnBufferedAmountLow(_),
+                ) => {
+                    METRICS.input_buffered_high.store(0, Ordering::Relaxed);
+                }
                 _ => {}
             }
         }
@@ -231,9 +290,22 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             match message {
                 RTCMessage::RtpPacket(track_id, packet) => {
                     if self.video.handles(&track_id) {
+                        self.video_clock.receive(packet.header.timestamp);
                         self.video.receive(packet, &mut keyframe_requested);
                     } else if self.audio.handles(&track_id) {
+                        self.audio_clock.receive(packet.header.timestamp);
                         self.audio.receive(packet);
+                    }
+                }
+                RTCMessage::RtcpPacket(track_id, packets) => {
+                    for packet in packets {
+                        if let Some(sr) = packet.as_any().downcast_ref::<SenderReport>() {
+                            if self.video.handles(&track_id) {
+                                self.video_clock.sender_report(sr);
+                            } else if self.audio.handles(&track_id) {
+                                self.audio_clock.sender_report(sr);
+                            }
+                        }
                     }
                 }
                 RTCMessage::DataChannelMessage(channel_id, data_message) => {

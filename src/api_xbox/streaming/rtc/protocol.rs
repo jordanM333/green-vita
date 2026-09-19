@@ -74,6 +74,10 @@ impl XboxRtcProtocol {
         if channel_id == channel_ids.input
             && let Some(mut input_channel) = peer.data_channel(channel_id)
         {
+            // Only request buffer notifications. These thresholds do not change whether or
+            // when controller reports are transmitted; they expose hidden SCTP backpressure.
+            input_channel.set_buffered_amount_high_threshold(512);
+            input_channel.set_buffered_amount_low_threshold(128);
             let client_metadata = self.input_queue.client_metadata_packet(0);
             let _ = input_channel.send(BytesMut::from(client_metadata.as_slice()));
             self.input_channel_ready = true;

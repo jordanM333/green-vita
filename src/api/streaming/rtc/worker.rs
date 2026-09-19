@@ -404,10 +404,13 @@ fn send_sampled_gamepad_frame<B: super::session::RtcSessionBackend>(
         .backend
         .send_gamepad_frame(&mut session.peer, sampled.frame.clone())
     {
+        METRICS.input_sent_total.fetch_add(1, Ordering::Relaxed);
         METRICS.input_send_age_sum_us.fetch_add(age_us, Ordering::Relaxed);
         METRICS.input_send_age_count.fetch_add(1, Ordering::Relaxed);
         METRICS.input_send_age_max_us.fetch_max(age_us, Ordering::Relaxed);
         *last_sent = Some((sampled.frame, now));
+    } else {
+        METRICS.input_failed_total.fetch_add(1, Ordering::Relaxed);
     }
 }
 
