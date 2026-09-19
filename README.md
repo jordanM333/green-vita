@@ -46,6 +46,13 @@ The global **Swap L2/L3 and R2/R3 on rear touch** setting changes only the rear
 panel layout. It is off by default; the front touch panel and physical buttons
 keep their normal mapping.
 
+For the latency test build, enable **Show streaming debug info** to see Delay SDL
+(queued playback in milliseconds), opusQ/pcmQ (pending decode buffers),
+batchAge (RTC-to-app audio handoff), Input local (sample-to-RTC send), and
+RTCpump (local WebRTC processing). These are local measurements, not the
+Xbox-to-screen or controller-to-Xbox round-trip time. The audio startup prebuffer
+is 40 ms in this test build; the 240 ms maximum SDL queue limit is unchanged.
+
 > [!IMPORTANT]
 > Enable **Unsafe Homebrew** in HENkaku Settings. GreenVita needs access to the
 > Vita hardware video-decoder module.

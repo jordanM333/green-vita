@@ -1,7 +1,9 @@
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use sdl2::audio::{AudioQueue, AudioSpecDesired};
+use crate::streaming::video::metrics::METRICS;
 use std::ptr::NonNull;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 
 pub const AUDIO_SAMPLE_RATE: i32 = 48_000;
@@ -9,7 +11,9 @@ const AUDIO_CHANNELS: usize = 2;
 
 const AUDIO_BYTES_PER_SECOND: u32 = AUDIO_SAMPLE_RATE as u32 * AUDIO_CHANNELS as u32 * 2;
 const MAX_QUEUED_AUDIO_BYTES: u32 = AUDIO_BYTES_PER_SECOND * 240 / 1_000;
-const AUDIO_START_BUFFER_BYTES: u32 = AUDIO_BYTES_PER_SECOND * 80 / 1_000;
+// Two typical 20 ms Opus frames are enough to start playback. The former 80 ms
+// prebuffer added a fixed delay even when incoming audio was on time.
+const AUDIO_START_BUFFER_BYTES: u32 = AUDIO_BYTES_PER_SECOND * 40 / 1_000;
 const MAX_OPUS_FRAME_SAMPLES_PER_CHANNEL: usize = 5_760;
 const MAX_PENDING_OPUS_PACKETS: usize = 32;
 const MAX_PENDING_PCM_BUFFERS: usize = 8;
@@ -128,15 +132,27 @@ impl AudioRenderer {
         if self.started && self.queue.size() == 0 {
             self.queue.pause();
             self.started = false;
+            METRICS.audio_underruns.fetch_add(1, Ordering::Relaxed);
         }
 
         for packet in packets {
+            METRICS.audio_opus_pending.fetch_add(1, Ordering::Relaxed);
             match self.packets_tx.try_send(packet) {
-                Ok(()) | Err(TrySendError::Full(_)) => {}
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    METRICS.audio_opus_pending.fetch_sub(1, Ordering::Relaxed);
+                    METRICS.audio_opus_dropped.fetch_add(1, Ordering::Relaxed);
+                }
                 Err(TrySendError::Disconnected(packet)) => {
+                    METRICS.audio_opus_pending.fetch_sub(1, Ordering::Relaxed);
                     eprintln!("Audio decode worker stopped; restarting");
                     self.restart_decode_worker();
-                    let _ = self.packets_tx.try_send(packet);
+                    METRICS.audio_opus_pending.fetch_add(1, Ordering::Relaxed);
+                    // A failed retry is counted, rather than silently retaining an old packet.
+                    if self.packets_tx.try_send(packet).is_err() {
+                        METRICS.audio_opus_pending.fetch_sub(1, Ordering::Relaxed);
+                        METRICS.audio_opus_dropped.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
         }
@@ -144,11 +160,13 @@ impl AudioRenderer {
         loop {
             match self.samples_rx.try_recv() {
                 Ok(samples) => {
+                    METRICS.audio_pcm_pending.fetch_sub(1, Ordering::Relaxed);
                     let sample_bytes = (samples.len() * size_of::<i16>()) as u32;
                     if self.queue.size().saturating_add(sample_bytes) > MAX_QUEUED_AUDIO_BYTES {
                         self.queue.pause();
                         self.queue.clear();
                         self.started = false;
+                        METRICS.audio_queue_resets.fetch_add(1, Ordering::Relaxed);
                     }
                     if let Err(error) = self.queue.queue_audio(&samples) {
                         eprintln!("Failed to queue SDL audio: {error}");
@@ -166,12 +184,18 @@ impl AudioRenderer {
                 }
             }
         }
+        METRICS.audio_sdl_queue_ms.store(
+            u64::from(self.queue.size()) * 1_000 / u64::from(AUDIO_BYTES_PER_SECOND),
+            Ordering::Relaxed,
+        );
     }
 
     fn restart_decode_worker(&mut self) {
         self.queue.pause();
         self.queue.clear();
         self.started = false;
+        METRICS.audio_opus_pending.store(0, Ordering::Relaxed);
+        METRICS.audio_pcm_pending.store(0, Ordering::Relaxed);
         match spawn_decode_worker() {
             Ok((packets_tx, samples_rx)) => {
                 self.packets_tx = packets_tx;
@@ -193,6 +217,7 @@ fn spawn_decode_worker() -> Result<(SyncSender<Bytes>, Receiver<Vec<i16>>)> {
         .spawn(move || {
             let mut decode_buf = vec![0i16; MAX_OPUS_FRAME_SAMPLES_PER_CHANNEL * AUDIO_CHANNELS];
             while let Ok(packet) = packets_rx.recv() {
+                METRICS.audio_opus_pending.fetch_sub(1, Ordering::Relaxed);
                 let samples_per_channel = match decoder.decode(&packet, &mut decode_buf) {
                     Ok(samples_per_channel) => samples_per_channel,
                     Err(error) => {
@@ -202,10 +227,12 @@ fn spawn_decode_worker() -> Result<(SyncSender<Bytes>, Receiver<Vec<i16>>)> {
                 };
 
                 let sample_count = samples_per_channel * AUDIO_CHANNELS;
+                METRICS.audio_pcm_pending.fetch_add(1, Ordering::Relaxed);
                 if samples_tx
                     .send(decode_buf[..sample_count].to_vec())
                     .is_err()
                 {
+                    METRICS.audio_pcm_pending.fetch_sub(1, Ordering::Relaxed);
                     break;
                 }
             }

@@ -37,6 +37,22 @@ pub(crate) struct VideoMetrics {
     pub(crate) queue_full: AtomicU64,
     pub(crate) resyncs: AtomicU64,
     pub(crate) resets: AtomicU64,
+    pub(crate) audio_sdl_queue_ms: AtomicU64,
+    pub(crate) audio_opus_pending: AtomicU64,
+    pub(crate) audio_pcm_pending: AtomicU64,
+    pub(crate) audio_underruns: AtomicU64,
+    pub(crate) audio_queue_resets: AtomicU64,
+    pub(crate) audio_opus_dropped: AtomicU64,
+    pub(crate) audio_batch_dropped: AtomicU64,
+    pub(crate) audio_batch_age_sum_us: AtomicU64,
+    pub(crate) audio_batch_age_count: AtomicU64,
+    pub(crate) audio_batch_age_max_us: AtomicU64,
+    pub(crate) input_send_age_sum_us: AtomicU64,
+    pub(crate) input_send_age_count: AtomicU64,
+    pub(crate) input_send_age_max_us: AtomicU64,
+    pub(crate) rtc_pump_sum_us: AtomicU64,
+    pub(crate) rtc_pump_count: AtomicU64,
+    pub(crate) rtc_pump_max_us: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -76,6 +92,22 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     queue_full: AtomicU64::new(0),
     resyncs: AtomicU64::new(0),
     resets: AtomicU64::new(0),
+    audio_sdl_queue_ms: AtomicU64::new(0),
+    audio_opus_pending: AtomicU64::new(0),
+    audio_pcm_pending: AtomicU64::new(0),
+    audio_underruns: AtomicU64::new(0),
+    audio_queue_resets: AtomicU64::new(0),
+    audio_opus_dropped: AtomicU64::new(0),
+    audio_batch_dropped: AtomicU64::new(0),
+    audio_batch_age_sum_us: AtomicU64::new(0),
+    audio_batch_age_count: AtomicU64::new(0),
+    audio_batch_age_max_us: AtomicU64::new(0),
+    input_send_age_sum_us: AtomicU64::new(0),
+    input_send_age_count: AtomicU64::new(0),
+    input_send_age_max_us: AtomicU64::new(0),
+    rtc_pump_sum_us: AtomicU64::new(0),
+    rtc_pump_count: AtomicU64::new(0),
+    rtc_pump_max_us: AtomicU64::new(0),
 };
 
 pub fn video_performance_summary() -> String {
@@ -109,7 +141,19 @@ pub fn video_performance_summary() -> String {
     let display_age_count = METRICS.display_age_count.swap(0, Ordering::Relaxed);
     let display_age_average = display_age_sum.checked_div(display_age_count).unwrap_or(0) / 1000;
     let display_age_max = METRICS.display_age_max_us.swap(0, Ordering::Relaxed) / 1000;
-    format!(
+    let batch_age_sum = METRICS.audio_batch_age_sum_us.swap(0, Ordering::Relaxed);
+    let batch_age_count = METRICS.audio_batch_age_count.swap(0, Ordering::Relaxed);
+    let batch_age_avg = batch_age_sum.checked_div(batch_age_count).unwrap_or(0) / 1000;
+    let batch_age_max = METRICS.audio_batch_age_max_us.swap(0, Ordering::Relaxed) / 1000;
+    let input_age_sum = METRICS.input_send_age_sum_us.swap(0, Ordering::Relaxed);
+    let input_age_count = METRICS.input_send_age_count.swap(0, Ordering::Relaxed);
+    let input_age_avg = input_age_sum.checked_div(input_age_count).unwrap_or(0) / 1000;
+    let input_age_max = METRICS.input_send_age_max_us.swap(0, Ordering::Relaxed) / 1000;
+    let rtc_pump_sum = METRICS.rtc_pump_sum_us.swap(0, Ordering::Relaxed);
+    let rtc_pump_count = METRICS.rtc_pump_count.swap(0, Ordering::Relaxed);
+    let rtc_pump_avg = rtc_pump_sum.checked_div(rtc_pump_count).unwrap_or(0) / 1000;
+    let rtc_pump_max = METRICS.rtc_pump_max_us.swap(0, Ordering::Relaxed) / 1000;
+    let base = format!(
         "Q depth/max:{}/{} AUage:{au_age_average}/{au_age_max}ms dec:{decode_average}/{decode_max}ms paint:{paint_average}/{paint_max}ms ui:{ui_loop_average}/{ui_loop_max}ms\n\
          FPS hwCall:{} decoded:{} shown:{} ui:{paint_count} pic:{} noPic:{} noOut:{} qFull/s:{} asm:{rtp_average}/{rtp_max}ms\n\
          Stage texRepl:{} showAge:{display_age_average}/{display_age_max}ms staleAU:{} noDec:{} mailRepl:{} handoffRepl:{} resync:{} reset:{}",
@@ -129,5 +173,15 @@ pub fn video_performance_summary() -> String {
         METRICS.handoff_replaced.load(Ordering::Relaxed),
         METRICS.resyncs.load(Ordering::Relaxed),
         METRICS.resets.load(Ordering::Relaxed),
+    );
+    format!(
+        "{base}\nDelay SDL:{}ms opusQ:{} pcmQ:{} batchAge:{batch_age_avg}/{batch_age_max}ms underrun:{} clr:{} lost:{}\nInput local:{input_age_avg}/{input_age_max}ms RTCpump:{rtc_pump_avg}/{rtc_pump_max}ms",
+        METRICS.audio_sdl_queue_ms.load(Ordering::Relaxed),
+        METRICS.audio_opus_pending.load(Ordering::Relaxed),
+        METRICS.audio_pcm_pending.load(Ordering::Relaxed),
+        METRICS.audio_underruns.load(Ordering::Relaxed),
+        METRICS.audio_queue_resets.load(Ordering::Relaxed),
+        METRICS.audio_opus_dropped.load(Ordering::Relaxed)
+            + METRICS.audio_batch_dropped.load(Ordering::Relaxed),
     )
 }

@@ -1,6 +1,7 @@
 use crate::api::streaming::rtc::session::{RtcSession, RtcSessionConfig};
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput, HW_OUTPUT_HEIGHT, HW_OUTPUT_WIDTH};
+use crate::streaming::video::metrics::METRICS;
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use rtc::peer_connection::RTCPeerConnection;
@@ -11,6 +12,7 @@ use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const PUMP_SLEEP: Duration = Duration::from_millis(1);
@@ -46,12 +48,18 @@ enum RtcWorkerCommand {
 
 struct SampledGamepadFrame {
     frame: GamepadFrame,
+    sampled_at: Instant,
+}
+
+pub(crate) struct TimedAudioBatch {
+    pub(crate) packets: Vec<Bytes>,
+    pub(crate) queued_at: Instant,
 }
 
 pub struct RtcWorker {
     commands_tx: SyncSender<RtcWorkerCommand>,
     pub(crate) events_rx: Receiver<RtcWorkerEvent>,
-    pub(crate) audio_rx: Receiver<Vec<Bytes>>,
+    pub(crate) audio_rx: Receiver<TimedAudioBatch>,
     pub(crate) latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
     latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
@@ -125,7 +133,10 @@ impl RtcWorker {
 
     pub fn send_gamepad_frame(&self, frame: GamepadFrame) {
         if let Ok(mut latest) = self.latest_gamepad.lock() {
-            *latest = Some(SampledGamepadFrame { frame });
+            *latest = Some(SampledGamepadFrame {
+                frame,
+                sampled_at: Instant::now(),
+            });
         }
     }
 
@@ -150,7 +161,7 @@ fn run_worker_thread<P: RtcWorkerProvider>(
     provider: P,
     commands_rx: Receiver<RtcWorkerCommand>,
     events_tx: SyncSender<RtcWorkerEvent>,
-    audio_tx: SyncSender<Vec<Bytes>>,
+    audio_tx: SyncSender<TimedAudioBatch>,
     latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
     latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
@@ -222,7 +233,7 @@ async fn run_session<B: super::session::RtcSessionBackend>(
     mut session: RtcSession<B>,
     commands_rx: Receiver<RtcWorkerCommand>,
     events_tx: SyncSender<RtcWorkerEvent>,
-    audio_tx: SyncSender<Vec<Bytes>>,
+    audio_tx: SyncSender<TimedAudioBatch>,
     latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
     latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
@@ -259,11 +270,13 @@ async fn run_session<B: super::session::RtcSessionBackend>(
                 // is temporarily suppressed (for example, until Confirm is released).
                 let sampled = latest.unwrap_or_else(|| SampledGamepadFrame {
                     frame: GamepadFrame::default(),
+                    sampled_at: Instant::now(),
                 });
                 send_sampled_gamepad_frame(&mut session, sampled, &mut last_gamepad_sent, true);
             } else if pulse_started || latest.is_some() {
                 let mut sampled = latest.unwrap_or_else(|| SampledGamepadFrame {
                     frame: GamepadFrame::default(),
+                    sampled_at: Instant::now(),
                 });
                 // Guide/Nexus is currently the only pulsed input. Keep it asserted while normal
                 // gamepad frames continue to flow instead of immediately overwriting the press.
@@ -279,7 +292,13 @@ async fn run_session<B: super::session::RtcSessionBackend>(
             send_sampled_gamepad_frame(&mut session, sampled, &mut last_gamepad_sent, false);
         }
 
-        let local_candidates = match session.pump().await {
+        let pump_started = Instant::now();
+        let pump_result = session.pump().await;
+        let pump_us = pump_started.elapsed().as_micros() as u64;
+        METRICS.rtc_pump_sum_us.fetch_add(pump_us, Ordering::Relaxed);
+        METRICS.rtc_pump_count.fetch_add(1, Ordering::Relaxed);
+        METRICS.rtc_pump_max_us.fetch_max(pump_us, Ordering::Relaxed);
+        let local_candidates = match pump_result {
             Ok(candidates) => {
                 if consecutive_pump_errors > 0 {
                     consecutive_pump_errors = 0;
@@ -311,7 +330,15 @@ async fn run_session<B: super::session::RtcSessionBackend>(
 
         let audio_packets = std::mem::take(&mut session.audio.packets);
         if !audio_packets.is_empty() {
-            send_lossy(&audio_tx, audio_packets);
+            if audio_tx
+                .try_send(TimedAudioBatch {
+                    packets: audio_packets,
+                    queued_at: Instant::now(),
+                })
+                .is_err()
+            {
+                METRICS.audio_batch_dropped.fetch_add(1, Ordering::Relaxed);
+            }
         }
 
         if let Some(frame) = session.video.latest_frame.take()
@@ -372,10 +399,14 @@ fn send_sampled_gamepad_frame<B: super::session::RtcSessionBackend>(
         return;
     }
 
+    let age_us = now.saturating_duration_since(sampled.sampled_at).as_micros() as u64;
     if session
         .backend
         .send_gamepad_frame(&mut session.peer, sampled.frame.clone())
     {
+        METRICS.input_send_age_sum_us.fetch_add(age_us, Ordering::Relaxed);
+        METRICS.input_send_age_count.fetch_add(1, Ordering::Relaxed);
+        METRICS.input_send_age_max_us.fetch_max(age_us, Ordering::Relaxed);
         *last_sent = Some((sampled.frame, now));
     }
 }

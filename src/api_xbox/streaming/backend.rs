@@ -5,11 +5,13 @@ use crate::api_xbox::streaming::rtc::worker;
 use crate::jobs::{PollJob, poll_job};
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
+use crate::streaming::video::metrics::METRICS;
 use anyhow::Result;
 use bytes::Bytes;
 use rtc::peer_connection::transport::RTCIceCandidateInit;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 
@@ -64,7 +66,12 @@ impl XboxStreamingBackend {
     }
 
     pub(crate) fn try_recv_audio_packets(&self) -> Option<Vec<Bytes>> {
-        self.worker.audio_rx.try_recv().ok()
+        let batch = self.worker.audio_rx.try_recv().ok()?;
+        let age_us = batch.queued_at.elapsed().as_micros() as u64;
+        METRICS.audio_batch_age_sum_us.fetch_add(age_us, Ordering::Relaxed);
+        METRICS.audio_batch_age_count.fetch_add(1, Ordering::Relaxed);
+        METRICS.audio_batch_age_max_us.fetch_max(age_us, Ordering::Relaxed);
+        Some(batch.packets)
     }
 
     pub(crate) fn take_latest_frame(&self) -> Option<(u64, DecodedFrame)> {
