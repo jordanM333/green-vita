@@ -46,8 +46,11 @@ The global **Swap L2/L3 and R2/R3 on rear touch** setting changes only the rear
 panel layout. It is off by default; the front touch panel and physical buttons
 keep their normal mapping.
 
-For the latency test build, enable **Show streaming debug info** to see Delay SDL
-(queued playback in milliseconds), opusQ/pcmQ (pending decode buffers),
+For the latency test build, the larger audio line at the top of the streaming
+diagnostics shows RTPbuf (audio RTP timestamp lead over the next assembled
+Opus packet), SDL (queued playback in milliseconds), Opus/PCM (pending decode
+buffers), audio RTP gaps/late/lost, and trim/skip recovery counts. The detailed
+readout also shows
 batchAge (RTC-to-app audio handoff), Input local (sample-to-RTC send), and
 RTCpump (local WebRTC processing). These are local measurements, not the
 Xbox-to-screen or controller-to-Xbox round-trip time. The audio startup prebuffer
@@ -55,6 +58,8 @@ is 40 ms in this test build. If SDL's queued audio plus fresh decoded audio
 exceeds 160 ms, the renderer discards stale queued PCM and retains up to 80 ms
 of the newest decoded PCM; trim and skip count these recovery events. This can
 produce a brief audible discontinuity. The 240 ms emergency limit remains.
+An xHome SDP/ICE response containing only null error code/message fields is
+treated as a successful exchange; actual signaling errors still stop the stream.
 
 > [!IMPORTANT]
 > Enable **Unsafe Homebrew** in HENkaku Settings. GreenVita needs access to the

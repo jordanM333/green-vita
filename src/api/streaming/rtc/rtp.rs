@@ -72,6 +72,9 @@ impl VideoSampleStats {
 pub(super) struct AudioRtp {
     samples: SampleBuilder<OpusPacket>,
     payload_type: u8,
+    sample_rate: u32,
+    last_sequence: Option<u16>,
+    latest_timestamp: Option<u32>,
 }
 
 impl AudioRtp {
@@ -80,6 +83,9 @@ impl AudioRtp {
             samples: SampleBuilder::new(AUDIO_MAX_LATE_PACKETS, OpusPacket, sample_rate)
                 .with_max_time_delay(std::time::Duration::from_millis(80)),
             payload_type,
+            sample_rate,
+            last_sequence: None,
+            latest_timestamp: None,
         }
     }
 
@@ -88,11 +94,52 @@ impl AudioRtp {
             return;
         }
 
+        let sequence = packet.header.sequence_number;
+        if let Some(previous) = self.last_sequence {
+            let forward = sequence.wrapping_sub(previous);
+            if forward > 0 && forward < (1 << 15) {
+                if forward > 1 {
+                    crate::streaming::video::metrics::METRICS.audio_rtp_gaps.fetch_add(
+                        u64::from(forward - 1), Ordering::Relaxed,
+                    );
+                }
+                self.last_sequence = Some(sequence);
+            } else if forward >= (1 << 15) {
+                crate::streaming::video::metrics::METRICS.audio_rtp_late
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        } else {
+            self.last_sequence = Some(sequence);
+        }
+
+        let timestamp = packet.header.timestamp;
+        if self.latest_timestamp.is_none_or(|latest| {
+            let forward = timestamp.wrapping_sub(latest);
+            forward > 0 && forward < (1 << 31)
+        }) {
+            self.latest_timestamp = Some(timestamp);
+        }
+
         self.samples.push(packet);
         while audio_packets.len() < MAX_PENDING_AUDIO_PACKETS {
             let Some(sample) = self.samples.pop() else {
                 break;
             };
+            if let Some(latest) = self.latest_timestamp {
+                let lead = latest.wrapping_sub(sample.packet_timestamp);
+                if lead < (1 << 31) && self.sample_rate > 0 {
+                    crate::streaming::video::metrics::METRICS.audio_rtp_backlog_ms.store(
+                        u64::from(lead) * 1_000 / u64::from(self.sample_rate),
+                        Ordering::Relaxed,
+                    );
+                }
+            }
+            let dropped = sample
+                .prev_dropped_packets
+                .saturating_sub(sample.prev_padding_packets);
+            crate::streaming::video::metrics::METRICS.audio_rtp_lost.fetch_add(
+                u64::from(dropped), Ordering::Relaxed,
+            );
             audio_packets.push(sample.data);
         }
     }

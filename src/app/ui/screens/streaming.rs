@@ -2,6 +2,8 @@ use crate::App;
 use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::draw_hold_progress_ring;
 use crate::i18n::I18n;
+use crate::streaming::video::metrics::METRICS;
+use std::sync::atomic::Ordering;
 
 /// Fullscreen video view with a one-time "Hold Back to pause" hint, fading out over `HINT_FADE`.
 pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
@@ -44,6 +46,24 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                 .fill(egui::Color32::from_black_alpha(192))
                 .inner_margin(egui::Margin::same(6))
                 .show(ui, |ui| {
+                    // Put the audio latency readings where a normal phone recording can
+                    // capture them; the full detailed log remains below for still photos.
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Audio RTPbuf:{}ms SDL:{}ms Opus/PCM:{}/{} gaps:{} late:{} lost:{} trim:{} skip:{}",
+                            METRICS.audio_rtp_backlog_ms.load(Ordering::Relaxed),
+                            METRICS.audio_sdl_queue_ms.load(Ordering::Relaxed),
+                            METRICS.audio_opus_pending.load(Ordering::Relaxed),
+                            METRICS.audio_pcm_pending.load(Ordering::Relaxed),
+                            METRICS.audio_rtp_gaps.load(Ordering::Relaxed),
+                            METRICS.audio_rtp_late.load(Ordering::Relaxed),
+                            METRICS.audio_rtp_lost.load(Ordering::Relaxed),
+                            METRICS.audio_latency_trims.load(Ordering::Relaxed),
+                            METRICS.audio_pcm_discarded.load(Ordering::Relaxed),
+                        ))
+                        .color(theme.text_bright)
+                        .size(15.0),
+                    );
                     ui.label(
                         egui::RichText::new(&streaming.status)
                             .color(theme.text)

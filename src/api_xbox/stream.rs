@@ -239,7 +239,17 @@ impl Stream {
 
 fn check_exchange_error(value: &Value) -> Result<()> {
     if let Some(error_details) = value.get("errorDetails").filter(|v| !v.is_null()) {
-        anyhow::bail!("xCloud exchange failed: {error_details}");
+        // xHome can return an errorDetails *object* with both fields null on a
+        // successful SDP/ICE exchange. Only this empty placeholder is benign;
+        // unknown fields or an actual code/message must still fail signaling.
+        let empty_placeholder = error_details.as_object().is_some_and(|fields| {
+            fields.len() == 2
+                && fields.get("code").is_some_and(Value::is_null)
+                && fields.get("message").is_some_and(Value::is_null)
+        });
+        if !empty_placeholder {
+            anyhow::bail!("xCloud exchange failed: {error_details}");
+        }
     }
     Ok(())
 }
@@ -337,6 +347,20 @@ fn normalize_remote_candidate(candidate: &str) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn empty_home_exchange_error_is_not_a_signaling_failure() {
+        assert!(check_exchange_error(&json!({
+            "errorDetails": {"code": null, "message": null},
+            "exchangeResponse": "answer"
+        })).is_ok());
+        assert!(check_exchange_error(&json!({
+            "errorDetails": {"code": "ExchangeFailed", "message": null}
+        })).is_err());
+        assert!(check_exchange_error(&json!({
+            "errorDetails": {"code": null, "message": null, "unexpected": "failure"}
+        })).is_err());
+    }
 
     #[test]
     fn serializes_local_ice_as_api_xbox_candidate_string() {
