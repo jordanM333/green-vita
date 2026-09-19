@@ -317,7 +317,11 @@ async fn run_session<B: super::session::RtcSessionBackend>(
         if let Some(frame) = session.video.latest_frame.take()
             && let Ok(mut latest) = latest_frame.lock()
         {
-            *latest = Some(frame);
+            if latest.replace(frame).is_some() {
+                crate::streaming::video::metrics::METRICS
+                    .handoff_replaced
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
         }
 
         if session.status != last_status || session.connection_state != last_connection_state {

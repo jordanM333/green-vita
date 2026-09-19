@@ -3,8 +3,8 @@ mod memory;
 pub(crate) mod metrics;
 mod worker;
 
-pub const STREAM_WIDTH: u32 = 960;
-pub const STREAM_HEIGHT: u32 = 540;
+pub const STREAM_WIDTH: u32 = 1280;
+pub const STREAM_HEIGHT: u32 = 720;
 // Preserve the stock Vita AVC decoder capacity independently of the requested stream size.
 pub const HW_DECODER_WIDTH: u32 = 1280;
 pub const HW_DECODER_HEIGHT: u32 = 720;
@@ -14,10 +14,11 @@ pub const HW_OUTPUT_HEIGHT: u32 = 544;
 pub use memory::reserve_decoder_cdram;
 pub use metrics::video_performance_summary;
 pub use worker::VideoDecodeWorker;
+pub(crate) use worker::SubmitResult;
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // Let a short render hitch absorb at most two 30 fps intervals. Together with the
 // frame already pending for presentation, this caps the microbuffer at three frames.
@@ -98,6 +99,7 @@ impl DirectVideoOutput {
     pub(super) fn lock_decode_target(&self) -> Option<DirectVideoTargetGuard<'_>> {
         let mut state = self.state.lock().ok()?;
         if state.pending.is_some() {
+            let wait_started = Instant::now();
             let (waited_state, _) = self
                 .frame_displayed
                 .wait_timeout_while(state, MAX_PENDING_TEXTURE_WAIT, |state| {
@@ -105,6 +107,13 @@ impl DirectVideoOutput {
                 })
                 .ok()?;
             state = waited_state;
+            let waited_us = wait_started.elapsed().as_micros() as u64;
+            metrics::METRICS.render_wait_sum_us.fetch_add(waited_us, Ordering::Relaxed);
+            metrics::METRICS.render_wait_count.fetch_add(1, Ordering::Relaxed);
+            metrics::METRICS.render_wait_max_us.fetch_max(waited_us, Ordering::Relaxed);
+            if state.pending.is_some() {
+                metrics::METRICS.render_backlog.fetch_add(1, Ordering::Relaxed);
+            }
         }
         let targets = state.targets?;
         let index = state
@@ -127,6 +136,9 @@ pub(super) struct DirectVideoTargetGuard<'a> {
 
 impl DirectVideoTargetGuard<'_> {
     pub(super) fn publish(mut self) -> (usize, u64) {
+        if self.state.pending.is_some() {
+            metrics::METRICS.texture_superseded.fetch_add(1, Ordering::Relaxed);
+        }
         self.state.next_generation = self.state.next_generation.wrapping_add(1);
         let generation = self.state.next_generation;
         self.state.pending = Some((self.index, generation));

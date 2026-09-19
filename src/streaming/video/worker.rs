@@ -26,6 +26,12 @@ enum DecoderCommand {
 
 pub(crate) type DecodeResult = Result<DecodedFrame, String>;
 
+pub(crate) enum SubmitResult {
+    Submitted,
+    QueueFull,
+    Disconnected,
+}
+
 pub struct VideoDecodeWorker {
     access_units: Sender<QueuedAccessUnit>,
     commands: Sender<DecoderCommand>,
@@ -76,7 +82,11 @@ impl VideoDecodeWorker {
         })
     }
 
-    pub fn submit_access_unit(&self, data: Vec<u8>, source_frame_duration_us: Option<u64>) -> bool {
+    pub fn submit_access_unit(
+        &self,
+        data: Vec<u8>,
+        source_frame_duration_us: Option<u64>,
+    ) -> SubmitResult {
         let source_fps = source_frame_duration_us
             .filter(|duration| *duration > 0)
             .map(|duration| 1_000_000 / duration)
@@ -90,7 +100,7 @@ impl VideoDecodeWorker {
         let pending_limit = MIN_PENDING_ACCESS_UNITS + extra_capacity as usize;
         if self.access_units.len() >= pending_limit {
             metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
-            return false;
+            return SubmitResult::QueueFull;
         }
 
         let access_unit = QueuedAccessUnit {
@@ -99,12 +109,17 @@ impl VideoDecodeWorker {
             generation: self.generation.load(Ordering::Acquire),
         };
         match self.access_units.try_send(access_unit) {
-            Ok(()) => true,
+            Ok(()) => {
+                let depth = self.access_units.len() as u64;
+                metrics::METRICS.au_queue_depth.store(depth, Ordering::Relaxed);
+                metrics::METRICS.au_queue_max.fetch_max(depth, Ordering::Relaxed);
+                SubmitResult::Submitted
+            }
             Err(TrySendError::Full(_)) => {
                 metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
-                false
+                SubmitResult::QueueFull
             }
-            Err(TrySendError::Disconnected(_)) => false,
+            Err(TrySendError::Disconnected(_)) => SubmitResult::Disconnected,
         }
     }
 
@@ -163,6 +178,7 @@ fn run_decode_loop(
             },
             recv(access_units) -> access_unit => {
                 let Ok(access_unit) = access_unit else { break };
+                metrics::METRICS.au_queue_depth.store(access_units.len() as u64, Ordering::Relaxed);
                 decode_queued_access_unit(
                     &mut decoder,
                     config,
@@ -187,6 +203,7 @@ fn decode_queued_access_unit(
     direct_output: &DirectVideoOutput,
 ) {
     if access_unit.generation != generation.load(Ordering::Acquire) {
+        metrics::METRICS.stale_generation.fetch_add(1, Ordering::Relaxed);
         return;
     }
 
@@ -194,6 +211,7 @@ fn decode_queued_access_unit(
         match HwVideoDecoder::new(config) {
             Ok(new_decoder) => *decoder = Some(new_decoder),
             Err(error) => {
+                metrics::METRICS.decoder_unavailable.fetch_add(1, Ordering::Relaxed);
                 publish_result(
                     latest_result,
                     result_ready,
@@ -210,6 +228,10 @@ fn decode_queued_access_unit(
         metrics::METRICS.skipped.fetch_add(1, Ordering::Relaxed);
         return;
     };
+    let age_us = access_unit.queued_at.elapsed().as_micros() as u64;
+    metrics::METRICS.au_age_sum_us.fetch_add(age_us, Ordering::Relaxed);
+    metrics::METRICS.au_age_count.fetch_add(1, Ordering::Relaxed);
+    metrics::METRICS.au_age_max_us.fetch_max(age_us, Ordering::Relaxed);
     // Measure the hardware call and contain an unexpected decoder panic inside its worker.
     metrics::METRICS.decode_calls.fetch_add(1, Ordering::Relaxed);
     let decode_started_at = Instant::now();
@@ -224,6 +246,7 @@ fn decode_queued_access_unit(
         Ordering::Relaxed,
     );
     if access_unit.generation != generation.load(Ordering::Acquire) {
+        metrics::METRICS.stale_generation.fetch_add(1, Ordering::Relaxed);
         return;
     }
 

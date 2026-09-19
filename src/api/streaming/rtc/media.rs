@@ -17,7 +17,20 @@ struct VideoStats {
     assembled: u64,
     submitted: u64,
     dropped: u64,
-    over_capacity: u64,
+    missing_sequence: u64,
+    incomplete_fua: u64,
+    malformed: u64,
+    queue_full: u64,
+    sps_rejected: u64,
+    idr_wait: u64,
+    other: u64,
+    sequence_jumps: u64,
+    estimated_missing_packets: u64,
+    late_packets: u64,
+    duplicate_packets: u64,
+    empty_packets: u64,
+    idr: u64,
+    post_damage_submitted: u64,
     decode_errors: u64,
     last_decode_error: Option<String>,
     last_sample_duration_us: Option<u64>,
@@ -77,22 +90,28 @@ impl VideoReceiver {
         self.received_packet = true;
         self.stats.packets = self.stats.packets.saturating_add(1);
         let sample_stats = self.rtp.receive(&self.decoder, packet, keyframe_requested);
-        self.stats.assembled = self
-            .stats
-            .assembled
-            .saturating_add(sample_stats.assembled as u64);
-        self.stats.submitted = self
-            .stats
-            .submitted
-            .saturating_add(sample_stats.submitted as u64);
-        self.stats.dropped = self
-            .stats
-            .dropped
-            .saturating_add(sample_stats.dropped as u64);
-        self.stats.over_capacity = self
-            .stats
-            .over_capacity
-            .saturating_add(sample_stats.over_capacity as u64);
+        macro_rules! add {
+            ($field:ident) => {
+                self.stats.$field = self.stats.$field.saturating_add(sample_stats.$field as u64);
+            };
+        }
+        add!(assembled);
+        add!(submitted);
+        add!(dropped);
+        add!(missing_sequence);
+        add!(incomplete_fua);
+        add!(malformed);
+        add!(queue_full);
+        add!(sps_rejected);
+        add!(idr_wait);
+        add!(other);
+        add!(sequence_jumps);
+        add!(estimated_missing_packets);
+        add!(late_packets);
+        add!(duplicate_packets);
+        add!(empty_packets);
+        add!(idr);
+        add!(post_damage_submitted);
         if sample_stats.source_frame_duration_us.is_some() {
             self.stats.last_sample_duration_us = sample_stats.source_frame_duration_us;
         }
@@ -113,7 +132,11 @@ impl VideoReceiver {
             match result {
                 Ok(frame) => {
                     self.next_frame_id = self.next_frame_id.wrapping_add(1);
-                    self.latest_frame = Some((self.next_frame_id, frame));
+                    if self.latest_frame.replace((self.next_frame_id, frame)).is_some() {
+                        crate::streaming::video::metrics::METRICS
+                            .handoff_replaced
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
                 }
                 Err(error) => {
                     eprintln!("Failed to decode H264 video frame: {error}");
@@ -162,6 +185,11 @@ impl VideoReceiver {
             .encoded_resolution
             .map(|(width, height)| format!("{width}x{height}"))
             .unwrap_or_else(|| "?".to_owned());
+        let idr_age = self
+            .rtp
+            .idr_age_secs()
+            .map(|age| format!("{age}s"))
+            .unwrap_or_else(|| "?".to_owned());
         let config = self.decoder_config;
         let last_error = self
             .stats
@@ -171,17 +199,32 @@ impl VideoReceiver {
             .unwrap_or_default();
         Some(format!(
             "SPS:{encoded_resolution} decoder:{}x{} output:{}x{} source-fps:{source_fps}\n\
-             RTP packets:{} AUs:{} submitted:{} dropped:{} too-big:{} wait:{}\n\
-             {performance} errors:{}{last_error}",
+             RTP pk:{} jump:{}/~{} late:{} dup:{} empty:{}\n\
+             AU done:{} sent:{} drop:{} seq:{} FU:{} mal:{} q:{} SPS:{} IDRwait:{} other:{}\n\
+             IDR count:{} age:{idr_age} postDamageSent:{} wait:{} decoderErr:{}\n\
+             {performance}{last_error}",
             config.decode_width,
             config.decode_height,
             config.output_width,
             config.output_height,
             self.stats.packets,
+            self.stats.sequence_jumps,
+            self.stats.estimated_missing_packets,
+            self.stats.late_packets,
+            self.stats.duplicate_packets,
+            self.stats.empty_packets,
             self.stats.assembled,
             self.stats.submitted,
             self.stats.dropped,
-            self.stats.over_capacity,
+            self.stats.missing_sequence,
+            self.stats.incomplete_fua,
+            self.stats.malformed,
+            self.stats.queue_full,
+            self.stats.sps_rejected,
+            self.stats.idr_wait,
+            self.stats.other,
+            self.stats.idr,
+            self.stats.post_damage_submitted,
             u8::from(self.rtp.waiting_for_keyframe()),
             self.stats.decode_errors,
         ))
