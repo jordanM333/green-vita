@@ -101,6 +101,8 @@ pub struct Settings {
     pub locale: Locale,
     /// Shows internal stream/session state on the `Streaming` screen. Off by default.
     pub show_stream_debug_info: bool,
+    /// Globally swaps only the rear L2/L3 and R2/R3 zones; front touch is unchanged.
+    pub swap_rear_touch_trigger_stick: bool,
     pub game_profiles: HashMap<String, GameProfile>,
 }
 
@@ -130,6 +132,7 @@ impl Default for Settings {
         Self {
             locale: Locale::default(),
             show_stream_debug_info: false,
+            swap_rear_touch_trigger_stick: false,
             game_profiles: HashMap::new(),
         }
     }
@@ -191,5 +194,19 @@ impl Settings {
         if let Err(error) = result {
             eprintln!("Settings: failed to save: {error:#}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+
+    #[test]
+    fn older_settings_keep_profiles_and_default_to_original_rear_layout() {
+        let saved = r#"{"show_stream_debug_info":true,"game_profiles":{"game-id":{"rear_touch_enabled":false}}}"#;
+        let settings: Settings = serde_json::from_str(saved).unwrap();
+        assert!(!settings.swap_rear_touch_trigger_stick);
+        assert!(settings.show_stream_debug_info);
+        assert!(!settings.game_profile("game-id").unwrap().rear_touch_enabled);
     }
 }

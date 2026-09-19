@@ -22,8 +22,9 @@
 
 
 > [!NOTE]
-> Local console streaming has not been tested because I do not have a modern
-> Xbox console available for validation.
+> Xbox Home/Remote Play is experimental. The Home token, console discovery,
+> session start, and WebRTC path are wired up, but a physical Xbox is needed to
+> validate streaming and troubleshoot console-specific failures.
 
 ## Install
 
@@ -35,6 +36,15 @@ access to Xbox Cloud Gaming.
 2. Transfer the VPK to the Vita.
 3. Install it with VitaShell.
 4. Launch GreenVita and complete the device-code sign-in.
+
+To try Home streaming, enable Remote features on the Xbox, sign into GreenVita
+with the same Microsoft account, choose **Home**, then select your console. If
+the console does not appear or the stream fails, record the displayed error;
+this path is not yet confirmed to work on a physical Xbox.
+
+The global **Swap L2/L3 and R2/R3 on rear touch** setting changes only the rear
+panel layout. It is off by default; the front touch panel and physical buttons
+keep their normal mapping.
 
 > [!IMPORTANT]
 > Enable **Unsafe Homebrew** in HENkaku Settings. GreenVita needs access to the

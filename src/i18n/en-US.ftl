@@ -16,6 +16,8 @@ settings-cloud = Cloud
 settings-home = Home
 settings-locale = Locale
 settings-game = Game settings
+settings-input = Input settings
+settings-swap-rear-touch-trigger-stick = Swap L2/L3 and R2/R3 on rear touch
 settings-swap-shoulders-triggers = Swap L1/L2 and R1/R2
 settings-front-touch-auxiliary-buttons = Use front touch for L2/R2/L3/R3 instead of mouse
 settings-rear-touch-enabled = Enable rear touch controls
@@ -25,7 +27,7 @@ settings-stream-debug-info = Show streaming debug info
 action-back = Back
 
 mode-select-cloud-subtitle = Stream Xbox Cloud Gaming titles
-mode-select-home-subtitle = Not implemented yet — use xVita for now
+mode-select-home-subtitle-experimental = Stream from your home Xbox (experimental)
 
 paused-resume = Return to game
 paused-xbox-button = Xbox button

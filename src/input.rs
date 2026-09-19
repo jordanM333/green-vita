@@ -122,6 +122,7 @@ pub fn read_gamepad_frame(
     touch_buttons: &RearTouchButtons,
     rear_touch_enabled: bool,
     front_touch_auxiliary_buttons: bool,
+    swap_rear_touch_trigger_stick: bool,
 ) -> Option<GamepadFrame> {
     let controller = controller?;
     let button = |b: Button| f32::from(controller.button(b));
@@ -146,6 +147,7 @@ pub fn read_gamepad_frame(
                     RearTouchButton::L3,
                     rear_touch_enabled,
                     front_touch_auxiliary_buttons,
+                    swap_rear_touch_trigger_stick,
                 ),
         ),
         right_thumb: f32::from(
@@ -154,6 +156,7 @@ pub fn read_gamepad_frame(
                     RearTouchButton::R3,
                     rear_touch_enabled,
                     front_touch_auxiliary_buttons,
+                    swap_rear_touch_trigger_stick,
                 ),
         ),
         left_thumb_x_axis: axis_to_f32(controller.axis(Axis::LeftX)),
@@ -170,6 +173,7 @@ pub fn read_gamepad_frame(
                 RearTouchButton::L2,
                 rear_touch_enabled,
                 front_touch_auxiliary_buttons,
+                swap_rear_touch_trigger_stick,
             ),
         ),
         right_trigger: trigger_value(
@@ -182,6 +186,7 @@ pub fn read_gamepad_frame(
                 RearTouchButton::R2,
                 rear_touch_enabled,
                 front_touch_auxiliary_buttons,
+                swap_rear_touch_trigger_stick,
             ),
         ),
     })
@@ -284,13 +289,53 @@ impl RearTouchButtons {
         }
     }
 
-    fn pressed(&self, button: RearTouchButton, include_rear: bool, include_front: bool) -> bool {
-        (include_rear && self.rear_fingers.values().any(|pressed| *pressed == button))
+    fn pressed(
+        &self,
+        button: RearTouchButton,
+        include_rear: bool,
+        include_front: bool,
+        swap_rear_trigger_stick: bool,
+    ) -> bool {
+        // Only the rear surface changes layout. Front auxiliary zones and physical controls
+        // keep their existing mapping, including when multiple fingers are held down.
+        let rear_button = if swap_rear_trigger_stick {
+            match button {
+                RearTouchButton::L2 => RearTouchButton::L3,
+                RearTouchButton::L3 => RearTouchButton::L2,
+                RearTouchButton::R2 => RearTouchButton::R3,
+                RearTouchButton::R3 => RearTouchButton::R2,
+            }
+        } else {
+            button
+        };
+        (include_rear && self.rear_fingers.values().any(|pressed| *pressed == rear_button))
             || (include_front
                 && self
                     .front_fingers
                     .values()
                     .any(|pressed| *pressed == button))
+    }
+}
+
+#[cfg(test)]
+mod rear_layout_tests {
+    use super::{RearTouchButton, RearTouchButtons};
+
+    #[test]
+    fn swaps_each_rear_trigger_and_thumb_without_swapping_front_touch() {
+        let mut buttons = RearTouchButtons::default();
+        buttons.rear_fingers.insert(1, RearTouchButton::L2);
+        buttons.rear_fingers.insert(2, RearTouchButton::R3);
+        buttons.front_fingers.insert(3, RearTouchButton::R2);
+
+        assert!(buttons.pressed(RearTouchButton::L3, true, false, true));
+        assert!(buttons.pressed(RearTouchButton::R2, true, false, true));
+        assert!(!buttons.pressed(RearTouchButton::L2, true, false, true));
+        assert!(!buttons.pressed(RearTouchButton::R3, true, false, true));
+        assert!(buttons.pressed(RearTouchButton::R2, false, true, true));
+        assert!(!buttons.pressed(RearTouchButton::R3, false, true, true));
+        assert!(buttons.pressed(RearTouchButton::L2, true, false, false));
+        assert!(buttons.pressed(RearTouchButton::R3, true, false, false));
     }
 }
 

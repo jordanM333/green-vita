@@ -49,7 +49,7 @@ fn mode_card(
 ) -> bool {
     let (title_key, subtitle_key) = match kind {
         StreamKind::Cloud => ("settings-cloud", "mode-select-cloud-subtitle"),
-        StreamKind::Home => ("settings-home", "mode-select-home-subtitle"),
+        StreamKind::Home => ("settings-home", "mode-select-home-subtitle-experimental"),
     };
 
     let (rect, response) = ui.allocate_exact_size(

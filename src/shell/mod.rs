@@ -297,6 +297,7 @@ fn send_stream_gamepad_state(
         rear_touch_buttons,
         rear_touch_enabled,
         front_touch_auxiliary_buttons,
+        settings.swap_rear_touch_trigger_stick,
     ) else {
         return;
     };

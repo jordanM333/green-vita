@@ -268,3 +268,18 @@ fn collect_session_paths(value: &Value, output: &mut Vec<String>) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ConsolesResponse, StreamKind};
+
+    #[test]
+    fn home_console_response_preserves_server_id() {
+        let response: ConsolesResponse = serde_json::from_str(
+            r#"{"results":[{"deviceName":"Living room Xbox","serverId":"console-123","powerState":"On","consoleType":"XboxSeriesX"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(StreamKind::Home.as_path(), "home");
+        assert_eq!(response.results[0].server_id, "console-123");
+    }
+}

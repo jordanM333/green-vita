@@ -15,6 +15,7 @@ pub enum Command {
     SetSwapShouldersAndTriggers { title_id: String, enabled: bool },
     SetRearTouchEnabled { title_id: String, enabled: bool },
     SetFrontTouchAuxiliaryButtons { title_id: String, enabled: bool },
+    SetSwapRearTouchTriggerStick(bool),
     SetShowStreamDebugInfo(bool),
 }
 
@@ -22,6 +23,7 @@ pub enum Command {
 enum SettingsRow {
     LocaleToggle,
     LocaleOption(Locale),
+    RearTouchLayout(bool),
     GameSwap { title_id: String, enabled: bool },
     GameRearTouch { title_id: String, enabled: bool },
     GameFrontTouchAuxiliary { title_id: String, enabled: bool },
@@ -43,6 +45,9 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     if *locale_expanded {
         rows.extend(Locale::ALL.iter().copied().map(SettingsRow::LocaleOption));
     }
+    rows.push(SettingsRow::RearTouchLayout(
+        app.settings.swap_rear_touch_trigger_stick,
+    ));
     if let Some(title_id) = title_id.clone() {
         let enabled = app
             .settings
@@ -127,6 +132,26 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                         row_index += 1;
                     }
                 }
+
+                ui.add_space(14.0);
+                ui.separator();
+                ui.heading(
+                    egui::RichText::new(i18n.text("settings-input")).color(theme.text_bright),
+                );
+                if checkbox_row(
+                    ui,
+                    selected_index == row_index,
+                    app.settings.swap_rear_touch_trigger_stick,
+                    i18n.text("settings-swap-rear-touch-trigger-stick"),
+                ) {
+                    commands.push(
+                        Command::SetSwapRearTouchTriggerStick(
+                            !app.settings.swap_rear_touch_trigger_stick,
+                        )
+                        .into(),
+                    );
+                }
+                row_index += 1;
 
                 if let Some(title_id) = title_id.clone() {
                     let swap_shoulders_and_triggers = app
@@ -374,6 +399,11 @@ impl App {
             SettingsRow::LocaleOption(locale) => {
                 return self.handle_settings_command(Command::SetLocale(*locale));
             }
+            SettingsRow::RearTouchLayout(enabled) => {
+                return self.handle_settings_command(Command::SetSwapRearTouchTriggerStick(
+                    !enabled,
+                ));
+            }
             SettingsRow::GameSwap { title_id, enabled } => {
                 return self.handle_settings_command(Command::SetSwapShouldersAndTriggers {
                     title_id: title_id.clone(),
@@ -464,6 +494,10 @@ impl App {
             Command::SetFrontTouchAuxiliaryButtons { title_id, enabled } => {
                 self.settings
                     .set_front_touch_auxiliary_buttons(title_id, enabled);
+                self.settings.save();
+            }
+            Command::SetSwapRearTouchTriggerStick(enabled) => {
+                self.settings.swap_rear_touch_trigger_stick = enabled;
                 self.settings.save();
             }
             Command::SetShowStreamDebugInfo(enabled) => {
