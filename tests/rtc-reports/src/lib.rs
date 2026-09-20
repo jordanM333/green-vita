@@ -4,3 +4,5 @@ extern crate self as rtc;
 pub use {interceptor, rtp, rtcp, shared, sansio};
 #[path = "../../../src/api/streaming/rtc/reports.rs"]
 mod reports;
+#[path = "../../../src/api/streaming/rtc/clock.rs"]
+mod clock;

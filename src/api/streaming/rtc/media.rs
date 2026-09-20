@@ -42,7 +42,7 @@ pub(crate) struct VideoReceiver {
     receiver_id: Option<RTCRtpReceiverId>,
     ssrc: Option<u32>,
     rtp: rtp::VideoRtp,
-    order: super::reorder::PacketOrder<Packet>,
+    order: super::reorder::PacketOrder<(Packet, Instant)>,
     pub(crate) decoder: VideoDecodeWorker,
     pub(crate) latest_frame: Option<(u64, DecodedFrame)>,
     next_frame_id: u64,
@@ -96,20 +96,20 @@ impl VideoReceiver {
         self.stats.packets = self.stats.packets.saturating_add(1);
         let now = Instant::now();
         self.flush_order(now, keyframe_requested);
-        if let Some(packet) = self.order.push(packet.header.sequence_number, packet, now) {
-            self.receive_ordered(packet, keyframe_requested);
+        if let Some((packet, received_at)) = self.order.push(packet.header.sequence_number, (packet, now), now) {
+            self.receive_ordered(packet, received_at, keyframe_requested);
         }
         self.flush_order(now, keyframe_requested);
     }
 
     fn flush_order(&mut self, now: Instant, keyframe_requested: &mut bool) {
-        while let Some(packet) = self.order.pop(now) {
-            self.receive_ordered(packet, keyframe_requested);
+        while let Some((packet, received_at)) = self.order.pop(now) {
+            self.receive_ordered(packet, received_at, keyframe_requested);
         }
     }
 
-    fn receive_ordered(&mut self, packet: Packet, keyframe_requested: &mut bool) {
-        let sample_stats = self.rtp.receive(&self.decoder, packet, keyframe_requested);
+    fn receive_ordered(&mut self, packet: Packet, received_at: Instant, keyframe_requested: &mut bool) {
+        let sample_stats = self.rtp.receive_at(&self.decoder, packet, received_at, keyframe_requested);
         macro_rules! add {
             ($field:ident) => {
                 self.stats.$field = self.stats.$field.saturating_add(sample_stats.$field as u64);
@@ -141,6 +141,7 @@ impl VideoReceiver {
     }
 
     pub(crate) fn drain_decoder(&mut self, keyframe_requested: &mut bool) {
+        *keyframe_requested |= self.rtp.recover_decoder(&self.decoder);
         self.flush_order(Instant::now(), keyframe_requested);
         let mut decode_errors = 0u64;
         while let Some(result) = self
@@ -170,7 +171,6 @@ impl VideoReceiver {
 
         if decode_errors > 0 {
             self.stats.decode_errors = self.stats.decode_errors.saturating_add(decode_errors);
-            self.decoder.reset_decoder();
             self.rtp.wait_for_keyframe();
         }
     }

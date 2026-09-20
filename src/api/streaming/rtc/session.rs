@@ -79,6 +79,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         let transport =
             RtcTransport::bind(&mut peer, config.stun_server, config.route_probe).await?;
         let video = VideoReceiver::new(config.decoder, direct_output)?;
+        crate::streaming::video::trace::reset();
 
         Ok(Self {
             peer,
@@ -118,6 +119,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     }
 
     pub fn close(&mut self) -> Result<()> {
+        crate::streaming::video::trace::save(&self.status);
         self.peer
             .close()
             .context("failed to close rtc peer connection")
@@ -295,6 +297,13 @@ impl<B: RtcSessionBackend> RtcSession<B> {
 
     fn handle_peer_messages(&mut self) -> bool {
         let mut keyframe_requested = false;
+        for (clock_rate, report) in super::reports::take_clock_reports() {
+            if clock_rate == 90_000 {
+                self.video_clock.sender_report(&report);
+            } else {
+                self.audio_clock.sender_report(&report);
+            }
+        }
         while let Some(message) = self.peer.poll_read() {
             match message {
                 RTCMessage::RtpPacket(track_id, packet) => {
@@ -340,6 +349,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         }
 
         self.last_keyframe_request = Some(now);
+        crate::streaming::video::trace::record("keyframe_request", 0, 0);
         self.backend.notify_keyframe_requested(&mut self.peer);
         self.video.request_keyframe(&mut self.peer);
     }

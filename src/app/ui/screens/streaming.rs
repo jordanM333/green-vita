@@ -47,45 +47,21 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                     .fill(egui::Color32::from_black_alpha(192))
                     .inner_margin(egui::Margin::same(6))
                     .show(ui, |ui| {
-                        let buttons = METRICS.local_button_mask.load(Ordering::Relaxed);
-                        let stick = METRICS.local_left_stick.load(Ordering::Relaxed);
-                        let lx = stick as u16 as i16;
-                        let ly = (stick >> 16) as u16 as i16;
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "LIVE A:{} B:{} RT:{} LX:{lx:+} LY:{ly:+} | input accepted:{} failed:{}",
-                                buttons & 1,
-                                (buttons >> 1) & 1,
-                                (buttons >> 2) & 1,
-                                METRICS.input_sent_total.load(Ordering::Relaxed),
-                                METRICS.input_failed_total.load(Ordering::Relaxed),
-                            ))
-                            .color(egui::Color32::LIGHT_GREEN)
-                            .size(15.0),
-                        );
-                        // Put the audio latency readings where a normal phone recording can
-                        // capture them; the full detailed log remains below for still photos.
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "Audio RTPbuf:{}ms SDL:{}ms Opus/PCM:{}/{} gaps:{} late:{} lost:{} trim:{} skip:{}",
-                                METRICS.audio_rtp_backlog_ms.load(Ordering::Relaxed),
-                                METRICS.audio_sdl_queue_ms.load(Ordering::Relaxed),
-                                METRICS.audio_opus_pending.load(Ordering::Relaxed),
-                                METRICS.audio_pcm_pending.load(Ordering::Relaxed),
-                                METRICS.audio_rtp_gaps.load(Ordering::Relaxed),
-                                METRICS.audio_rtp_late.load(Ordering::Relaxed),
-                                METRICS.audio_rtp_lost.load(Ordering::Relaxed),
-                                METRICS.audio_latency_trims.load(Ordering::Relaxed),
-                                METRICS.audio_pcm_discarded.load(Ordering::Relaxed),
-                            ))
-                            .color(theme.text_bright)
-                            .size(15.0),
-                        );
-                        ui.label(
-                            egui::RichText::new(&streaming.status)
-                                .color(theme.text)
-                                .size(11.0),
-                        );
+                        // Full details go to the flight-recorder status file on exit.
+                        // Use the once-per-second status; no duplicate
+                        // live counters or twenty-line diagnostic paint every frame.
+                        let compact = streaming.status.lines().filter(|line| {
+                            ["SPS:", "AU done:", "Q depth", "FPS hw", "Link ICE:", "Video payload:"]
+                                .iter().any(|prefix| line.starts_with(prefix))
+                        }).map(|line| line.chars().take(115).collect::<String>())
+                            .collect::<Vec<_>>().join("\n");
+                        ui.label(egui::RichText::new(format!("STREAM V2 · decode queue: 3 AU / 50ms\n{compact}"))
+                            .color(theme.text).size(12.0));
+                        ui.label(egui::RichText::new(format!(
+                            "Audio queued:{}ms | A:{} | diagnostics: pause menu",
+                            METRICS.audio_sdl_queue_ms.load(Ordering::Relaxed),
+                            METRICS.local_button_mask.load(Ordering::Relaxed) & 1,
+                        )).color(theme.text_bright).size(12.0));
                     });
                 ui.add_space(12.0);
             });

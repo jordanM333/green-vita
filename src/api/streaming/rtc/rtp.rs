@@ -1,4 +1,5 @@
 use crate::streaming::video::{SubmitResult, VideoDecodeWorker};
+use crate::streaming::video::policy::Recovery;
 use bytes::Bytes;
 use h264_reader::annexb::AnnexBReader;
 use h264_reader::nal::sps::SeqParameterSet;
@@ -16,8 +17,6 @@ const MAX_PENDING_AUDIO_PACKETS: usize = 32;
 const MAX_H264_ACCESS_UNIT_BYTES: usize = 2 * 1024 * 1024;
 const VIDEO_RTP_CLOCK_RATE: u32 = 90_000;
 const AUDIO_MAX_LATE_PACKETS: u16 = 32;
-const LOW_FPS_DAMAGE_LIMIT: u8 = 8;
-const HIGH_FPS_DAMAGE_LIMIT: u8 = 3;
 
 #[derive(Default)]
 pub(super) struct VideoSampleStats {
@@ -55,6 +54,7 @@ enum DropReason {
 
 impl VideoSampleStats {
     fn record_drop(&mut self, reason: DropReason) {
+        crate::streaming::video::trace::record("au_drop_reason", 0, reason as u64);
         self.dropped = self.dropped.saturating_add(1);
         let counter = match reason {
             DropReason::MissingSequence => &mut self.missing_sequence,
@@ -151,9 +151,8 @@ pub(super) struct VideoRtp {
     next_sequence: Option<u16>,
     last_frame_timestamp: Option<u32>,
     source_frame_duration_us: Option<u64>,
-    damage_score: u8,
     stream_too_large: bool,
-    waiting_for_keyframe: bool,
+    recovery: Recovery,
     decoder_capacity: (u32, u32),
     last_sps_resolution: Option<(u32, u32)>,
     last_arrival_sequence: Option<u16>,
@@ -165,6 +164,8 @@ struct PendingVideoFrame {
     timestamp: u32,
     first_packet_at: Instant,
     packets: Vec<Packet>,
+    marker: Option<u16>,
+    bytes: usize,
 }
 
 enum FrameAssembly {
@@ -175,19 +176,26 @@ enum FrameAssembly {
 
 impl PendingVideoFrame {
     fn new(packet: Packet) -> Self {
+        let marker = packet.header.marker.then_some(packet.header.sequence_number);
+        let bytes = packet.payload.len();
         Self {
             timestamp: packet.header.timestamp,
             first_packet_at: Instant::now(),
             packets: vec![packet],
+            marker,
+            bytes,
         }
     }
 
     fn insert(&mut self, packet: Packet) -> bool {
-        if !self
-            .packets
-            .iter()
-            .any(|existing| existing.header.sequence_number == packet.header.sequence_number)
-        {
+        // PacketOrder has already emitted strictly increasing sequence numbers.
+        // Do not scan and sort an ever-growing AU on every arriving fragment.
+        if self.packets.last().is_none_or(|previous| {
+            let forward = packet.header.sequence_number.wrapping_sub(previous.header.sequence_number);
+            forward > 0 && forward < (1 << 15)
+        }) {
+            self.bytes = self.bytes.saturating_add(packet.payload.len());
+            if packet.header.marker { self.marker = Some(packet.header.sequence_number); }
             self.packets.push(packet);
             true
         } else {
@@ -196,10 +204,7 @@ impl PendingVideoFrame {
     }
 
     fn marker_sequence(&self) -> Option<u16> {
-        self.packets
-            .iter()
-            .find(|packet| packet.header.marker)
-            .map(|packet| packet.header.sequence_number)
+        self.marker
     }
 
     fn abandonment_reason(&self, expected_sequence: Option<u16>) -> DropReason {
@@ -248,10 +253,7 @@ impl PendingVideoFrame {
         let Some(marker_sequence) = self.marker_sequence() else {
             return FrameAssembly::Pending;
         };
-        let mut packets = self.packets.iter().collect::<Vec<_>>();
-        packets.sort_unstable_by_key(|packet| {
-            std::cmp::Reverse(marker_sequence.wrapping_sub(packet.header.sequence_number))
-        });
+        let packets = self.packets.iter().collect::<Vec<_>>();
         let Some(first) = packets.first() else {
             return FrameAssembly::Pending;
         };
@@ -368,9 +370,8 @@ impl VideoRtp {
             next_sequence: None,
             last_frame_timestamp: None,
             source_frame_duration_us: None,
-            damage_score: 0,
             stream_too_large: false,
-            waiting_for_keyframe: false,
+            recovery: Recovery::default(),
             decoder_capacity: (decode_width, decode_height),
             last_sps_resolution: None,
             last_arrival_sequence: None,
@@ -380,11 +381,19 @@ impl VideoRtp {
     }
 
     pub(super) fn waiting_for_keyframe(&self) -> bool {
-        self.waiting_for_keyframe
+        self.recovery.waiting()
     }
 
     pub(super) fn wait_for_keyframe(&mut self) {
-        self.waiting_for_keyframe = true;
+        self.recovery.damage();
+    }
+
+    pub(super) fn recover_decoder(&mut self, worker: &VideoDecodeWorker) -> bool {
+        if worker.take_recovery_request() {
+            self.record_damage(worker);
+            return true;
+        }
+        false
     }
 
     pub(super) fn idr_age_secs(&self) -> Option<u64> {
@@ -397,8 +406,21 @@ impl VideoRtp {
         packet: Packet,
         keyframe_requested: &mut bool,
     ) -> VideoSampleStats {
+        self.receive_at(worker, packet, Instant::now(), keyframe_requested)
+    }
+
+    pub(super) fn receive_at(
+        &mut self,
+        worker: &VideoDecodeWorker,
+        packet: Packet,
+        received_at: Instant,
+        keyframe_requested: &mut bool,
+    ) -> VideoSampleStats {
         let mut stats = VideoSampleStats::default();
-        let mut frame_was_damaged = false;
+        if worker.take_recovery_request() {
+            self.record_damage(worker);
+            *keyframe_requested = true;
+        }
         let sequence = packet.header.sequence_number;
         let mut out_of_order = false;
         if let Some(previous) = self.last_arrival_sequence {
@@ -441,6 +463,7 @@ impl VideoRtp {
             }
             if let Some(incomplete) = self.pending.take() {
                 let reason = incomplete.abandonment_reason(self.next_sequence);
+                crate::streaming::video::trace::record("au_abandon", incomplete.timestamp, reason as u64);
                 self.last_frame_timestamp = Some(incomplete.timestamp);
                 self.next_sequence = incomplete
                     .marker_sequence()
@@ -448,7 +471,6 @@ impl VideoRtp {
                 self.depacketizer = H264Packet::default();
                 *keyframe_requested = true;
                 self.record_damage(worker);
-                frame_was_damaged = true;
                 self.suspect_reference = true;
                 stats.record_drop(reason);
             }
@@ -463,12 +485,31 @@ impl VideoRtp {
                 }
                 return stats;
             }
-            self.pending = Some(PendingVideoFrame::new(packet));
+            let mut pending = PendingVideoFrame::new(packet);
+            pending.first_packet_at = received_at;
+            crate::streaming::video::trace::record("au_first", pending.timestamp, 0);
+            self.pending = Some(pending);
         } else if let Some(pending) = &mut self.pending {
+            pending.first_packet_at = pending.first_packet_at.min(received_at);
             if !pending.insert(packet) {
                 stats.duplicate_packets = 1;
                 return stats;
             }
+        }
+
+        // Bound an AU even if its marker never arrives. The old byte limit ran
+        // only after complete assembly, allowing an unlimited pending packet list.
+        if self.pending.as_ref().is_some_and(|p| {
+            p.bytes > MAX_H264_ACCESS_UNIT_BYTES || p.packets.len() > 2048
+        }) {
+            if let Some(pending) = self.pending.take() {
+                self.last_frame_timestamp = Some(pending.timestamp);
+            }
+            self.next_sequence = None;
+            self.record_damage(worker);
+            *keyframe_requested = true;
+            stats.record_drop(DropReason::Other);
+            return stats;
         }
 
         let assembly = self
@@ -501,6 +542,8 @@ impl VideoRtp {
         };
         stats.assembled = 1;
         let completed = self.pending.take().expect("assembled pending video frame");
+        crate::streaming::video::trace::record("au_complete", completed.timestamp,
+            completed.first_packet_at.elapsed().as_micros() as u64);
         // Record both average and worst-case RTP assembly time for the stream HUD.
         let assembly_us = completed.first_packet_at.elapsed().as_micros() as u64;
         crate::streaming::video::metrics::METRICS
@@ -558,10 +601,7 @@ impl VideoRtp {
             // Flush queued decoder work once, then wait for a compatible IDR instead of feeding
             // frames that the Vita hardware cannot decode.
             *keyframe_requested = true;
-            if !self.waiting_for_keyframe {
-                worker.begin_resync();
-            }
-            self.waiting_for_keyframe = true;
+            self.record_damage(worker);
             self.suspect_reference = true;
             stats.record_drop(DropReason::SpsRejected);
             return stats;
@@ -569,27 +609,21 @@ impl VideoRtp {
         if self.stream_too_large {
             if unit.resolution.is_none() || !unit.has_idr {
                 *keyframe_requested = true;
-                self.waiting_for_keyframe = true;
+                self.record_damage(worker);
                 stats.record_drop(DropReason::IdrWait);
                 return stats;
             }
             self.stream_too_large = false;
         }
-        if self.waiting_for_keyframe {
-            // Later keyframes may contain only IDR; AVCDEC retains SPS/PPS across resyncs.
-            if !unit.has_idr {
-                *keyframe_requested = true;
-                stats.record_drop(DropReason::IdrWait);
-                return stats;
-            }
-            self.waiting_for_keyframe = false;
-            self.damage_score = 0;
-        } else if !frame_was_damaged {
-            self.damage_score = self.damage_score.saturating_sub(1);
+        if !self.recovery.accepts(unit.has_idr) {
+            *keyframe_requested = true;
+            stats.record_drop(DropReason::IdrWait);
+            return stats;
         }
 
-        match worker.submit_access_unit(data.to_vec(), self.source_frame_duration_us) {
+        match worker.submit_access_unit(data.to_vec(), completed.first_packet_at, completed.timestamp) {
             SubmitResult::Submitted => {
+                self.recovery.submitted(unit.has_idr);
                 stats.submitted = 1;
                 if unit.has_idr {
                     self.suspect_reference = false;
@@ -598,11 +632,13 @@ impl VideoRtp {
                 }
             }
             SubmitResult::QueueFull => {
+                self.record_damage(worker);
                 *keyframe_requested = true;
                 self.suspect_reference = true;
                 stats.record_drop(DropReason::QueueFull);
             }
             SubmitResult::Disconnected => {
+                self.record_damage(worker);
                 *keyframe_requested = true;
                 self.suspect_reference = true;
                 stats.record_drop(DropReason::Other);
@@ -612,33 +648,9 @@ impl VideoRtp {
     }
 
     fn record_damage(&mut self, worker: &VideoDecodeWorker) {
-        if self.waiting_for_keyframe {
-            return;
+        if self.recovery.damage() {
+            worker.begin_resync();
         }
-
-        self.damage_score = self.damage_score.saturating_add(1);
-        let source_fps = self
-            .source_frame_duration_us
-            .filter(|duration| *duration > 0)
-            .map(|duration| 1_000_000 / duration)
-            .unwrap_or(30);
-        let damage_limit = if source_fps <= 30 {
-            LOW_FPS_DAMAGE_LIMIT
-        } else if source_fps >= 60 {
-            HIGH_FPS_DAMAGE_LIMIT
-        } else {
-            LOW_FPS_DAMAGE_LIMIT
-                - (((source_fps - 30) * u64::from(LOW_FPS_DAMAGE_LIMIT - HIGH_FPS_DAMAGE_LIMIT)
-                    + 29)
-                    / 30) as u8
-        };
-        if self.damage_score < damage_limit {
-            return;
-        }
-
-        worker.begin_resync();
-        self.waiting_for_keyframe = true;
-        self.damage_score = 0;
     }
 }
 

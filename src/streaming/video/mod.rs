@@ -2,6 +2,8 @@ mod decoder;
 mod memory;
 pub(crate) mod metrics;
 mod worker;
+pub(crate) mod policy;
+pub(crate) mod trace;
 
 pub const STREAM_WIDTH: u32 = 1280;
 pub const STREAM_HEIGHT: u32 = 720;
@@ -86,10 +88,12 @@ impl DirectVideoOutput {
         let Ok(mut state) = self.state.lock() else {
             return None;
         };
-        let (index, _, decoded_at) = state.pending.take()?;
+        let (index, generation, decoded_at) = state.pending.take()?;
         let target = *state.targets.as_ref()?.get(index)?;
         state.displayed = Some(index);
         let age_us = decoded_at.elapsed().as_micros() as u64;
+        trace::record("texture_take_generation", 0, generation);
+        trace::record("texture_wait_us", 0, age_us);
         metrics::METRICS.display_age_sum_us.fetch_add(age_us, Ordering::Relaxed);
         metrics::METRICS.display_age_count.fetch_add(1, Ordering::Relaxed);
         metrics::METRICS.display_age_max_us.fetch_max(age_us, Ordering::Relaxed);

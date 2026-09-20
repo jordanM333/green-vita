@@ -270,6 +270,8 @@ impl VitaSurface {
         )?;
         let egui_us = paint_started.elapsed().as_micros() as u64;
         self.canvas.present();
+        crate::streaming::video::trace::record("present_return", 0,
+            paint_started.elapsed().as_micros() as u64);
         let paint_us = paint_started.elapsed().as_micros() as u64;
         let metrics = &crate::streaming::video::metrics::METRICS;
         metrics.egui_draw_sum_us.fetch_add(egui_us, Ordering::Relaxed);

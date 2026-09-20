@@ -37,6 +37,8 @@ impl RtpClockProbe {
     }
 
     pub(super) fn sender_report(&mut self, sr: &SenderReport) {
+        self.last_report_at = Some(Instant::now());
+        self.report_count += 1;
         let seconds = i128::from(sr.ntp_time >> 32);
         if seconds < NTP_UNIX_SECONDS {
             return;
@@ -44,8 +46,6 @@ impl RtpClockProbe {
         let fraction = i128::from(sr.ntp_time as u32);
         let unix_ms = (seconds - NTP_UNIX_SECONDS) * 1_000 + (fraction * 1_000 >> 32);
         self.report = Some((sr.rtp_time, unix_ms));
-        self.last_report_at = Some(Instant::now());
-        self.report_count += 1;
     }
 
     pub(super) fn receive(&mut self, timestamp: u32) {

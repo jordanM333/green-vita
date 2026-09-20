@@ -5,11 +5,19 @@ use rtc::interceptor::{Interceptor, NoopInterceptor, Packet, ReceiverReportBuild
 use rtc::sansio::Protocol;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 static BOUND: AtomicU64 = AtomicU64::new(0);
 static GENERATED: AtomicU64 = AtomicU64::new(0);
 static SENDER_REPORTS: AtomicU64 = AtomicU64::new(0);
+// The app owns one active RTC session. Keep only the latest report per SSRC;
+// the inner interceptor consumes RTCP, so observing RTCMessage is too late.
+static CLOCK_REPORTS: Mutex<Vec<(u32, rtc::rtcp::sender_report::SenderReport)>> = Mutex::new(Vec::new());
+
+pub(crate) fn take_clock_reports() -> Vec<(u32, rtc::rtcp::sender_report::SenderReport)> {
+    CLOCK_REPORTS.lock().map(|mut reports| std::mem::take(&mut *reports)).unwrap_or_default()
+}
 
 pub(crate) fn summary() -> String {
     format!("RR tracks:{} made:{} SRseen:{} REMB:disabled",
@@ -29,6 +37,7 @@ impl ReceiveReports {
         BOUND.store(0, Ordering::Relaxed);
         GENERATED.store(0, Ordering::Relaxed);
         SENDER_REPORTS.store(0, Ordering::Relaxed);
+        if let Ok(mut reports) = CLOCK_REPORTS.lock() { reports.clear(); }
         Self {
             inner: ReceiverReportBuilder::new().with_interval(Duration::from_secs(1)).build()(inner),
             clocks,
@@ -69,8 +78,14 @@ impl Protocol<TaggedPacket, TaggedPacket, ()> for ReceiveReports {
             }
             Packet::Rtcp(packets) => {
                 for packet in packets {
-                    if packet.as_any().is::<rtc::rtcp::sender_report::SenderReport>() {
+                    if let Some(sr) = packet.as_any().downcast_ref::<rtc::rtcp::sender_report::SenderReport>() {
                         SENDER_REPORTS.fetch_add(1, Ordering::Relaxed);
+                        if let Some(clock) = self.bound.get(&sr.ssrc)
+                            && let Ok(mut reports) = CLOCK_REPORTS.lock()
+                        {
+                            reports.retain(|(_, previous)| previous.ssrc != sr.ssrc);
+                            if reports.len() < 8 { reports.push((*clock, sr.clone())); }
+                        }
                     }
                 }
             }
@@ -174,5 +189,22 @@ mod tests {
         fixed.handle_read(packet(10, 102, 2, now)).unwrap();
         fixed.unbind_remote_stream(&StreamInfo { ssrc: 10, ..Default::default() });
         assert!(reports(&mut fixed, now + Duration::from_secs(2)).is_empty());
+    }
+
+    #[test]
+    fn sender_report_is_observed_before_the_inner_interceptor_consumes_it() {
+        let mut fixed = ReceiveReports::new(NoopInterceptor::new(), vec![(102, 90000)]);
+        let now = Instant::now();
+        fixed.handle_read(packet(10, 102, 1, now)).unwrap();
+        let sr = rtc::rtcp::sender_report::SenderReport {
+            ssrc: 10, rtp_time: 1500, ntp_time: 3_900_000_000_u64 << 32,
+            ..Default::default()
+        };
+        fixed.handle_read(TaggedPacket { now, transport: Default::default(),
+            message: Packet::Rtcp(vec![Box::new(sr.clone())]) }).unwrap();
+        let reports = take_clock_reports();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].0, 90000);
+        assert_eq!(reports[0].1.rtp_time, sr.rtp_time);
     }
 }

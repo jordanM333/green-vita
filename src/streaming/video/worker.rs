@@ -2,25 +2,23 @@ use super::decoder::HwVideoDecoder;
 use super::metrics;
 use super::{DecodedFrame, DecoderConfig, DirectVideoOutput};
 use anyhow::{Context, Result};
-use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select_biased, unbounded};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select_biased};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-// Faster streams arrive in larger bursts. Keep the normal 30 fps limit small, but
-// allow enough room for roughly 100 ms of compressed video near the observed 55 fps.
-const MIN_PENDING_ACCESS_UNITS: usize = 2;
-const MAX_PENDING_ACCESS_UNITS: usize = 6;
+use super::policy::{AU_QUEUE_CAPACITY, expired};
 
 struct QueuedAccessUnit {
     data: Vec<u8>,
     queued_at: Instant,
+    received_at: Instant,
+    rtp_timestamp: u32,
     generation: u64,
 }
 
 enum DecoderCommand {
-    Reset,
     Stop,
 }
 
@@ -36,6 +34,7 @@ pub struct VideoDecodeWorker {
     access_units: Sender<QueuedAccessUnit>,
     commands: Sender<DecoderCommand>,
     generation: Arc<AtomicU64>,
+    recovery_needed: Arc<AtomicBool>,
     pub(crate) latest_result: Arc<Mutex<Option<DecodeResult>>>,
     pub(crate) result_ready: Arc<tokio::sync::Notify>,
 }
@@ -45,10 +44,12 @@ impl VideoDecodeWorker {
         let decoder =
             HwVideoDecoder::new(config).context("failed to create hardware H264 decoder")?;
         direct_output.decoder_ready.store(true, Ordering::Release);
-        let (access_units, worker_access_units) = bounded(MAX_PENDING_ACCESS_UNITS);
-        let (commands, worker_commands) = unbounded();
+        let (access_units, worker_access_units) = bounded(AU_QUEUE_CAPACITY);
+        let (commands, worker_commands) = bounded(1);
         let generation = Arc::new(AtomicU64::new(0));
         let worker_generation = Arc::clone(&generation);
+        let recovery_needed = Arc::new(AtomicBool::new(false));
+        let worker_recovery_needed = Arc::clone(&recovery_needed);
         let latest_result = Arc::new(Mutex::new(None));
         let worker_latest_result = Arc::clone(&latest_result);
         let result_ready = Arc::new(tokio::sync::Notify::new());
@@ -64,6 +65,7 @@ impl VideoDecodeWorker {
                     worker_access_units,
                     worker_commands,
                     worker_generation,
+                    worker_recovery_needed,
                     worker_latest_result,
                     worker_result_ready,
                     decoder,
@@ -77,6 +79,7 @@ impl VideoDecodeWorker {
             access_units,
             commands,
             generation,
+            recovery_needed,
             latest_result,
             result_ready,
         })
@@ -85,27 +88,14 @@ impl VideoDecodeWorker {
     pub fn submit_access_unit(
         &self,
         data: Vec<u8>,
-        source_frame_duration_us: Option<u64>,
+        first_packet_at: Instant,
+        rtp_timestamp: u32,
     ) -> SubmitResult {
-        let source_fps = source_frame_duration_us
-            .filter(|duration| *duration > 0)
-            .map(|duration| 1_000_000 / duration)
-            .unwrap_or(30);
-        let extra_capacity = source_fps
-            .saturating_sub(30)
-            .min(25)
-            .saturating_mul((MAX_PENDING_ACCESS_UNITS - MIN_PENDING_ACCESS_UNITS) as u64)
-            .saturating_add(12)
-            / 25;
-        let pending_limit = MIN_PENDING_ACCESS_UNITS + extra_capacity as usize;
-        if self.access_units.len() >= pending_limit {
-            metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
-            return SubmitResult::QueueFull;
-        }
-
         let access_unit = QueuedAccessUnit {
             data,
             queued_at: Instant::now(),
+            received_at: first_packet_at,
+            rtp_timestamp,
             generation: self.generation.load(Ordering::Acquire),
         };
         match self.access_units.try_send(access_unit) {
@@ -123,10 +113,8 @@ impl VideoDecodeWorker {
         }
     }
 
-    pub fn reset_decoder(&self) {
-        self.generation.fetch_add(1, Ordering::AcqRel);
-        metrics::METRICS.resets.fetch_add(1, Ordering::Relaxed);
-        let _ = self.commands.send(DecoderCommand::Reset);
+    pub(crate) fn take_recovery_request(&self) -> bool {
+        self.recovery_needed.swap(false, Ordering::AcqRel)
     }
 
     pub fn begin_resync(&self) {
@@ -159,6 +147,7 @@ fn run_decode_loop(
     access_units: Receiver<QueuedAccessUnit>,
     commands: Receiver<DecoderCommand>,
     generation: Arc<AtomicU64>,
+    recovery_needed: Arc<AtomicBool>,
     latest_result: Arc<Mutex<Option<DecodeResult>>>,
     result_ready: Arc<tokio::sync::Notify>,
     initial_decoder: HwVideoDecoder,
@@ -170,10 +159,6 @@ fn run_decode_loop(
     loop {
         select_biased! {
             recv(commands) -> command => match command {
-                Ok(DecoderCommand::Reset) => {
-                    decoder = None;
-                    continue;
-                }
                 Ok(DecoderCommand::Stop) | Err(_) => break,
             },
             recv(access_units) -> access_unit => {
@@ -183,6 +168,7 @@ fn run_decode_loop(
                     &mut decoder,
                     config,
                     &generation,
+                    &recovery_needed,
                     &latest_result,
                     &result_ready,
                     access_unit,
@@ -197,13 +183,29 @@ fn decode_queued_access_unit(
     decoder: &mut Option<HwVideoDecoder>,
     config: DecoderConfig,
     generation: &AtomicU64,
+    recovery_needed: &AtomicBool,
     latest_result: &Mutex<Option<DecodeResult>>,
     result_ready: &tokio::sync::Notify,
     access_unit: QueuedAccessUnit,
     direct_output: &DirectVideoOutput,
 ) {
     if access_unit.generation != generation.load(Ordering::Acquire) {
+        super::trace::record("generation_drop", access_unit.rtp_timestamp, 0);
         metrics::METRICS.stale_generation.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+
+    // Never keep playing an old compressed backlog. Losing a reference picture
+    // requires an IDR, not arbitrary P-frame replacement or a decoder reset.
+    if recovery_needed.load(Ordering::Acquire)
+        || expired(access_unit.queued_at, Instant::now())
+    {
+        super::trace::record("age_drop", access_unit.rtp_timestamp,
+            access_unit.queued_at.elapsed().as_micros() as u64);
+        metrics::METRICS.stale_generation.fetch_add(1, Ordering::Relaxed);
+        generation.fetch_add(1, Ordering::AcqRel);
+        recovery_needed.store(true, Ordering::Release);
+        result_ready.notify_one();
         return;
     }
 
@@ -211,6 +213,8 @@ fn decode_queued_access_unit(
         match HwVideoDecoder::new(config) {
             Ok(new_decoder) => *decoder = Some(new_decoder),
             Err(error) => {
+                generation.fetch_add(1, Ordering::AcqRel);
+                recovery_needed.store(true, Ordering::Release);
                 metrics::METRICS.decoder_unavailable.fetch_add(1, Ordering::Relaxed);
                 publish_result(
                     latest_result,
@@ -225,6 +229,9 @@ fn decode_queued_access_unit(
     let Some(direct_target) = direct_output.lock_decode_target() else {
         // Do not decode until the renderer has registered stable CDRAM output buffers.
         metrics::METRICS.skipped.fetch_add(1, Ordering::Relaxed);
+        generation.fetch_add(1, Ordering::AcqRel);
+        recovery_needed.store(true, Ordering::Release);
+        result_ready.notify_one();
         return;
     };
     let age_us = access_unit.queued_at.elapsed().as_micros() as u64;
@@ -234,6 +241,8 @@ fn decode_queued_access_unit(
     // Measure the hardware call and contain an unexpected decoder panic inside its worker.
     metrics::METRICS.decode_calls.fetch_add(1, Ordering::Relaxed);
     let decode_started_at = Instant::now();
+    super::trace::record("decode_submit", access_unit.rtp_timestamp,
+        access_unit.received_at.elapsed().as_micros() as u64);
     let decode_result = catch_unwind(AssertUnwindSafe(|| {
         decoder
             .as_mut()
@@ -241,6 +250,7 @@ fn decode_queued_access_unit(
             .decode(&access_unit.data, direct_target.target)
     }));
     let decode_us = decode_started_at.elapsed().as_micros() as u64;
+    super::trace::record("decode_return", access_unit.rtp_timestamp, decode_us);
     metrics::METRICS.decode_us.store(decode_us, Ordering::Relaxed);
     metrics::METRICS.decode_sum_us.fetch_add(decode_us, Ordering::Relaxed);
     metrics::METRICS.decode_count.fetch_add(1, Ordering::Relaxed);
@@ -252,8 +262,11 @@ fn decode_queued_access_unit(
 
     match decode_result {
         Ok(Ok(true)) => {
+            super::trace::record("picture_produced", access_unit.rtp_timestamp,
+                access_unit.received_at.elapsed().as_micros() as u64);
             metrics::METRICS.decoded.fetch_add(1, Ordering::Relaxed);
             let (texture_index, generation) = direct_target.publish();
+            super::trace::record("picture_generation", access_unit.rtp_timestamp, generation);
             metrics::METRICS.pipeline_age_us.store(
                 access_unit.queued_at.elapsed().as_micros() as u64,
                 Ordering::Relaxed,
@@ -268,15 +281,22 @@ fn decode_queued_access_unit(
             );
         }
         Ok(Ok(false)) => {
+            super::trace::record("no_picture", access_unit.rtp_timestamp, 0);
             metrics::METRICS.no_picture.fetch_add(1, Ordering::Relaxed);
         }
         Ok(Err(error)) => {
+            metrics::METRICS.resets.fetch_add(1, Ordering::Relaxed);
             *decoder = None;
+            generation.fetch_add(1, Ordering::AcqRel);
+            recovery_needed.store(true, Ordering::Release);
             publish_result(latest_result, result_ready, Err(error.to_string()));
         }
         Err(_) => {
+            metrics::METRICS.resets.fetch_add(1, Ordering::Relaxed);
             eprintln!("H264 decoder panicked; recreating decoder on next frame");
             *decoder = None;
+            generation.fetch_add(1, Ordering::AcqRel);
+            recovery_needed.store(true, Ordering::Release);
             publish_result(
                 latest_result,
                 result_ready,

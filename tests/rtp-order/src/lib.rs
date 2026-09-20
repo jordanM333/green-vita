@@ -4,16 +4,21 @@
 #![allow(dead_code)]
 extern crate self as rtc;
 pub use rtp;
+#[path = "../../../src/streaming/video/policy.rs"]
+pub mod policy;
 
 mod streaming {
     pub mod video {
+        pub(crate) use crate::policy;
+        pub mod trace { pub fn record(_: &'static str, _: u32, _: u64) {} }
         use std::sync::Mutex;
         pub enum SubmitResult { Submitted, QueueFull, Disconnected }
         #[derive(Default)]
         pub struct VideoDecodeWorker { pub submitted: Mutex<Vec<Vec<u8>>> }
         impl VideoDecodeWorker {
             pub fn begin_resync(&self) {}
-            pub fn submit_access_unit(&self, data: Vec<u8>, _: Option<u64>) -> SubmitResult {
+            pub fn take_recovery_request(&self) -> bool { false }
+            pub fn submit_access_unit(&self, data: Vec<u8>, _: std::time::Instant, _: u32) -> SubmitResult {
                 self.submitted.lock().unwrap().push(data);
                 SubmitResult::Submitted
             }
@@ -96,9 +101,9 @@ mod tests {
         let mut keyframe = false;
         let old_drops: u32 = packets.iter().cloned()
             .map(|p| old.receive(&worker, p, &mut keyframe).dropped).sum();
-        assert_eq!(old_drops, 1);
+        assert_eq!(old_drops, 2);
         assert!(keyframe);
-        assert_eq!(worker.submitted.lock().unwrap().len(), 1);
+        assert_eq!(worker.submitted.lock().unwrap().len(), 0);
 
         let mut fixed = OrderedReceiver::default();
         let mut assembler = video_rtp::VideoRtp::new(1280, 720);
@@ -127,14 +132,32 @@ mod tests {
         ] { fixed.receive(&mut assembler, p, now); }
         assert!(fixed.worker.submitted.lock().unwrap().is_empty());
         fixed.flush(&mut assembler, now + Duration::from_millis(6));
-        assert_eq!(fixed.drops, 1);
+        assert_eq!(fixed.drops, 2);
         assert!(fixed.keyframe);
         assert_eq!(fixed.order.stats.missing, 1);
-        assert_eq!(*fixed.worker.submitted.lock().unwrap(), vec![vec![0, 0, 0, 1, 0x61, 0xaa, 0xbb]]);
+        assert!(fixed.worker.submitted.lock().unwrap().is_empty());
         // A fragment arriving after the deadline cannot resurrect the old AU.
         fixed.receive(&mut assembler, packet(11, 1000, false, &[0x7c, 0x05, 0x77]),
             now + Duration::from_millis(7));
-        assert_eq!(fixed.worker.submitted.lock().unwrap().len(), 1);
+        assert_eq!(fixed.worker.submitted.lock().unwrap().len(), 0);
         assert_eq!(fixed.order.stats.too_late, 1);
+    }
+
+    #[test]
+    fn damage_blocks_dependent_frames_until_a_complete_idr_is_submitted() {
+        let mut assembler = video_rtp::VideoRtp::new(1280, 720);
+        let worker = VideoDecodeWorker::default();
+        let mut request = false;
+        assembler.receive(&worker, packet(10, 1000, false, &[0x7c, 0x81, 0x88]), &mut request);
+        let damage = assembler.receive(&worker, packet(12, 2500, true, &[0x61, 0xaa, 0xbb]), &mut request);
+        assert_eq!(damage.dropped, 2);
+        assert!(assembler.waiting_for_keyframe());
+        assert!(worker.submitted.lock().unwrap().is_empty());
+        let idr = assembler.receive(&worker, packet(13, 4000, true, &[0x65, 0xaa, 0xbb]), &mut request);
+        assert_eq!(idr.submitted, 1);
+        assert!(!assembler.waiting_for_keyframe());
+        let next = assembler.receive(&worker, packet(14, 5500, true, &[0x61, 0xaa, 0xbb]), &mut request);
+        assert_eq!(next.submitted, 1);
+        assert_eq!(next.post_damage_submitted, 0);
     }
 }
