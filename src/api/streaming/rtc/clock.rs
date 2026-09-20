@@ -13,6 +13,10 @@ pub(super) struct RtpClockProbe {
     latest_age_ms: Option<i64>,
     baseline_age_ms: Option<i64>,
     report_count: u64,
+    arrival_baseline: Option<Instant>,
+    elapsed_ticks: u64,
+    minimum_offset_us: i128,
+    relative_delay_ms: u64,
 }
 
 impl RtpClockProbe {
@@ -25,6 +29,10 @@ impl RtpClockProbe {
             latest_age_ms: None,
             baseline_age_ms: None,
             report_count: 0,
+            arrival_baseline: None,
+            elapsed_ticks: 0,
+            minimum_offset_us: 0,
+            relative_delay_ms: 0,
         }
     }
 
@@ -41,10 +49,30 @@ impl RtpClockProbe {
     }
 
     pub(super) fn receive(&mut self, timestamp: u32) {
-        if self.last_timestamp == Some(timestamp) {
-            return;
+        self.receive_at(timestamp, Instant::now());
+    }
+
+    fn receive_at(&mut self, timestamp: u32, now: Instant) {
+        if let Some(previous) = self.last_timestamp {
+            let forward = timestamp.wrapping_sub(previous);
+            // Ignore duplicate timestamps and late/reordered AUs, including across wrap.
+            if forward == 0 || forward >= (1 << 31) {
+                return;
+            }
+            if i64::from(forward) > self.clock_rate * MAX_REPORT_DISTANCE_SECONDS {
+                self.arrival_baseline = None;
+                self.elapsed_ticks = 0;
+                self.minimum_offset_us = 0;
+            } else {
+                self.elapsed_ticks += u64::from(forward);
+            }
         }
         self.last_timestamp = Some(timestamp);
+        let baseline = *self.arrival_baseline.get_or_insert(now);
+        let media_us = i128::from(self.elapsed_ticks) * 1_000_000 / i128::from(self.clock_rate);
+        let offset_us = now.saturating_duration_since(baseline).as_micros() as i128 - media_us;
+        self.minimum_offset_us = self.minimum_offset_us.min(offset_us);
+        self.relative_delay_ms = ((offset_us - self.minimum_offset_us) / 1_000) as u64;
         let Some((report_rtp, report_unix_ms)) = self.report else {
             return;
         };
@@ -66,7 +94,9 @@ impl RtpClockProbe {
 
     pub(super) fn summary(&self, now: Instant) -> String {
         if self.report_count == 0 {
-            return "? SR:0".to_owned();
+            // This works without RTCP SR or synchronized clocks. It measures added delay
+            // since the fastest observed arrival, NOT capture age or fixed network delay.
+            return format!("? SR:0 rel+{}ms", self.relative_delay_ms);
         }
         let report_age = self
             .last_report_at
@@ -107,5 +137,29 @@ mod tests {
         let mut clock = RtpClockProbe::new(48_000);
         clock.sender_report(&SenderReport::default());
         assert!(clock.report.is_none());
+    }
+
+    #[test]
+    fn relative_delay_detects_backlog_without_sender_reports() {
+        let mut clock = RtpClockProbe::new(90_000);
+        let start = Instant::now();
+        clock.receive_at(0, start);
+        clock.receive_at(90_000, start + std::time::Duration::from_millis(1_500));
+        assert_eq!(clock.relative_delay_ms, 500);
+        clock.receive_at(180_000, start + std::time::Duration::from_secs(2));
+        assert_eq!(clock.relative_delay_ms, 0);
+    }
+
+    #[test]
+    fn relative_delay_handles_wrap_and_ignores_late_packets() {
+        let mut clock = RtpClockProbe::new(90_000);
+        let start = Instant::now();
+        let first = u32::MAX - 44_999;
+        clock.receive_at(first, start);
+        clock.receive_at(45_000, start + std::time::Duration::from_secs(1));
+        assert_eq!(clock.relative_delay_ms, 0);
+        clock.receive_at(first, start + std::time::Duration::from_secs(2));
+        assert_eq!(clock.last_timestamp, Some(45_000));
+        assert_eq!(clock.elapsed_ticks, 90_000);
     }
 }
