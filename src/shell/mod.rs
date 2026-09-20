@@ -27,6 +27,7 @@ const UI_SCALE: f32 = 1.3;
 const DIRECTION_REPEAT_INITIAL_DELAY: Duration = Duration::from_millis(350);
 const DIRECTION_REPEAT_INTERVAL: Duration = Duration::from_millis(90);
 const STREAM_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(4);
+const STREAM_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 
 pub(crate) const TARGET_FRAME_TIME: Duration = Duration::from_millis(16);
 
@@ -56,6 +57,7 @@ pub async fn run(mut app: App) -> Result<()> {
     let mut last_direction_repeat_at = Instant::now();
     let mut vita_ime_active = false;
     let mut vita_ime_pending = None;
+    let mut last_ui_presented_at = Instant::now();
 
     loop {
         let loop_started_at = Instant::now();
@@ -203,51 +205,77 @@ pub async fn run(mut app: App) -> Result<()> {
         if let Some(streaming) = app.state.streaming_mut() {
             audio_renderer.submit_packets(streaming.take_audio_packets());
         }
-        surface.sync_video_frame(app.state.streaming())?;
+        // Painting an unchanged picture costs about 14 ms in the on-device trace.
+        // Keep polling input, audio, and the stream, but save that GPU work
+        // until the decoder has a newer frame. Refresh the UI periodically even if video stalls.
+        let skip_unchanged_stream = matches!(&app.state, AppState::Streaming(streaming) if !streaming.paused)
+            && surface.has_displayed_video_frame()
+            && !surface.has_pending_video_frame()
+            && egui_events.is_empty()
+            && hold_progress.is_none()
+            && last_ui_presented_at.elapsed() < STREAM_STATUS_REFRESH_INTERVAL;
 
-        let raw_input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(WIDTH as f32 / UI_SCALE, HEIGHT as f32 / UI_SCALE),
-            )),
-            viewport_id: egui::ViewportId::ROOT,
-            viewports: std::iter::once((
-                egui::ViewportId::ROOT,
-                egui::ViewportInfo {
-                    native_pixels_per_point: Some(UI_SCALE),
-                    ..Default::default()
-                },
-            ))
-            .collect(),
-            time: Some(start_time.elapsed().as_secs_f64()),
-            predicted_dt: TARGET_FRAME_TIME.as_secs_f32(),
-            events: egui_events,
-            ..Default::default()
-        };
+        if !skip_unchanged_stream {
+            let raw_input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(WIDTH as f32 / UI_SCALE, HEIGHT as f32 / UI_SCALE),
+                )),
+                viewport_id: egui::ViewportId::ROOT,
+                viewports: std::iter::once((
+                    egui::ViewportId::ROOT,
+                    egui::ViewportInfo {
+                        native_pixels_per_point: Some(UI_SCALE),
+                        ..Default::default()
+                    },
+                ))
+                .collect(),
+                time: Some(start_time.elapsed().as_secs_f64()),
+                predicted_dt: TARGET_FRAME_TIME.as_secs_f32(),
+                events: egui_events,
+                ..Default::default()
+            };
 
-        let mut ui_commands = Vec::new();
-        let full_output = egui_ctx.run(raw_input, |ctx| {
-            ui_commands = build_ui(ctx, &app, hold_progress);
-        });
+            let mut ui_commands = Vec::new();
+            let full_output = egui_ctx.run(raw_input, |ctx| {
+                ui_commands = build_ui(ctx, &app, hold_progress);
+            });
 
-        for command in ui_commands {
-            app.handle_command(command).await?;
+            for command in ui_commands {
+                app.handle_command(command).await?;
+            }
+
+            // Acquire the newest decoded frame immediately before drawing. It may have arrived
+            // while egui was building the overlay, and old decoded pictures stay replaceable.
+            surface.sync_video_frame(app.state.streaming())?;
+            surface.draw_scene(matches!(&app.state, AppState::Streaming(_)))?;
+            let clipped_primitives =
+                egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+            surface.paint_egui(
+                full_output.pixels_per_point,
+                &clipped_primitives,
+                &full_output.textures_delta,
+            )?;
+            last_ui_presented_at = Instant::now();
+        } else {
+            crate::streaming::video::metrics::METRICS
+                .unchanged_frame_skipped
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
 
-        surface.draw_scene(matches!(&app.state, AppState::Streaming(_)))?;
-        let clipped_primitives =
-            egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
-        surface.paint_egui(
-            full_output.pixels_per_point,
-            &clipped_primitives,
-            &full_output.textures_delta,
-        )?;
-        let loop_us = loop_started_at.elapsed().as_micros() as u64;
         let metrics = &crate::streaming::video::metrics::METRICS;
-        metrics.ui_loop_sum_us.fetch_add(loop_us, std::sync::atomic::Ordering::Relaxed);
-        metrics.ui_loop_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        metrics.ui_loop_max_us.fetch_max(loop_us, std::sync::atomic::Ordering::Relaxed);
-        let frame_deadline = loop_started_at + TARGET_FRAME_TIME;
+        if !skip_unchanged_stream {
+            let loop_us = loop_started_at.elapsed().as_micros() as u64;
+            metrics.ui_loop_sum_us.fetch_add(loop_us, std::sync::atomic::Ordering::Relaxed);
+            metrics.ui_loop_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            metrics.ui_loop_max_us.fetch_max(loop_us, std::sync::atomic::Ordering::Relaxed);
+        }
+        let frame_deadline = loop_started_at
+            + if skip_unchanged_stream {
+                STREAM_INPUT_POLL_INTERVAL
+            } else {
+                TARGET_FRAME_TIME
+            };
         if Instant::now() < frame_deadline {
             while Instant::now() < frame_deadline {
                 let remaining = frame_deadline.saturating_duration_since(Instant::now());

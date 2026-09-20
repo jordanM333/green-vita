@@ -75,6 +75,10 @@ impl DirectVideoOutput {
         }
     }
 
+    pub(crate) fn has_pending_frame(&self) -> bool {
+        self.state.lock().is_ok_and(|state| state.pending.is_some())
+    }
+
     /// The UI takes the newest completed buffer under the same lock used by the decoder.
     /// Passing decoded-frame handles through the RTC and app mailboxes can make them stale
     /// before the UI reads them, causing it to skip a render even when a newer frame is ready.

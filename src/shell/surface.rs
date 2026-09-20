@@ -58,6 +58,16 @@ impl VitaSurface {
         Self::fit_rect(self.video_width, self.video_height, WIDTH, HEIGHT)
     }
 
+    pub fn has_pending_video_frame(&self) -> bool {
+        self.direct_video_output
+            .as_ref()
+            .is_some_and(|output| output.has_pending_frame())
+    }
+
+    pub fn has_displayed_video_frame(&self) -> bool {
+        self.displayed_video_texture.is_some()
+    }
+
     pub fn sync_video_frame(&mut self, streaming: Option<&StreamingSession>) -> Result<()> {
         let Some(streaming) = streaming else {
             self.detach_direct_video_output();
@@ -77,8 +87,8 @@ impl VitaSurface {
         if index >= self.video_textures.as_ref().map_or(0, Vec::len) {
             anyhow::bail!("decoder returned invalid direct texture index {index}");
         }
-        // The decoder owns a stable CDRAM target. SDL's pixel pointer is only valid during
-        // with_lock; unlocking the texture is what makes this decoded frame visible to GXM.
+        // Copy a complete decoder output into the renderer's texture under its SDL lock.
+        // The decoder never writes to the texture that a queued GPU scene can still sample.
         let texture = &mut self.video_textures.as_mut().expect("textures registered")[index];
         let upload_started = Instant::now();
         texture
@@ -258,9 +268,15 @@ impl VitaSurface {
             primitives,
             textures_delta,
         )?;
+        let egui_us = paint_started.elapsed().as_micros() as u64;
         self.canvas.present();
         let paint_us = paint_started.elapsed().as_micros() as u64;
         let metrics = &crate::streaming::video::metrics::METRICS;
+        metrics.egui_draw_sum_us.fetch_add(egui_us, Ordering::Relaxed);
+        metrics.egui_draw_max_us.fetch_max(egui_us, Ordering::Relaxed);
+        let present_us = paint_us.saturating_sub(egui_us);
+        metrics.render_present_sum_us.fetch_add(present_us, Ordering::Relaxed);
+        metrics.render_present_max_us.fetch_max(present_us, Ordering::Relaxed);
         metrics.paint_sum_us.fetch_add(paint_us, Ordering::Relaxed);
         metrics.paint_count.fetch_add(1, Ordering::Relaxed);
         metrics.paint_max_us.fetch_max(paint_us, Ordering::Relaxed);
