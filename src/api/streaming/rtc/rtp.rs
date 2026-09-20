@@ -384,10 +384,6 @@ impl VideoRtp {
         self.recovery.waiting()
     }
 
-    pub(super) fn wait_for_keyframe(&mut self) {
-        self.recovery.damage();
-    }
-
     pub(super) fn recover_decoder(&mut self, worker: &VideoDecodeWorker) -> bool {
         if worker.take_recovery_request() {
             self.record_damage(worker);

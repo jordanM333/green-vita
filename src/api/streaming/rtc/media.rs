@@ -171,7 +171,8 @@ impl VideoReceiver {
 
         if decode_errors > 0 {
             self.stats.decode_errors = self.stats.decode_errors.saturating_add(decode_errors);
-            self.rtp.wait_for_keyframe();
+            // Recovery is carried by the decoder's atomic signal, not this
+            // replaceable result mailbox. A delayed error must not undo a newer IDR.
         }
     }
 

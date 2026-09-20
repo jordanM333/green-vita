@@ -235,6 +235,16 @@ fn decode_queued_access_unit(
         return;
     };
     let age_us = access_unit.queued_at.elapsed().as_micros() as u64;
+    // Acquiring an output surface can itself wait behind the renderer. Recheck
+    // after acquiring it so the queue-age limit also covers that wait.
+    if expired(access_unit.queued_at, Instant::now()) {
+        super::trace::record("output_wait_expired", access_unit.rtp_timestamp, age_us);
+        metrics::METRICS.stale_generation.fetch_add(1, Ordering::Relaxed);
+        generation.fetch_add(1, Ordering::AcqRel);
+        recovery_needed.store(true, Ordering::Release);
+        result_ready.notify_one();
+        return;
+    }
     metrics::METRICS.au_age_sum_us.fetch_add(age_us, Ordering::Relaxed);
     metrics::METRICS.au_age_count.fetch_add(1, Ordering::Relaxed);
     metrics::METRICS.au_age_max_us.fetch_max(age_us, Ordering::Relaxed);
