@@ -17,6 +17,8 @@ pub struct VitaSurface {
     video_textures: Option<Vec<Texture>>,
     video_output_buffers: Option<Vec<CdramBlock>>,
     displayed_video_texture: Option<usize>,
+    // Output generation, not submission RTP timestamp: AVCDEC may buffer an input.
+    pending_video_present: Option<(u64, Instant)>,
     direct_video_output: Option<Arc<DirectVideoOutput>>,
     video_width: u32,
     video_height: u32,
@@ -46,6 +48,7 @@ impl VitaSurface {
             video_textures: None,
             video_output_buffers: None,
             displayed_video_texture: None,
+            pending_video_present: None,
             direct_video_output: None,
             video_width: 0,
             video_height: 0,
@@ -77,7 +80,7 @@ impl VitaSurface {
 
         // The decoder publishes a completed CDRAM frame directly to this shared output. The
         // frame handle that travels through RTC and app mailboxes can already be obsolete.
-        let Some((index, target)) = self
+        let Some((index, target, generation, decoded_at)) = self
             .direct_video_output
             .as_ref()
             .and_then(|output| output.take_latest_for_display())
@@ -141,9 +144,7 @@ impl VitaSurface {
         metrics.video_upload_count.fetch_add(1, Ordering::Relaxed);
         metrics.video_upload_max_us.fetch_max(upload_us, Ordering::Relaxed);
         self.displayed_video_texture = Some(index);
-        crate::streaming::video::metrics::METRICS
-            .presented
-            .fetch_add(1, Ordering::Relaxed);
+        self.pending_video_present = Some((generation, decoded_at));
         Ok(())
     }
 
@@ -216,6 +217,7 @@ impl VitaSurface {
         self.video_output_buffers = Some(buffers);
         self.video_textures = Some(textures);
         self.displayed_video_texture = None;
+        self.pending_video_present = None;
         self.direct_video_output = Some(output);
         self.video_width = width;
         self.video_height = height;
@@ -229,6 +231,7 @@ impl VitaSurface {
         self.video_output_buffers = None;
         self.video_textures = None;
         self.displayed_video_texture = None;
+        self.pending_video_present = None;
         self.video_width = 0;
         self.video_height = 0;
     }
@@ -282,6 +285,33 @@ impl VitaSurface {
         metrics.paint_sum_us.fetch_add(paint_us, Ordering::Relaxed);
         metrics.paint_count.fetch_add(1, Ordering::Relaxed);
         metrics.paint_max_us.fetch_max(paint_us, Ordering::Relaxed);
+        if self.displayed_video_texture.is_some() {
+            // SDL's Vita present only enqueues a GXM display callback. Bound this queue
+            // to one render instead of submitting stale video behind unfinished GPU work.
+            // This waits for GPU/callback completion, not for physical panel scanout.
+            let gpu_started = Instant::now();
+            #[cfg(target_os = "vita")]
+            {
+                let result = unsafe { vitasdk_sys::sceGxmDisplayQueueFinish() };
+                if result < 0 {
+                    anyhow::bail!("failed to finish Vita display queue: {result:#x}");
+                }
+            }
+            let gpu_us = gpu_started.elapsed().as_micros() as u64;
+            metrics.gpu_wait_sum_us.fetch_add(gpu_us, Ordering::Relaxed);
+            metrics.gpu_wait_count.fetch_add(1, Ordering::Relaxed);
+            metrics.gpu_wait_max_us.fetch_max(gpu_us, Ordering::Relaxed);
+            crate::streaming::video::trace::record("gpu_queue_wait_us", 0, gpu_us);
+            if let Some((generation, decoded_at)) = self.pending_video_present.take() {
+                crate::streaming::video::trace::record("present_generation", 0, generation);
+                let age_us = decoded_at.elapsed().as_micros() as u64;
+                crate::streaming::video::trace::record("decoded_to_gpu_done_us", 0, age_us);
+                metrics.gpu_frame_age_sum_us.fetch_add(age_us, Ordering::Relaxed);
+                metrics.gpu_frame_age_count.fetch_add(1, Ordering::Relaxed);
+                metrics.gpu_frame_age_max_us.fetch_max(age_us, Ordering::Relaxed);
+                metrics.presented.fetch_add(1, Ordering::Relaxed);
+            }
+        }
         Ok(())
     }
 

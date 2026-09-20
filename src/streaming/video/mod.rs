@@ -1,4 +1,5 @@
 mod decoder;
+mod frame_signal;
 mod memory;
 pub(crate) mod metrics;
 mod worker;
@@ -41,6 +42,7 @@ struct DirectVideoOutputState {
 /// Pointers are stored as integers so decoding never retains a temporary SDL texture lock.
 pub(crate) struct DirectVideoOutput {
     state: Mutex<DirectVideoOutputState>,
+    frame_signal: frame_signal::FrameSignal,
     pub(crate) decoder_ready: AtomicBool,
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -55,6 +57,7 @@ impl DirectVideoOutput {
                 pending: None,
                 next_generation: 0,
             }),
+            frame_signal: frame_signal::FrameSignal::default(),
             decoder_ready: AtomicBool::new(false),
             width,
             height,
@@ -66,6 +69,7 @@ impl DirectVideoOutput {
             state.targets = Some(targets);
             state.displayed = None;
             state.pending = None;
+            self.frame_signal.set_pending(false);
         }
     }
 
@@ -74,21 +78,28 @@ impl DirectVideoOutput {
             state.targets = None;
             state.displayed = None;
             state.pending = None;
+            self.frame_signal.set_pending(false);
         }
     }
 
     pub(crate) fn has_pending_frame(&self) -> bool {
-        self.state.lock().is_ok_and(|state| state.pending.is_some())
+        // Input/render scheduling must not wait on the decoder's hardware call.
+        self.frame_signal.is_pending()
+    }
+
+    pub(crate) async fn wait_for_frame(&self) {
+        self.frame_signal.wait().await;
     }
 
     /// The UI takes the newest completed buffer under the same lock used by the decoder.
     /// Passing decoded-frame handles through the RTC and app mailboxes can make them stale
     /// before the UI reads them, causing it to skip a render even when a newer frame is ready.
-    pub(crate) fn take_latest_for_display(&self) -> Option<(usize, VideoTextureTarget)> {
+    pub(crate) fn take_latest_for_display(&self) -> Option<(usize, VideoTextureTarget, u64, Instant)> {
         let Ok(mut state) = self.state.lock() else {
             return None;
         };
         let (index, generation, decoded_at) = state.pending.take()?;
+        self.frame_signal.set_pending(false);
         let target = *state.targets.as_ref()?.get(index)?;
         state.displayed = Some(index);
         let age_us = decoded_at.elapsed().as_micros() as u64;
@@ -97,7 +108,7 @@ impl DirectVideoOutput {
         metrics::METRICS.display_age_sum_us.fetch_add(age_us, Ordering::Relaxed);
         metrics::METRICS.display_age_count.fetch_add(1, Ordering::Relaxed);
         metrics::METRICS.display_age_max_us.fetch_max(age_us, Ordering::Relaxed);
-        Some((index, target))
+        Some((index, target, generation, decoded_at))
     }
 
     pub(super) fn lock_decode_target(&self) -> Option<DirectVideoTargetGuard<'_>> {
@@ -113,6 +124,7 @@ impl DirectVideoOutput {
         let target = *targets.get(index)?;
         Some(DirectVideoTargetGuard {
             state,
+            frame_signal: &self.frame_signal,
             target,
             index,
         })
@@ -121,6 +133,7 @@ impl DirectVideoOutput {
 
 pub(super) struct DirectVideoTargetGuard<'a> {
     state: MutexGuard<'a, DirectVideoOutputState>,
+    frame_signal: &'a frame_signal::FrameSignal,
     target: VideoTextureTarget,
     index: usize,
 }
@@ -133,7 +146,12 @@ impl DirectVideoTargetGuard<'_> {
         self.state.next_generation = self.state.next_generation.wrapping_add(1);
         let generation = self.state.next_generation;
         self.state.pending = Some((self.index, generation, Instant::now()));
-        (self.index, generation)
+        self.frame_signal.set_pending(true);
+        let result = (self.index, generation);
+        // Wake only after the decoder has released the buffer ownership lock.
+        drop(self.state);
+        self.frame_signal.wake();
+        result
     }
 }
 
@@ -166,12 +184,12 @@ mod tests {
         let (first, _) = output.lock_decode_target().unwrap().publish();
         let (second, _) = output.lock_decode_target().unwrap().publish();
         assert_ne!(first, second);
-        assert_eq!(output.take_latest_for_display().map(|(index, _)| index), Some(second));
+        assert_eq!(output.take_latest_for_display().map(|(index, ..)| index), Some(second));
         assert!(output.take_latest_for_display().is_none());
 
         let (third, _) = output.lock_decode_target().unwrap().publish();
         assert_ne!(second, third);
-        assert_eq!(output.take_latest_for_display().map(|(index, _)| index), Some(third));
+        assert_eq!(output.take_latest_for_display().map(|(index, ..)| index), Some(third));
     }
 
     #[test]
@@ -184,7 +202,7 @@ mod tests {
         }; 2]);
 
         let (displayed, _) = output.lock_decode_target().unwrap().publish();
-        assert_eq!(output.take_latest_for_display().map(|(index, _)| index), Some(displayed));
+        assert_eq!(output.take_latest_for_display().map(|(index, ..)| index), Some(displayed));
         for _ in 0..4 {
             let (next, _) = output.lock_decode_target().unwrap().publish();
             assert_ne!(next, displayed);

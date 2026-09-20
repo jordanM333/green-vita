@@ -276,10 +276,22 @@ pub async fn run(mut app: App) -> Result<()> {
             } else {
                 TARGET_FRAME_TIME
             };
+        let display_output = app.state.streaming()
+            .filter(|streaming| !streaming.paused)
+            .map(|streaming| streaming.direct_video_output());
         if Instant::now() < frame_deadline {
             while Instant::now() < frame_deadline {
                 let remaining = frame_deadline.saturating_duration_since(Instant::now());
-                sleep(remaining.min(STREAM_INPUT_POLL_INTERVAL)).await;
+                // New video interrupts frame pacing; input still refreshes every 4 ms
+                // when the decoder is idle. Menus retain their normal frame limit.
+                if let Some(output) = display_output.as_ref() {
+                    tokio::select! {
+                        _ = output.wait_for_frame() => break,
+                        _ = sleep(remaining.min(STREAM_INPUT_POLL_INTERVAL)) => {}
+                    }
+                } else {
+                    sleep(remaining.min(STREAM_INPUT_POLL_INTERVAL)).await;
+                }
                 if Instant::now() >= frame_deadline {
                     break;
                 }

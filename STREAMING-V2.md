@@ -98,6 +98,35 @@ Build name: GreenVita RX Test; TitleID remains GRNVTEST1. Home mode, rear-touch
 swap and the pause-menu diagnostics toggle are preserved. Earlier session-exit
 save fix is included. No stock app files are touched.
 
+## Display follow-up (build 27)
+
+The build-26 cloud trace has fast decoding and no recovery freezes in its
+sample, but the UI still waits until its 16 ms deadline after a frame becomes
+available. The new display wakeup interrupts that wait. Readiness checks are
+atomic and do not block behind the hardware decode mutex. The latest completed
+frame is still selected immediately before drawing; encoded references are
+never discarded just to increase presentation rate.
+
+SDL's Vita GXM renderer enqueues an asynchronous display callback from present.
+Finish that queue after each video render to keep at most one submitted scene
+outstanding. Track the actual decoded-output generation through texture upload
+and GPU completion. `shown` now counts completed video renders, not texture
+uploads. `GPUwait` and `decodedToGPU` expose the previously unmeasured stage;
+GPU completion still does not measure physical panel scanout or capture latency.
+
+Frame-signal host tests cover publication before waiting, publication during a
+wait, coalesced bursts, and stale notifications after consumption. The existing
+receiver report, reordering, H264 recovery and REMB tests remain build gates.
+
+The reference Xbox player sends rendered-frame metadata on its input channel.
+This build deliberately does not fabricate that report: the Vita SDK requires
+unknown decoder PTS values, and an input submission timestamp is not a verified
+output picture identity after buffering. Decoder capacity, timestamps, output
+format, stream requests, input protocol and authentication remain unchanged.
+
+This targets the proven client display scheduling delay. It does not establish
+that the entire reported Cloud delay is fixed; that needs a device comparison.
+
 ## What remains unproven
 
 The server's actual bitrate/FPS can differ from the request and feedback. The

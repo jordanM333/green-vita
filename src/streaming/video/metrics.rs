@@ -24,6 +24,12 @@ pub(crate) struct VideoMetrics {
     pub(crate) egui_draw_max_us: AtomicU64,
     pub(crate) render_present_sum_us: AtomicU64,
     pub(crate) render_present_max_us: AtomicU64,
+    pub(crate) gpu_wait_sum_us: AtomicU64,
+    pub(crate) gpu_wait_count: AtomicU64,
+    pub(crate) gpu_wait_max_us: AtomicU64,
+    pub(crate) gpu_frame_age_sum_us: AtomicU64,
+    pub(crate) gpu_frame_age_count: AtomicU64,
+    pub(crate) gpu_frame_age_max_us: AtomicU64,
     pub(crate) unchanged_frame_skipped: AtomicU64,
     pub(crate) ui_loop_sum_us: AtomicU64,
     pub(crate) ui_loop_count: AtomicU64,
@@ -100,6 +106,12 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     egui_draw_max_us: AtomicU64::new(0),
     render_present_sum_us: AtomicU64::new(0),
     render_present_max_us: AtomicU64::new(0),
+    gpu_wait_sum_us: AtomicU64::new(0),
+    gpu_wait_count: AtomicU64::new(0),
+    gpu_wait_max_us: AtomicU64::new(0),
+    gpu_frame_age_sum_us: AtomicU64::new(0),
+    gpu_frame_age_count: AtomicU64::new(0),
+    gpu_frame_age_max_us: AtomicU64::new(0),
     unchanged_frame_skipped: AtomicU64::new(0),
     ui_loop_sum_us: AtomicU64::new(0),
     ui_loop_count: AtomicU64::new(0),
@@ -188,6 +200,14 @@ pub fn video_performance_summary() -> String {
         .unwrap_or(0)
         / 1000;
     let present_max = METRICS.render_present_max_us.swap(0, Ordering::Relaxed) / 1000;
+    let gpu_wait_count = METRICS.gpu_wait_count.swap(0, Ordering::Relaxed);
+    let gpu_wait_average = METRICS.gpu_wait_sum_us.swap(0, Ordering::Relaxed)
+        .checked_div(gpu_wait_count).unwrap_or(0) / 1000;
+    let gpu_wait_max = METRICS.gpu_wait_max_us.swap(0, Ordering::Relaxed) / 1000;
+    let gpu_age_count = METRICS.gpu_frame_age_count.swap(0, Ordering::Relaxed);
+    let gpu_age_average = METRICS.gpu_frame_age_sum_us.swap(0, Ordering::Relaxed)
+        .checked_div(gpu_age_count).unwrap_or(0) / 1000;
+    let gpu_age_max = METRICS.gpu_frame_age_max_us.swap(0, Ordering::Relaxed) / 1000;
     let ui_loop_sum = METRICS.ui_loop_sum_us.swap(0, Ordering::Relaxed);
     let ui_loop_count = METRICS.ui_loop_count.swap(0, Ordering::Relaxed);
     let ui_loop_average = ui_loop_sum.checked_div(ui_loop_count).unwrap_or(0) / 1000;
@@ -215,7 +235,7 @@ pub fn video_performance_summary() -> String {
     let base = format!(
         "Q depth/max:{}/{} AUage:{au_age_average}/{au_age_max}ms dec:{decode_average}/{decode_max}ms up:{upload_average}/{upload_max}ms paint:{paint_average}/{paint_max}ms ui:{ui_loop_average}/{ui_loop_max}ms\n\
          FPS hwCall:{} decoded:{} shown:{} ui:{paint_count} idle:{} pic:{} noPic:{} noOut:{} qFull/s:{} asm:{rtp_average}/{rtp_max}ms\n\
-         Render draw:{draw_average}/{draw_max}ms swap:{present_average}/{present_max}ms\n\
+         Render draw:{draw_average}/{draw_max}ms swap:{present_average}/{present_max}ms GPUwait:{gpu_wait_average}/{gpu_wait_max}ms decodedToGPU:{gpu_age_average}/{gpu_age_max}ms\n\
          Stage texRepl:{} showAge:{display_age_average}/{display_age_max}ms staleAU:{} noDec:{} mailRepl:{} handoffRepl:{} resync:{} reset:{}",
         METRICS.au_queue_depth.load(Ordering::Relaxed),
         METRICS.au_queue_max.load(Ordering::Relaxed),
