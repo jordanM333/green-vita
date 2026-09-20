@@ -143,9 +143,10 @@ mod tests {
         let now = Instant::now();
         for (ssrc, pt, seq) in [(10, 102, 100), (10, 102, 102), (20, 111, 40), (20, 111, 41)] {
             let msg = packet(ssrc, pt, seq, now);
-            bare.handle_read(msg.clone()).unwrap();
-            fixed.handle_read(msg.clone()).unwrap();
-            assert_eq!(fixed.poll_read().unwrap().message, msg.message);
+            let expected = msg.message.clone();
+            bare.handle_read(packet(ssrc, pt, seq, now)).unwrap();
+            fixed.handle_read(msg).unwrap();
+            assert_eq!(fixed.poll_read().unwrap().message, expected);
         }
         assert!(reports(&mut bare, now + Duration::from_secs(1)).is_empty());
         let output = reports(&mut fixed, now + Duration::from_secs(1));
