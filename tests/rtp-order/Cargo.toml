@@ -9,5 +9,6 @@ publish = false
 [dependencies]
 rtp = { package = "rtc-rtp", version = "=0.20.0-rc.2" }
 rtc-media = "=0.20.0-rc.2"
+shared = { package = "rtc-shared", version = "=0.20.0-rc.2", default-features = false }
 bytes = "1"
 h264-reader = "0.8"

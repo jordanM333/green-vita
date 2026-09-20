@@ -88,7 +88,7 @@ mod tests {
         // The next frame overtakes the previous FU-A end packet by 1 ms.
         let packets = vec![
             packet(10, 1000, false, &[0x7c, 0x85, 0x88]),
-            packet(12, 2500, true, &[0x61, 0xaa]),
+            packet(12, 2500, true, &[0x61, 0xaa, 0xbb]),
             packet(11, 1000, true, &[0x7c, 0x45, 0x99]),
         ];
         let mut old = video_rtp::VideoRtp::new(1280, 720);
@@ -109,7 +109,7 @@ mod tests {
         assert_eq!(fixed.drops, 0);
         assert!(!fixed.keyframe);
         assert_eq!(*fixed.worker.submitted.lock().unwrap(), vec![
-            vec![0, 0, 0, 1, 0x65, 0x88, 0x99], vec![0, 0, 0, 1, 0x61, 0xaa],
+            vec![0, 0, 0, 1, 0x65, 0x88, 0x99], vec![0, 0, 0, 1, 0x61, 0xaa, 0xbb],
         ]);
         assert_eq!(fixed.order.stats.filled, 1);
     }
@@ -123,14 +123,14 @@ mod tests {
             packet(10, 1000, false, &[0x7c, 0x85, 0x88]),
             // The middle FU-A fragment, sequence 11, never arrives.
             packet(12, 1000, true, &[0x7c, 0x45, 0x99]),
-            packet(13, 2500, true, &[0x61, 0xaa]),
+            packet(13, 2500, true, &[0x61, 0xaa, 0xbb]),
         ] { fixed.receive(&mut assembler, p, now); }
         assert!(fixed.worker.submitted.lock().unwrap().is_empty());
         fixed.flush(&mut assembler, now + Duration::from_millis(6));
         assert_eq!(fixed.drops, 1);
         assert!(fixed.keyframe);
         assert_eq!(fixed.order.stats.missing, 1);
-        assert_eq!(*fixed.worker.submitted.lock().unwrap(), vec![vec![0, 0, 0, 1, 0x61, 0xaa]]);
+        assert_eq!(*fixed.worker.submitted.lock().unwrap(), vec![vec![0, 0, 0, 1, 0x61, 0xaa, 0xbb]]);
         // A fragment arriving after the deadline cannot resurrect the old AU.
         fixed.receive(&mut assembler, packet(11, 1000, false, &[0x7c, 0x05, 0x77]),
             now + Duration::from_millis(7));
