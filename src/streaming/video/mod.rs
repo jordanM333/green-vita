@@ -12,6 +12,7 @@ pub const HW_OUTPUT_WIDTH: u32 = 960;
 pub const HW_OUTPUT_HEIGHT: u32 = 544;
 
 pub use memory::reserve_decoder_cdram;
+pub(crate) use memory::CdramBlock;
 pub use metrics::video_performance_summary;
 pub use worker::VideoDecodeWorker;
 pub(crate) use worker::SubmitResult;
@@ -34,9 +35,8 @@ struct DirectVideoOutputState {
     next_generation: u64,
 }
 
-/// Synchronizes the decoder thread with the SDL/GXM textures owned by the render thread.
-/// Pointers are stored as integers so the platform-specific unsafe boundary stays in the code
-/// that registers and consumes the textures.
+/// Synchronizes CDRAM decoder outputs with the SDL/GXM textures owned by the render thread.
+/// Pointers are stored as integers so decoding never retains a temporary SDL texture lock.
 pub(crate) struct DirectVideoOutput {
     state: Mutex<DirectVideoOutputState>,
     pub(crate) decoder_ready: AtomicBool,
@@ -75,20 +75,21 @@ impl DirectVideoOutput {
         }
     }
 
-    /// The UI takes the newest completed texture under the same lock used by the decoder.
+    /// The UI takes the newest completed buffer under the same lock used by the decoder.
     /// Passing decoded-frame handles through the RTC and app mailboxes can make them stale
     /// before the UI reads them, causing it to skip a render even when a newer frame is ready.
-    pub(crate) fn take_latest_for_display(&self) -> Option<usize> {
+    pub(crate) fn take_latest_for_display(&self) -> Option<(usize, VideoTextureTarget)> {
         let Ok(mut state) = self.state.lock() else {
             return None;
         };
         let (index, _, decoded_at) = state.pending.take()?;
+        let target = *state.targets.as_ref()?.get(index)?;
         state.displayed = Some(index);
         let age_us = decoded_at.elapsed().as_micros() as u64;
         metrics::METRICS.display_age_sum_us.fetch_add(age_us, Ordering::Relaxed);
         metrics::METRICS.display_age_count.fetch_add(1, Ordering::Relaxed);
         metrics::METRICS.display_age_max_us.fetch_max(age_us, Ordering::Relaxed);
-        Some(index)
+        Some((index, target))
     }
 
     pub(super) fn lock_decode_target(&self) -> Option<DirectVideoTargetGuard<'_>> {
@@ -157,12 +158,12 @@ mod tests {
         let (first, _) = output.lock_decode_target().unwrap().publish();
         let (second, _) = output.lock_decode_target().unwrap().publish();
         assert_ne!(first, second);
-        assert_eq!(output.take_latest_for_display(), Some(second));
-        assert_eq!(output.take_latest_for_display(), None);
+        assert_eq!(output.take_latest_for_display().map(|(index, _)| index), Some(second));
+        assert!(output.take_latest_for_display().is_none());
 
         let (third, _) = output.lock_decode_target().unwrap().publish();
         assert_ne!(second, third);
-        assert_eq!(output.take_latest_for_display(), Some(third));
+        assert_eq!(output.take_latest_for_display().map(|(index, _)| index), Some(third));
     }
 
     #[test]
@@ -175,7 +176,7 @@ mod tests {
         }; 2]);
 
         let (displayed, _) = output.lock_decode_target().unwrap().publish();
-        assert_eq!(output.take_latest_for_display(), Some(displayed));
+        assert_eq!(output.take_latest_for_display().map(|(index, _)| index), Some(displayed));
         for _ in 0..4 {
             let (next, _) = output.lock_decode_target().unwrap().publish();
             assert_ne!(next, displayed);

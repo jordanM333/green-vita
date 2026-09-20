@@ -27,6 +27,9 @@ pub(crate) struct VideoMetrics {
     pub(crate) display_age_sum_us: AtomicU64,
     pub(crate) display_age_count: AtomicU64,
     pub(crate) display_age_max_us: AtomicU64,
+    pub(crate) video_upload_sum_us: AtomicU64,
+    pub(crate) video_upload_count: AtomicU64,
+    pub(crate) video_upload_max_us: AtomicU64,
     pub(crate) handoff_replaced: AtomicU64,
     pub(crate) stale_generation: AtomicU64,
     pub(crate) decoder_unavailable: AtomicU64,
@@ -95,6 +98,9 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     display_age_sum_us: AtomicU64::new(0),
     display_age_count: AtomicU64::new(0),
     display_age_max_us: AtomicU64::new(0),
+    video_upload_sum_us: AtomicU64::new(0),
+    video_upload_count: AtomicU64::new(0),
+    video_upload_max_us: AtomicU64::new(0),
     handoff_replaced: AtomicU64::new(0),
     stale_generation: AtomicU64::new(0),
     decoder_unavailable: AtomicU64::new(0),
@@ -166,6 +172,10 @@ pub fn video_performance_summary() -> String {
     let display_age_count = METRICS.display_age_count.swap(0, Ordering::Relaxed);
     let display_age_average = display_age_sum.checked_div(display_age_count).unwrap_or(0) / 1000;
     let display_age_max = METRICS.display_age_max_us.swap(0, Ordering::Relaxed) / 1000;
+    let upload_sum = METRICS.video_upload_sum_us.swap(0, Ordering::Relaxed);
+    let upload_count = METRICS.video_upload_count.swap(0, Ordering::Relaxed);
+    let upload_average = upload_sum.checked_div(upload_count).unwrap_or(0) / 1000;
+    let upload_max = METRICS.video_upload_max_us.swap(0, Ordering::Relaxed) / 1000;
     let batch_age_sum = METRICS.audio_batch_age_sum_us.swap(0, Ordering::Relaxed);
     let batch_age_count = METRICS.audio_batch_age_count.swap(0, Ordering::Relaxed);
     let batch_age_avg = batch_age_sum.checked_div(batch_age_count).unwrap_or(0) / 1000;
@@ -179,7 +189,7 @@ pub fn video_performance_summary() -> String {
     let rtc_pump_avg = rtc_pump_sum.checked_div(rtc_pump_count).unwrap_or(0) / 1000;
     let rtc_pump_max = METRICS.rtc_pump_max_us.swap(0, Ordering::Relaxed) / 1000;
     let base = format!(
-        "Q depth/max:{}/{} AUage:{au_age_average}/{au_age_max}ms dec:{decode_average}/{decode_max}ms paint:{paint_average}/{paint_max}ms ui:{ui_loop_average}/{ui_loop_max}ms\n\
+        "Q depth/max:{}/{} AUage:{au_age_average}/{au_age_max}ms dec:{decode_average}/{decode_max}ms up:{upload_average}/{upload_max}ms paint:{paint_average}/{paint_max}ms ui:{ui_loop_average}/{ui_loop_max}ms\n\
          FPS hwCall:{} decoded:{} shown:{} ui:{paint_count} pic:{} noPic:{} noOut:{} qFull/s:{} asm:{rtp_average}/{rtp_max}ms\n\
          Stage texRepl:{} showAge:{display_age_average}/{display_age_max}ms staleAU:{} noDec:{} mailRepl:{} handoffRepl:{} resync:{} reset:{}",
         METRICS.au_queue_depth.load(Ordering::Relaxed),

@@ -223,8 +223,7 @@ fn decode_queued_access_unit(
     }
 
     let Some(direct_target) = direct_output.lock_decode_target() else {
-        // Do not decode until the renderer has registered its two GXM textures. There is no
-        // legacy output buffer to copy from anymore.
+        // Do not decode until the renderer has registered stable CDRAM output buffers.
         metrics::METRICS.skipped.fetch_add(1, Ordering::Relaxed);
         return;
     };

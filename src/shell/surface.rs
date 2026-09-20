@@ -1,6 +1,6 @@
 use crate::app::StreamingSession;
 use crate::shell::egui_painter::SdlEguiPainter;
-use crate::streaming::video::{DirectVideoOutput, VideoTextureTarget};
+use crate::streaming::video::{CdramBlock, DirectVideoOutput, VideoTextureTarget};
 use anyhow::{Context, Result};
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::{Canvas, Texture};
@@ -15,6 +15,7 @@ pub const HEIGHT: u32 = 544;
 pub struct VitaSurface {
     pub(crate) canvas: Canvas<Window>,
     video_textures: Option<Vec<Texture>>,
+    video_output_buffers: Option<Vec<CdramBlock>>,
     displayed_video_texture: Option<usize>,
     direct_video_output: Option<Arc<DirectVideoOutput>>,
     video_width: u32,
@@ -43,6 +44,7 @@ impl VitaSurface {
         Ok(Self {
             canvas,
             video_textures: None,
+            video_output_buffers: None,
             displayed_video_texture: None,
             direct_video_output: None,
             video_width: 0,
@@ -63,9 +65,9 @@ impl VitaSurface {
         };
         self.ensure_direct_video_output(streaming)?;
 
-        // The decoder publishes a completed texture directly to this shared output. The
+        // The decoder publishes a completed CDRAM frame directly to this shared output. The
         // frame handle that travels through RTC and app mailboxes can already be obsolete.
-        let Some(index) = self
+        let Some((index, target)) = self
             .direct_video_output
             .as_ref()
             .and_then(|output| output.take_latest_for_display())
@@ -75,6 +77,59 @@ impl VitaSurface {
         if index >= self.video_textures.as_ref().map_or(0, Vec::len) {
             anyhow::bail!("decoder returned invalid direct texture index {index}");
         }
+        // The decoder owns a stable CDRAM target. SDL's pixel pointer is only valid during
+        // with_lock; unlocking the texture is what makes this decoded frame visible to GXM.
+        let texture = &mut self.video_textures.as_mut().expect("textures registered")[index];
+        let upload_started = Instant::now();
+        texture
+            .with_lock(None, |pixels, pitch| {
+                let width_bytes = (self.video_width as usize) * 2;
+                let height = self.video_height as usize;
+                let source_pitch = target.pitch as usize;
+                let source_len = source_pitch
+                    .checked_mul(height)
+                    .context("decoder output length overflow")?;
+                let destination_len = pitch
+                    .checked_mul(height)
+                    .context("SDL video texture length overflow")?;
+                if source_pitch < width_bytes
+                    || pitch < width_bytes
+                    || (target.capacity as usize) < source_len
+                    || pixels.len() < destination_len
+                {
+                    anyhow::bail!("decoder output does not fit SDL video texture");
+                }
+                if source_pitch == pitch {
+                    // A DMA copy keeps the non-cached decoder output off the CPU copy path.
+                    let result = unsafe {
+                        vitasdk_sys::sceDmacMemcpy(
+                            pixels.as_mut_ptr().cast(),
+                            target.ptr as *const std::ffi::c_void,
+                            source_len as u32,
+                        )
+                    };
+                    if result >= 0 {
+                        return Ok(());
+                    }
+                }
+                let source = unsafe {
+                    std::slice::from_raw_parts(target.ptr as *const u8, source_len)
+                };
+                for row in 0..height {
+                    let dst = &mut pixels[row * pitch..(row + 1) * pitch];
+                    dst[..width_bytes]
+                        .copy_from_slice(&source[row * source_pitch..row * source_pitch + width_bytes]);
+                    dst[width_bytes..].fill(0);
+                }
+                Ok(())
+            })
+            .map_err(anyhow::Error::msg)
+            .context("failed to lock SDL video texture")??;
+        let upload_us = upload_started.elapsed().as_micros() as u64;
+        let metrics = &crate::streaming::video::metrics::METRICS;
+        metrics.video_upload_sum_us.fetch_add(upload_us, Ordering::Relaxed);
+        metrics.video_upload_count.fetch_add(1, Ordering::Relaxed);
+        metrics.video_upload_max_us.fetch_max(upload_us, Ordering::Relaxed);
         self.displayed_video_texture = Some(index);
         crate::streaming::video::metrics::METRICS
             .presented
@@ -111,26 +166,44 @@ impl VitaSurface {
             Ok(spare) => textures.push(spare),
             Err(error) => eprintln!("No spare video texture ({error:#}); using two textures"),
         }
+        let mut buffers = Vec::with_capacity(textures.len());
         let mut targets = Vec::with_capacity(textures.len());
-        for texture in &mut textures {
-            let mut target = VideoTextureTarget {
-                ptr: 0,
-                pitch: 0,
-                capacity: 0,
-            };
-            texture
+        for index in 0..textures.len() {
+            let texture = &mut textures[index];
+            // Keep the CDRAM decode pitch equal to the SDL texture pitch so display uses one
+            // DMA transfer. Do not retain a pointer returned by SDL after this lock ends.
+            let pitch = texture
                 .with_lock(None, |pixels, pitch| {
-                    target = VideoTextureTarget {
-                        ptr: pixels.as_mut_ptr() as usize,
-                        pitch: pitch as u32,
-                        capacity: pixels.len().min(u32::MAX as usize) as u32,
-                    };
+                    pixels.fill(0);
+                    pitch
                 })
                 .map_err(anyhow::Error::msg)
-                .context("failed to lock direct SDL video texture")?;
-            targets.push(target);
+                .context("failed to measure SDL video texture pitch")?;
+            let capacity = pitch
+                .checked_mul(height as usize)
+                .and_then(|bytes| u32::try_from(bytes).ok())
+                .context("video decoder output size overflow")?;
+            let buffer = match CdramBlock::allocate(&format!("xcloud_video_out_{index}"), capacity)
+            {
+                Ok(buffer) => buffer,
+                Err(error) if index >= 2 => {
+                    eprintln!("No spare decoder output buffer ({error:#}); using two textures");
+                    textures.truncate(2);
+                    break;
+                }
+                Err(error) => return Err(error),
+            };
+            // AVCDEC writes only the visible region; clear any padding before SDL uploads it.
+            unsafe { std::ptr::write_bytes(buffer.ptr, 0, capacity as usize) };
+            targets.push(VideoTextureTarget {
+                ptr: buffer.ptr as usize,
+                pitch: pitch as u32,
+                capacity,
+            });
+            buffers.push(buffer);
         }
         output.set_targets(targets);
+        self.video_output_buffers = Some(buffers);
         self.video_textures = Some(textures);
         self.displayed_video_texture = None;
         self.direct_video_output = Some(output);
@@ -143,6 +216,7 @@ impl VitaSurface {
         if let Some(output) = self.direct_video_output.take() {
             output.clear_targets();
         }
+        self.video_output_buffers = None;
         self.video_textures = None;
         self.displayed_video_texture = None;
         self.video_width = 0;
