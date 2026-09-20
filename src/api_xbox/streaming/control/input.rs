@@ -26,11 +26,11 @@ pub struct InputPacket {
     gamepad_frames: Vec<GamepadFrame>,
     pointer_frames: Vec<PointerFrame>,
     max_touchpoints: u8,
-    created_at: Instant,
+    timestamp_ms: f64,
 }
 
 impl InputPacket {
-    pub fn new(sequence: u32) -> Self {
+    pub fn new(sequence: u32, timestamp_ms: f64) -> Self {
         Self {
             report_type: ReportType::None as u16,
             total_size: 14,
@@ -38,12 +38,12 @@ impl InputPacket {
             gamepad_frames: Vec::new(),
             pointer_frames: Vec::new(),
             max_touchpoints: 0,
-            created_at: Instant::now(),
+            timestamp_ms,
         }
     }
 
-    pub fn client_metadata(sequence: u32, max_touchpoints: u8) -> Self {
-        let mut packet = Self::new(sequence);
+    pub fn client_metadata(sequence: u32, max_touchpoints: u8, timestamp_ms: f64) -> Self {
+        let mut packet = Self::new(sequence, timestamp_ms);
         packet.report_type = ReportType::ClientMetadata as u16;
         packet.total_size = 15;
         packet.max_touchpoints = max_touchpoints;
@@ -73,7 +73,7 @@ impl InputPacket {
         let mut bytes = Vec::with_capacity(self.total_size);
         push_le(&mut bytes, self.report_type.to_le_bytes());
         push_le(&mut bytes, self.sequence.to_le_bytes());
-        bytes.extend_from_slice(&(self.created_at.elapsed().as_secs_f64() * 1000.0).to_le_bytes());
+        bytes.extend_from_slice(&self.timestamp_ms.to_le_bytes());
 
         if !self.gamepad_frames.is_empty() {
             self.write_gamepads(&mut bytes);
@@ -173,14 +173,32 @@ fn push_le<const N: usize>(bytes: &mut Vec<u8>, raw: [u8; N]) {
 }
 
 /// Batches queued frames into [`InputPacket`]s, one wire packet per send.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct InputQueue {
+    started_at: Instant,
     sequence: u32,
     gamepads: Vec<GamepadFrame>,
     pointers: Vec<PointerFrame>,
 }
 
+impl Default for InputQueue {
+    fn default() -> Self {
+        Self {
+            started_at: Instant::now(),
+            sequence: 0,
+            gamepads: Vec::new(),
+            pointers: Vec::new(),
+        }
+    }
+}
+
 impl InputQueue {
+    fn timestamp_ms(&self) -> f64 {
+        // Xbox's f64 input timestamp is a monotonic uptime in milliseconds. Measuring
+        // from each packet's creation made every report appear to arrive at time zero.
+        self.started_at.elapsed().as_secs_f64() * 1_000.0
+    }
+
     pub fn queue_gamepad_frames(
         &mut self,
         frames: impl IntoIterator<Item = GamepadFrame>,
@@ -200,7 +218,8 @@ impl InputQueue {
     }
 
     pub fn client_metadata_packet(&mut self, max_touchpoints: u8) -> Vec<u8> {
-        InputPacket::client_metadata(self.next_sequence(), max_touchpoints).to_bytes()
+        let timestamp_ms = self.timestamp_ms();
+        InputPacket::client_metadata(self.next_sequence(), max_touchpoints, timestamp_ms).to_bytes()
     }
 
     fn check_queue_and_packet(&mut self, force_send: bool) -> Option<Vec<u8>> {
@@ -209,7 +228,8 @@ impl InputQueue {
     }
 
     fn drain_packet(&mut self) -> Vec<u8> {
-        let mut packet = InputPacket::new(self.next_sequence());
+        let timestamp_ms = self.timestamp_ms();
+        let mut packet = InputPacket::new(self.next_sequence(), timestamp_ms);
         packet.set_data(
             std::mem::take(&mut self.gamepads),
             std::mem::take(&mut self.pointers),
@@ -220,5 +240,26 @@ impl InputQueue {
     fn next_sequence(&mut self) -> u32 {
         self.sequence = self.sequence.wrapping_add(1);
         self.sequence
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn timestamp(bytes: &[u8]) -> f64 {
+        f64::from_le_bytes(bytes[6..14].try_into().unwrap())
+    }
+
+    #[test]
+    fn input_timestamps_advance_from_a_shared_clock() {
+        let mut queue = InputQueue::default();
+        queue.started_at -= Duration::from_secs(3);
+        let metadata = queue.client_metadata_packet(0);
+        let gamepad = queue.queue_gamepad_frames([GamepadFrame::default()], true).unwrap();
+        assert!((3_000.0..4_000.0).contains(&timestamp(&metadata)));
+        assert!(timestamp(&gamepad) >= timestamp(&metadata));
+        assert_eq!(u32::from_le_bytes(gamepad[2..6].try_into().unwrap()), 2);
     }
 }
