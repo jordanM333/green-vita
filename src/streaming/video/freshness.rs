@@ -1,0 +1,131 @@
+//! A conservative reconnect guard, not a capture-to-display latency estimate.
+use std::time::{Duration, Instant};
+
+#[derive(Clone, Copy)]
+pub(crate) struct VideoTiming {
+    pub timestamp: u32,
+    pub received_at: Instant,
+    pub added_delay_ms: u64,
+}
+
+#[derive(Default)]
+pub(crate) struct RefreshGuard {
+    first_sample: Option<Instant>,
+    last_sample: Option<VideoTiming>,
+    high_since: Option<Instant>,
+    last_refresh: Option<Instant>,
+    pub automatic_count: u8,
+}
+
+impl RefreshGuard {
+    pub fn new_connection(&mut self) {
+        self.first_sample = None;
+        self.last_sample = None;
+        self.high_since = None;
+    }
+
+    pub fn observe(&mut self, sample: VideoTiming, now: Instant, enabled: bool) -> bool {
+        // No decisions from stale UI events, pauses, or a lack of packets.
+        if !enabled || now.saturating_duration_since(sample.received_at) > Duration::from_millis(1500) {
+            self.high_since = None;
+            return false;
+        }
+        if let Some(last) = self.last_sample {
+            if sample.received_at <= last.received_at || sample.timestamp == last.timestamp {
+                return false;
+            }
+            // Missing samples must not count as continuously observed drift.
+            if sample.received_at.duration_since(last.received_at) > Duration::from_millis(1500) {
+                self.high_since = None;
+            }
+        }
+        self.last_sample = Some(sample);
+        let first = *self.first_sample.get_or_insert(sample.received_at);
+        let cooling_down = self.last_refresh.is_some_and(|at|
+            now.saturating_duration_since(at) < Duration::from_secs(30));
+        if self.automatic_count >= 2 || cooling_down
+            || sample.received_at.saturating_duration_since(first) < Duration::from_secs(10)
+            || sample.added_delay_ms < 300
+        {
+            self.high_since = None;
+            return false;
+        }
+        let high_since = *self.high_since.get_or_insert(sample.received_at);
+        if sample.received_at.saturating_duration_since(high_since) < Duration::from_secs(2) {
+            return false;
+        }
+        self.automatic_count += 1;
+        self.last_refresh = Some(now);
+        self.high_since = None;
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn sample(start: Instant, second: u64, delay: u64) -> VideoTiming {
+        VideoTiming { timestamp: (second * 90_000) as u32,
+            received_at: start + Duration::from_secs(second), added_delay_ms: delay }
+    }
+    fn feed(guard: &mut RefreshGuard, start: Instant, second: u64, delay: u64) -> bool {
+        let value = sample(start, second, delay);
+        guard.observe(value, value.received_at, true)
+    }
+    #[test]
+    fn healthy_stream_and_idle_picture_do_not_reconnect() {
+        let start = Instant::now();
+        let mut guard = RefreshGuard::default();
+        for second in 0..600 { assert!(!feed(&mut guard, start, second, 12)); }
+    }
+    #[test]
+    fn sustained_drift_triggers_after_grace_and_two_seconds() {
+        let start = Instant::now();
+        let mut guard = RefreshGuard::default();
+        for second in 0..12 { assert!(!feed(&mut guard, start, second, 1000)); }
+        assert!(feed(&mut guard, start, 12, 1000));
+    }
+    #[test]
+    fn a_burst_that_catches_up_does_not_reconnect() {
+        let start = Instant::now();
+        let mut guard = RefreshGuard::default();
+        for second in 0..10 { assert!(!feed(&mut guard, start, second, 0)); }
+        assert!(!feed(&mut guard, start, 10, 600));
+        assert!(!feed(&mut guard, start, 11, 20));
+        assert!(!feed(&mut guard, start, 12, 600));
+        assert!(!feed(&mut guard, start, 13, 20));
+    }
+    #[test]
+    fn stalled_duplicate_and_stale_samples_cannot_trigger() {
+        let start = Instant::now();
+        let mut guard = RefreshGuard::default();
+        for second in 0..11 { assert!(!feed(&mut guard, start, second, 600)); }
+        let last = sample(start, 10, 600);
+        for second in 11..20 {
+            assert!(!guard.observe(last, start + Duration::from_secs(second), true));
+        }
+        assert!(!feed(&mut guard, start, 20, 600));
+    }
+    #[test]
+    fn reconnect_budget_and_cooldown_survive_new_connections() {
+        let start = Instant::now();
+        let mut guard = RefreshGuard::default();
+        for second in 0..12 { feed(&mut guard, start, second, 600); }
+        assert!(feed(&mut guard, start, 12, 600));
+        guard.new_connection();
+        for second in 13..44 { assert!(!feed(&mut guard, start, second, 600)); }
+        assert!(feed(&mut guard, start, 44, 600));
+        guard.new_connection();
+        for second in 45..200 { assert!(!feed(&mut guard, start, second, 600)); }
+        assert_eq!(guard.automatic_count, 2);
+    }
+    #[test]
+    fn disabled_guard_does_not_interrupt_cloud_or_pause_menu() {
+        let start = Instant::now();
+        let mut guard = RefreshGuard::default();
+        for second in 0..100 {
+            let value = sample(start, second, 1000);
+            assert!(!guard.observe(value, value.received_at, false));
+        }
+    }
+}

@@ -22,6 +22,8 @@ pub(crate) struct StreamingSession {
     pub(in crate::app) title_id: Option<String>,
     pub(super) return_target: StreamReturnTarget,
     backend: PlaybackBackend,
+    pub(super) restart_target: super::StreamStartTarget,
+    pub(super) video_timing: Option<crate::streaming::video::freshness::VideoTiming>,
     latest_video_frame: Option<u64>,
     current_video_frame: Option<DecodedFrame>,
     stream_video_size: Option<(u32, u32)>,
@@ -35,6 +37,7 @@ impl StreamingSession {
         kind: StreamKind,
         title_id: Option<String>,
         return_selected: usize,
+        restart_target: super::StreamStartTarget,
     ) -> Result<Self> {
         let backend = PlaybackBackend::start_xbox(stream)?;
         let return_target = match kind {
@@ -49,13 +52,17 @@ impl StreamingSession {
             title_id,
             return_target,
             backend,
+            restart_target,
+            video_timing: None,
             latest_video_frame: None,
             current_video_frame: None,
             stream_video_size: None,
             pending_audio_packets: Vec::new(),
-            ignore_confirm_until_release: false,
+            ignore_confirm_until_release: true,
         })
     }
+
+    pub(crate) fn can_refresh(&self) -> bool { matches!(self.restart_target.kind, StreamKind::Home) }
 
     pub(crate) fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
@@ -146,6 +153,7 @@ impl StreamingSession {
                 PlaybackBackendEvent::VideoResolution(width, height) => {
                     self.stream_video_size = Some((width, height));
                 }
+                PlaybackBackendEvent::VideoTiming(timing) => self.video_timing = Some(timing),
                 PlaybackBackendEvent::Closed => closed = true,
                 PlaybackBackendEvent::Error(message) => error = Some(message),
             }

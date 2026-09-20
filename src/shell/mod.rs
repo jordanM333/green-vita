@@ -46,6 +46,7 @@ pub async fn run(mut app: App) -> Result<()> {
     let mut surface = VitaSurface::new(&video)?;
     let mut audio_renderer =
         AudioRenderer::new(&audio).context("failed to set up audio renderer")?;
+    let mut audio_stream: Option<std::sync::Arc<crate::streaming::video::DirectVideoOutput>> = None;
     let egui_ctx = egui::Context::default();
     crate::app::ui::fonts::configure(&egui_ctx);
     let start_time = Instant::now();
@@ -202,6 +203,16 @@ pub async fn run(mut app: App) -> Result<()> {
         );
 
         app.tick().await?;
+        let next_audio_stream = app.state.streaming().map(|s| s.direct_video_output());
+        let audio_stream_changed = match (&audio_stream, &next_audio_stream) {
+            (Some(old), Some(new)) => !std::sync::Arc::ptr_eq(old, new),
+            (None, None) => false,
+            _ => true,
+        };
+        if audio_stream_changed {
+            audio_renderer.reset_stream();
+            audio_stream = next_audio_stream;
+        }
         if let Some(streaming) = app.state.streaming_mut() {
             audio_renderer.submit_packets(streaming.take_audio_packets());
         }

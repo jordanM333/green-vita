@@ -26,7 +26,32 @@ impl App {
             self.stop_stream_with_error("error-stream-ended", code)
                 .await;
         }
+        let playing = matches!(&self.state, AppState::Streaming(_));
+        let refresh = self.state.streaming().and_then(|session| {
+            session.video_timing.map(|timing| (timing, playing && session.can_refresh() && !session.paused))
+        }).is_some_and(|(timing, enabled)| self.home_refresh_guard.observe(timing, std::time::Instant::now(), enabled));
+        if refresh { self.refresh_home_stream(true); }
         Ok(())
+    }
+
+    pub(crate) fn refresh_home_stream(&mut self, automatic: bool) {
+        if !self.state.streaming().is_some_and(|s| s.can_refresh()) { return; }
+        let state = std::mem::replace(&mut self.state, AppState::ModeSelect { selected: 0 });
+        let Some(streaming) = state.into_streaming() else { return; };
+        let target = streaming.restart_target.clone();
+        self.home_refresh_guard.new_connection();
+        crate::streaming::video::trace::record(if automatic { "auto_refresh" } else { "manual_refresh" }, 0,
+            streaming.video_timing.map_or(0, |t| t.added_delay_ms));
+        let api = self.service.api.clone();
+        let kind = target.kind;
+        let target_id = target.target_id.clone();
+        // Stop the old receiver AND decoder before allocating a new decoder.
+        // This ends the remote-play connection; no console power/game command is sent.
+        let job = tokio::spawn(async move {
+            streaming.stop().await?;
+            api.start_stream(kind, &target_id).await
+        });
+        self.set_state(AppState::StartingStream { target, job: Some(job) });
     }
 
     async fn stop_stream_with_error(&mut self, reason_key: &'static str, error: String) {

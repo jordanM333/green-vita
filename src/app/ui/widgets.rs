@@ -223,12 +223,22 @@ pub(super) fn menu_item(
     label: &str,
     selected: bool,
 ) -> bool {
-    const HEIGHT: f32 = 44.0;
+    menu_item_sized(ui, theme, icon, label, selected, 44.0)
+}
+
+pub(super) fn menu_item_sized(
+    ui: &mut egui::Ui,
+    theme: Theme,
+    icon: &str,
+    label: &str,
+    selected: bool,
+    height: f32,
+) -> bool {
     const CORNER_RADIUS: f32 = 8.0;
     const ICON_COLUMN_WIDTH: f32 = 40.0;
 
     let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, HEIGHT), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
 
     if ui.is_rect_visible(rect) {
         let (fill, text_color) = if selected {

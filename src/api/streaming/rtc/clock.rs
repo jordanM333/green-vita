@@ -17,6 +17,7 @@ pub(super) struct RtpClockProbe {
     elapsed_ticks: u64,
     minimum_offset_us: i128,
     relative_delay_ms: u64,
+    last_frame_at: Option<Instant>,
 }
 
 impl RtpClockProbe {
@@ -33,6 +34,7 @@ impl RtpClockProbe {
             elapsed_ticks: 0,
             minimum_offset_us: 0,
             relative_delay_ms: 0,
+            last_frame_at: None,
         }
     }
 
@@ -68,6 +70,7 @@ impl RtpClockProbe {
             }
         }
         self.last_timestamp = Some(timestamp);
+        self.last_frame_at = Some(now);
         let baseline = *self.arrival_baseline.get_or_insert(now);
         let media_us = i128::from(self.elapsed_ticks) * 1_000_000 / i128::from(self.clock_rate);
         let offset_us = now.saturating_duration_since(baseline).as_micros() as i128 - media_us;
@@ -108,6 +111,13 @@ impl RtpClockProbe {
         let drift = age_ms - self.baseline_age_ms.unwrap_or(age_ms);
         // Absolute age assumes Xbox and Vita have synchronized clocks. Drift does not.
         format!("{age_ms}ms d{drift:+} rel+{}ms SR:{}/{}s", self.relative_delay_ms, self.report_count, report_age)
+    }
+
+    pub(super) fn timing(&self) -> Option<crate::streaming::video::freshness::VideoTiming> {
+        Some(crate::streaming::video::freshness::VideoTiming {
+            timestamp: self.last_timestamp?, received_at: self.last_frame_at?,
+            added_delay_ms: self.relative_delay_ms,
+        })
     }
 
     pub(super) fn age_ms(&self) -> Option<i64> {

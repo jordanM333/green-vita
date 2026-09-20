@@ -1,5 +1,6 @@
 mod decoder;
 mod frame_signal;
+pub(crate) mod freshness;
 mod memory;
 pub(crate) mod metrics;
 mod worker;

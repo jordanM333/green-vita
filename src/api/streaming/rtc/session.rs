@@ -178,10 +178,15 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             self.status = format!(
                 "Xbox requested:{requested_width}x{requested_height} server:{server_size}\n{status}\n{link}\n{receive}\n{feedback}"
             );
+            crate::streaming::video::trace::status_snapshot(&self.status);
             eprintln!("{}", self.status);
         }
 
         Ok(gathered_candidates)
+    }
+
+    pub(crate) fn video_timing(&self) -> Option<crate::streaming::video::freshness::VideoTiming> {
+        self.video_clock.timing()
     }
 
     fn connection_debug(&mut self, now: Instant) -> String {
@@ -373,6 +378,7 @@ impl<B: RtcSessionBackend> Drop for RtcSession<B> {
         // worker without calling close(). Save on ownership teardown so all
         // graceful exit paths persist diagnostics, including remote-first exit.
         // This cannot run if the OS forcibly terminates the application.
+        self.video.decoder.shutdown();
         crate::streaming::video::trace::save(&self.status);
     }
 }

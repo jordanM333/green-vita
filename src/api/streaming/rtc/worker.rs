@@ -36,6 +36,7 @@ pub enum RtcWorkerEvent {
     LocalCandidates(Vec<RTCIceCandidateInit>),
     Status { status: String },
     VideoResolution(u32, u32),
+    VideoTiming(crate::streaming::video::freshness::VideoTiming),
     Closed,
     Error(String),
 }
@@ -57,6 +58,8 @@ pub(crate) struct TimedAudioBatch {
 }
 
 pub struct RtcWorker {
+    thread: Option<std::thread::JoinHandle<()>>,
+    stop: Arc<tokio::sync::Notify>,
     commands_tx: SyncSender<RtcWorkerCommand>,
     pub(crate) events_rx: Receiver<RtcWorkerEvent>,
     pub(crate) audio_rx: Receiver<TimedAudioBatch>,
@@ -81,7 +84,9 @@ impl RtcWorker {
             Arc::new(DirectVideoOutput::new(HW_OUTPUT_WIDTH, HW_OUTPUT_HEIGHT));
         let worker_direct_video_output = Arc::clone(&direct_video_output);
 
-        std::thread::Builder::new()
+        let stop = Arc::new(tokio::sync::Notify::new());
+        let worker_stop = Arc::clone(&stop);
+        let thread = std::thread::Builder::new()
             .name("green-vita-rtc".to_owned())
             .spawn(move || {
                 match catch_unwind(AssertUnwindSafe(|| {
@@ -94,6 +99,7 @@ impl RtcWorker {
                         worker_latest_gamepad,
                         worker_gamepad_pulses,
                         worker_direct_video_output,
+                        worker_stop,
                     )
                 })) {
                     Ok(Ok(())) => {}
@@ -114,6 +120,8 @@ impl RtcWorker {
             .context("failed to spawn RTC worker thread")?;
 
         Ok(Self {
+            thread: Some(thread),
+            stop,
             commands_tx,
             events_rx,
             audio_rx,
@@ -122,6 +130,18 @@ impl RtcWorker {
             gamepad_pulses,
             direct_video_output,
         })
+    }
+
+    pub(crate) async fn shutdown(mut self) -> Result<()> {
+        let thread = self.thread.take();
+        // Dropping receivers also releases any important-event send blocked
+        // behind a full UI channel. Cancellation covers SDP negotiation too.
+        drop(self);
+        if let Some(thread) = thread {
+            tokio::task::spawn_blocking(move || thread.join().map_err(|_| anyhow::anyhow!("RTC worker panicked")))
+                .await.context("failed to join RTC worker")??;
+        }
+        Ok(())
     }
 
     pub fn add_remote_candidate(&self, candidate: RTCIceCandidateInit) {
@@ -153,6 +173,7 @@ impl RtcWorker {
 
 impl Drop for RtcWorker {
     fn drop(&mut self) {
+        self.stop.notify_one();
         send_lossy(&self.commands_tx, RtcWorkerCommand::Stop);
     }
 }
@@ -166,6 +187,7 @@ fn run_worker_thread<P: RtcWorkerProvider>(
     latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
     direct_video_output: Arc<DirectVideoOutput>,
+    stop: Arc<tokio::sync::Notify>,
 ) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -173,36 +195,42 @@ fn run_worker_thread<P: RtcWorkerProvider>(
         .context("failed to build RTC worker runtime")?;
 
     runtime.block_on(async move {
-        let (peer, backend) = provider.create_peer()?;
-        let config = provider.session_config();
-        let mut session = RtcSession::new(peer, backend, config, direct_video_output).await?;
+        tokio::select! {
+            biased;
+            _ = stop.notified() => Ok(()),
+            result = async move {
+                let (peer, backend) = provider.create_peer()?;
+                let config = provider.session_config();
+                let mut session = RtcSession::new(peer, backend, config, direct_video_output).await?;
 
-        let offer = session.create_offer()?;
-        let answer_sdp =
-            tokio::time::timeout(SDP_NEGOTIATION_TIMEOUT, provider.exchange_sdp(&offer))
+                let offer = session.create_offer()?;
+                let answer_sdp =
+                    tokio::time::timeout(SDP_NEGOTIATION_TIMEOUT, provider.exchange_sdp(&offer))
+                        .await
+                        .context("timed out waiting for RTC SDP answer")??;
+                session.set_remote_answer(answer_sdp)?;
+                #[cfg(target_os = "vita")]
+                prioritize_rtc_thread();
+
+                send_lossy(
+                    &events_tx,
+                    RtcWorkerEvent::Status {
+                        status: session.status.clone(),
+                    },
+                );
+
+                run_session(
+                    session,
+                    commands_rx,
+                    events_tx,
+                    audio_tx,
+                    latest_frame,
+                    latest_gamepad,
+                    gamepad_pulses,
+                )
                 .await
-                .context("timed out waiting for RTC SDP answer")??;
-        session.set_remote_answer(answer_sdp)?;
-        #[cfg(target_os = "vita")]
-        prioritize_rtc_thread();
-
-        send_lossy(
-            &events_tx,
-            RtcWorkerEvent::Status {
-                status: session.status.clone(),
-            },
-        );
-
-        run_session(
-            session,
-            commands_rx,
-            events_tx,
-            audio_tx,
-            latest_frame,
-            latest_gamepad,
-            gamepad_pulses,
-        )
-        .await
+            } => result,
+        }
     })
 }
 
@@ -352,6 +380,9 @@ async fn run_session<B: super::session::RtcSessionBackend>(
         }
 
         if session.status != last_status || session.connection_state != last_connection_state {
+            if let Some(timing) = session.video_timing() {
+                send_lossy(&events_tx, RtcWorkerEvent::VideoTiming(timing));
+            }
             last_status = session.status.clone();
             last_connection_state = session.connection_state;
             send_lossy(

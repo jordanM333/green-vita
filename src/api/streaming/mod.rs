@@ -13,6 +13,7 @@ use std::sync::Arc;
 pub(crate) enum PlaybackBackendEvent {
     Status(String),
     VideoResolution(u32, u32),
+    VideoTiming(crate::streaming::video::freshness::VideoTiming),
     Closed,
     Error(String),
 }

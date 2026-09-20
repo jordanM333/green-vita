@@ -31,6 +31,7 @@ pub(crate) enum SubmitResult {
 }
 
 pub struct VideoDecodeWorker {
+    thread: Option<std::thread::JoinHandle<()>>,
     access_units: Sender<QueuedAccessUnit>,
     commands: Sender<DecoderCommand>,
     generation: Arc<AtomicU64>,
@@ -56,7 +57,8 @@ impl VideoDecodeWorker {
         let worker_result_ready = Arc::clone(&result_ready);
         let worker_direct_output = Arc::clone(&direct_output);
 
-        std::thread::Builder::new()
+        let ready_output = Arc::clone(&direct_output);
+        let thread = std::thread::Builder::new()
             .name("green-vita-video-decode".to_owned())
             .spawn(move || {
                 #[cfg(target_os = "vita")]
@@ -71,11 +73,13 @@ impl VideoDecodeWorker {
                     decoder,
                     config,
                     worker_direct_output,
-                )
+                );
+                ready_output.decoder_ready.store(false, Ordering::Release);
             })
             .context("failed to spawn video decode worker")?;
 
         Ok(Self {
+            thread: Some(thread),
             access_units,
             commands,
             generation,
@@ -83,6 +87,15 @@ impl VideoDecodeWorker {
             latest_result,
             result_ready,
         })
+    }
+
+    pub(crate) fn shutdown(&mut self) {
+        if let Some(thread) = self.thread.take() {
+            let _ = self.commands.send(DecoderCommand::Stop);
+            // The decoder owns a scarce Vita resource. Finish its destruction
+            // before any replacement stream can allocate another instance.
+            if thread.join().is_err() { eprintln!("Video decode worker panicked during shutdown"); }
+        }
     }
 
     pub fn submit_access_unit(
@@ -125,7 +138,7 @@ impl VideoDecodeWorker {
 
 impl Drop for VideoDecodeWorker {
     fn drop(&mut self) {
-        let _ = self.commands.send(DecoderCommand::Stop);
+        self.shutdown();
     }
 }
 

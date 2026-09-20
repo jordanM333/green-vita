@@ -33,8 +33,11 @@ status and a bounded 4096-event metadata ring are saved when leaving streaming:
 
 - ux0:data/green-vita-540-test/pipeline-trace.csv
 - ux0:data/green-vita-540-test/pipeline-status.txt
+- ux0:data/green-vita-540-test/pipeline-history.txt
 
-Each new saved session replaces these two diagnostic files only. No payloads,
+Each saved session rotates these three files to pipeline-previous-* before
+writing the current session. History retains up to 600 status snapshots, no more
+than one per second, to expose gradual drift beyond the short detailed trace. No payloads,
 tokens, account identifiers or URLs are recorded. No filesystem writes happen
 in the live receive/decode loop. If the app is killed, the trace is not saved.
 Saving is attached to RTC session teardown, including a remote Closed event or
@@ -136,3 +139,28 @@ recovery waiting is not itself a solution to loss. Host regression tests and a
 successful VPK build cannot establish Vita gameplay latency. No new NACK path
 is enabled: retransmissions with the observed 183ms RTT would arrive after the
 6ms assembly deadline and require a separately designed recovery strategy.
+
+
+## Home refresh and sustained drift recovery (test 28)
+
+Home pause menu now includes Refresh stream. It stops and joins the RTC and
+hardware decoder workers, ends the remote-play session, then reconnects to the
+same console using the current settings. No console power or game-quit command
+is sent. Audio/Opus/PCM state is discarded at session boundaries. Refresh briefly
+interrupts playback; failure returns the existing error screen. Cloud playback
+has no automatic reconnect or new refresh action.
+
+The Home guard reconnects only after fresh distinct video timing samples show
+at least 300 ms of added RTP arrival delay continuously for two seconds, after
+a ten-second startup grace. Pause/settings, stale samples and missing samples
+do not count. It has a 30-second cooldown and at most two automatic attempts per
+manually started playthrough; reconnecting does not reset that budget. Six host
+tests cover healthy long sessions, sustained growth, transient bursts, stale and
+duplicate samples, cooldown/budget, and disabled operation.
+
+This is a bounded fallback, not proof the reported one-second delay is fixed.
+The supplied Home snapshot shows only 5 ms of video arrival growth and 12/29 ms
+from decoded picture to GPU completion, so it would not trigger automatic
+recovery. Delay before the sender's RTP timestamp, input-path delay, and actual
+scanout remain outside that measurement. Manual refresh provides the known
+reconnect workaround; the longer history preserves evidence for further fixes.

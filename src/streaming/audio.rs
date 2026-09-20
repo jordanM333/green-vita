@@ -102,6 +102,7 @@ pub struct AudioRenderer {
     packets_tx: SyncSender<Bytes>,
     samples_rx: Receiver<Vec<i16>>,
     started: bool,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl AudioRenderer {
@@ -122,13 +123,14 @@ impl AudioRenderer {
                 spec.freq, spec.channels, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS
             );
         }
-        let (packets_tx, samples_rx) = spawn_decode_worker()?;
+        let (packets_tx, samples_rx, thread) = spawn_decode_worker()?;
 
         Ok(Self {
             queue,
             packets_tx,
             samples_rx,
             started: false,
+            thread: Some(thread),
         })
     }
 
@@ -223,29 +225,45 @@ impl AudioRenderer {
         );
     }
 
+    pub fn reset_stream(&mut self) {
+        self.restart_decode_worker();
+    }
+
     fn restart_decode_worker(&mut self) {
         self.queue.pause();
         self.queue.clear();
         self.started = false;
+        // Disconnect both sides before joining: the worker may be waiting on
+        // either an empty Opus queue or a full PCM queue.
+        let (empty_tx, _) = sync_channel(0);
+        let (_, empty_rx) = sync_channel(0);
+        drop(std::mem::replace(&mut self.packets_tx, empty_tx));
+        drop(std::mem::replace(&mut self.samples_rx, empty_rx));
+        if let Some(thread) = self.thread.take() {
+            if thread.join().is_err() { eprintln!("Audio worker panicked during shutdown"); }
+        }
+        // Reset only after the old worker can no longer decrement the gauges.
         METRICS.audio_opus_pending.store(0, Ordering::Relaxed);
         METRICS.audio_pcm_pending.store(0, Ordering::Relaxed);
+        METRICS.audio_sdl_queue_ms.store(0, Ordering::Relaxed);
         match spawn_decode_worker() {
-            Ok((packets_tx, samples_rx)) => {
+            Ok((packets_tx, samples_rx, thread)) => {
                 self.packets_tx = packets_tx;
                 self.samples_rx = samples_rx;
+                self.thread = Some(thread);
             }
             Err(error) => eprintln!("Failed to restart audio decode worker: {error:#}"),
         }
     }
 }
 
-fn spawn_decode_worker() -> Result<(SyncSender<Bytes>, Receiver<Vec<i16>>)> {
+fn spawn_decode_worker() -> Result<(SyncSender<Bytes>, Receiver<Vec<i16>>, std::thread::JoinHandle<()>)> {
     let (packets_tx, packets_rx) = sync_channel::<Bytes>(MAX_PENDING_OPUS_PACKETS);
     let (samples_tx, samples_rx) = sync_channel::<Vec<i16>>(MAX_PENDING_PCM_BUFFERS);
 
     let mut decoder = NativeOpusDecoder::new().context("failed to create Opus decoder")?;
 
-    std::thread::Builder::new()
+    let thread = std::thread::Builder::new()
         .name("green-vita-audio-decode".to_owned())
         .spawn(move || {
             let mut decode_buf = vec![0i16; MAX_OPUS_FRAME_SAMPLES_PER_CHANNEL * AUDIO_CHANNELS];
@@ -272,5 +290,5 @@ fn spawn_decode_worker() -> Result<(SyncSender<Bytes>, Receiver<Vec<i16>>)> {
         })
         .context("failed to spawn audio decode worker")?;
 
-    Ok((packets_tx, samples_rx))
+    Ok((packets_tx, samples_rx, thread))
 }

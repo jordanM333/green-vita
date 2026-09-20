@@ -84,3 +84,5 @@ error-stream-state = Failed to check stream state
 error-webrtc-session = WebRTC session failed
 error-stream-ended = Stream session ended
 error-technical-details = Technical details: { $error }
+
+paused-refresh-stream = Refresh stream

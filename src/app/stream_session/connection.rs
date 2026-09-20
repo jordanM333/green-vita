@@ -54,6 +54,7 @@ pub(crate) struct ConnectingStream {
     pub(crate) return_selected: usize,
 }
 
+#[derive(Clone)]
 pub(crate) struct StreamStartTarget {
     pub(crate) kind: StreamKind,
     pub(crate) target_id: String,
@@ -90,6 +91,7 @@ pub(in crate::app) async fn cleanup_active_sessions(api: &ApiClient, kind: Strea
 
 impl App {
     pub(in crate::app) fn start_stream_for_target(&mut self, target: StreamStartTarget) {
+        self.home_refresh_guard = Default::default();
         let api = self.service.api.clone();
         let kind = target.kind;
         let target_id = target.target_id.clone();
@@ -224,6 +226,9 @@ impl App {
                     session.kind,
                     title_id,
                     session.return_selected,
+                    StreamStartTarget { kind: session.kind, target_id: session.target_id.clone(),
+                        game_id: session.game_id.clone(), label: session.label.clone(),
+                        return_selected: session.return_selected },
                 ) {
                     Ok(streaming) => Ok(AppState::Streaming(streaming)),
                     Err(error) => {

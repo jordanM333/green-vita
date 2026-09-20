@@ -57,6 +57,7 @@ impl XboxStreamingBackend {
                 RtcWorkerEvent::VideoResolution(width, height) => {
                     return Some(PlaybackBackendEvent::VideoResolution(width, height));
                 }
+                RtcWorkerEvent::VideoTiming(timing) => return Some(PlaybackBackendEvent::VideoTiming(timing)),
                 RtcWorkerEvent::Closed => return Some(PlaybackBackendEvent::Closed),
                 RtcWorkerEvent::Error(message) => {
                     return Some(PlaybackBackendEvent::Error(message));
@@ -105,8 +106,14 @@ impl XboxStreamingBackend {
     }
 
     pub(crate) async fn stop(self) -> Result<()> {
-        let session_id = self.stream.session_id.clone();
-        let response = self.stream.stop().await?;
+        let Self { stream, worker, ice_post_job, ice_poll_job, keepalive_job, .. } = self;
+        if let Some(job) = ice_post_job { job.abort(); }
+        if let Some(job) = ice_poll_job { job.abort(); }
+        if let Some(job) = keepalive_job { job.abort(); }
+        let stopped = worker.shutdown().await;
+        let session_id = stream.session_id.clone();
+        let response = stream.stop().await?;
+        stopped?;
         eprintln!("Stopped xCloud session {session_id}: {response}");
         Ok(())
     }
