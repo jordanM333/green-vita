@@ -119,7 +119,6 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     }
 
     pub fn close(&mut self) -> Result<()> {
-        crate::streaming::video::trace::save(&self.status);
         self.peer
             .close()
             .context("failed to close rtc peer connection")
@@ -352,5 +351,15 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         crate::streaming::video::trace::record("keyframe_request", 0, 0);
         self.backend.notify_keyframe_requested(&mut self.peer);
         self.video.request_keyframe(&mut self.peer);
+    }
+}
+
+impl<B: RtcSessionBackend> Drop for RtcSession<B> {
+    fn drop(&mut self) {
+        // The remote Closed event and pump/socket errors can return from the
+        // worker without calling close(). Save on ownership teardown so all
+        // graceful exit paths persist diagnostics, including remote-first exit.
+        // This cannot run if the OS forcibly terminates the application.
+        crate::streaming::video::trace::save(&self.status);
     }
 }

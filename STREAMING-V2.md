@@ -35,6 +35,10 @@ status and a bounded 4096-event metadata ring are saved when leaving streaming:
 Each new saved session replaces these two diagnostic files only. No payloads,
 tokens, account identifiers or URLs are recorded. No filesystem writes happen
 in the live receive/decode loop. If the app is killed, the trace is not saved.
+Saving is attached to RTC session teardown, including a remote Closed event or
+worker error. The initial V2 build saved only from explicit close(), which a
+remote-first shutdown could bypass. Use the in-app pause menu's Exit game,
+wait for the game/console list, then refresh the FTP directory listing.
 
 Trace stages include first AU packet, complete/abandoned AU, drop reason,
 keyframe request, decode submission/return, produced picture generation,
