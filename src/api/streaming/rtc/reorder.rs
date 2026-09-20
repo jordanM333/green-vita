@@ -85,20 +85,30 @@ impl<T> PacketOrder<T> {
         self.held.push(Held { sequence, value, arrived: now });
         self.stats.max_depth = self.stats.max_depth.max(self.held.len());
         // Even a stalled consumer cannot grow the queue beyond its fixed bound.
-        self.pop(now)
+        self.pop_ready(now)
+    }
+
+    /// Drain a receive batch without expiring holes ahead of packets that may
+    /// already be in that batch. Capacity pressure still releases immediately.
+    pub(crate) fn pop_ready(&mut self, now: Instant) -> Option<T> {
+        self.take(now, false)
     }
 
     /// Call on each RTC pump, including pumps without incoming video. The gap
     /// deadline is based on the oldest held packet and is never extended by
     /// newer arrivals. Missing packets are skipped, never fabricated.
     pub(crate) fn pop(&mut self, now: Instant) -> Option<T> {
+        self.take(now, true)
+    }
+
+    fn take(&mut self, now: Instant, expire_gaps: bool) -> Option<T> {
         let next = self.next?;
         let (index, first) = self.held.iter().enumerate()
             .min_by_key(|(_, p)| p.sequence.wrapping_sub(next))?;
         let missing = first.sequence.wrapping_sub(next);
         if missing != 0 {
             let full = self.held.len() >= MAX_HELD_PACKETS;
-            let expired = self.held.iter().any(|p| now.duration_since(p.arrived) >= GAP_GRACE);
+            let expired = expire_gaps && self.held.iter().any(|p| now.duration_since(p.arrived) >= GAP_GRACE);
             if !full && !expired {
                 return None;
             }

@@ -80,11 +80,10 @@ mod tests {
             while let Some(p) = self.order.pop(now) { self.consume(assembler, p); }
         }
         fn receive(&mut self, assembler: &mut video_rtp::VideoRtp, p: rtp::Packet, now: Instant) {
-            self.flush(assembler, now);
             if let Some(p) = self.order.push(p.header.sequence_number, p, now) {
                 self.consume(assembler, p);
             }
-            self.flush(assembler, now);
+            while let Some(p) = self.order.pop_ready(now) { self.consume(assembler, p); }
         }
     }
 
@@ -117,6 +116,29 @@ mod tests {
             vec![0, 0, 0, 1, 0x65, 0x88, 0x99], vec![0, 0, 0, 1, 0x61, 0xaa, 0xbb],
         ]);
         assert_eq!(fixed.order.stats.filled, 1);
+    }
+
+    #[test]
+    fn delayed_pump_processes_available_gap_filler_before_expiring_it() {
+        let mut fixed = OrderedReceiver::default();
+        let mut assembler = video_rtp::VideoRtp::new(1280, 720);
+        let now = Instant::now();
+        fixed.receive(&mut assembler, packet(10, 1000, false, &[0x7c, 0x85, 0x88]), now);
+        fixed.receive(&mut assembler, packet(12, 2500, true, &[0x61, 0xaa, 0xbb]), now);
+        // The next receive batch is processed after the 6ms deadline. Packet 13
+        // arrives before the gap filler within this already-received batch.
+        let delayed = now + Duration::from_millis(11);
+        fixed.receive(&mut assembler, packet(13, 4000, true, &[0x61, 0xcc, 0xdd]), delayed);
+        fixed.receive(&mut assembler, packet(11, 1000, true, &[0x7c, 0x45, 0x99]), delayed);
+        fixed.flush(&mut assembler, delayed);
+        assert_eq!(fixed.drops, 0);
+        assert_eq!(fixed.order.stats.missing, 0);
+        assert!(!fixed.keyframe);
+        assert_eq!(*fixed.worker.submitted.lock().unwrap(), vec![
+            vec![0, 0, 0, 1, 0x65, 0x88, 0x99],
+            vec![0, 0, 0, 1, 0x61, 0xaa, 0xbb],
+            vec![0, 0, 0, 1, 0x61, 0xcc, 0xdd],
+        ]);
     }
 
     #[test]

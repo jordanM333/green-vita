@@ -32,5 +32,5 @@ rtc-shared = { git = "https://github.com/Day-OS/rtc.git", branch = "vita" }
 
 [package.metadata.vita]
 title_id = "GRNVTEST1"
-title_name = "GreenVita Stream V2"
+title_name = "GreenVita RX Test"
 assets = "static"

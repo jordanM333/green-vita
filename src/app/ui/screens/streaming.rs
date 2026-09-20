@@ -51,11 +51,11 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                         // Use the once-per-second status; no duplicate
                         // live counters or twenty-line diagnostic paint every frame.
                         let compact = streaming.status.lines().filter(|line| {
-                            ["SPS:", "AU done:", "Q depth", "FPS hw", "Link ICE:", "Video payload:"]
+                            ["SPS:", "AU done:", "Q depth", "FPS hw", "Link ICE:", "Video payload:", "Recovery wait:", "REMB:"]
                                 .iter().any(|prefix| line.starts_with(prefix))
                         }).map(|line| line.chars().take(115).collect::<String>())
                             .collect::<Vec<_>>().join("\n");
-                        ui.label(egui::RichText::new(format!("STREAM V2 · decode queue: 3 AU / 50ms\n{compact}"))
+                        ui.label(egui::RichText::new(format!("RX TEST · decode queue: 3 AU / 50ms\n{compact}"))
                             .color(theme.text).size(12.0));
                         ui.label(egui::RichText::new(format!(
                             "Audio queued:{}ms | A:{} | diagnostics: pause menu",

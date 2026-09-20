@@ -384,6 +384,10 @@ impl VideoRtp {
         self.recovery.waiting()
     }
 
+    pub(super) fn recovery_summary(&self, now: Instant) -> String {
+        self.recovery.summary(now)
+    }
+
     pub(super) fn recover_decoder(&mut self, worker: &VideoDecodeWorker) -> bool {
         if worker.take_recovery_request() {
             self.record_damage(worker);
@@ -619,6 +623,10 @@ impl VideoRtp {
 
         match worker.submit_access_unit(data.to_vec(), completed.first_packet_at, completed.timestamp) {
             SubmitResult::Submitted => {
+                if unit.has_idr && self.recovery.waiting() {
+                    crate::streaming::video::trace::record("recovery_end_ms", completed.timestamp,
+                        self.recovery.wait_ms(Instant::now()));
+                }
                 self.recovery.submitted(unit.has_idr);
                 stats.submitted = 1;
                 if unit.has_idr {
@@ -645,6 +653,7 @@ impl VideoRtp {
 
     fn record_damage(&mut self, worker: &VideoDecodeWorker) {
         if self.recovery.damage() {
+            crate::streaming::video::trace::record("recovery_begin", 0, 0);
             worker.begin_resync();
         }
     }

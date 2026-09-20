@@ -103,11 +103,11 @@ impl RtpClockProbe {
             .map(|time| now.saturating_duration_since(time).as_secs())
             .unwrap_or_default();
         let Some(age_ms) = self.latest_age_ms else {
-            return format!("? SR:{}/{}s", self.report_count, report_age);
+            return format!("? SR:{}/{}s rel+{}ms", self.report_count, report_age, self.relative_delay_ms);
         };
         let drift = age_ms - self.baseline_age_ms.unwrap_or(age_ms);
         // Absolute age assumes Xbox and Vita have synchronized clocks. Drift does not.
-        format!("{age_ms}ms d{drift:+} SR:{}/{}s", self.report_count, report_age)
+        format!("{age_ms}ms d{drift:+} rel+{}ms SR:{}/{}s", self.relative_delay_ms, self.report_count, report_age)
     }
 
     pub(super) fn age_ms(&self) -> Option<i64> {

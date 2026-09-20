@@ -9,6 +9,9 @@ pub(crate) const AU_MAX_AGE: Duration = Duration::from_millis(50);
 #[derive(Default)]
 pub(crate) struct Recovery {
     waiting: bool,
+    started: Option<Instant>,
+    longest_wait: Duration,
+    completed: u64,
 }
 
 impl Recovery {
@@ -16,15 +19,32 @@ impl Recovery {
     pub(crate) fn damage(&mut self) -> bool {
         let changed = !self.waiting;
         self.waiting = true;
+        if changed { self.started = Some(Instant::now()); }
         changed
     }
 
     pub(crate) fn waiting(&self) -> bool { self.waiting }
     pub(crate) fn accepts(&self, idr: bool) -> bool { !self.waiting || idr }
 
+    pub(crate) fn wait_ms(&self, now: Instant) -> u64 {
+        self.started.map(|at| now.saturating_duration_since(at).as_millis() as u64).unwrap_or(0)
+    }
+
+    pub(crate) fn summary(&self, now: Instant) -> String {
+        let current = self.wait_ms(now);
+        format!("Recovery wait:{}ms max:{}ms completed:{}", current,
+            current.max(self.longest_wait.as_millis() as u64), self.completed)
+    }
+
     /// Seeing an IDR is insufficient: it must actually enter the decoder queue.
     pub(crate) fn submitted(&mut self, idr: bool) {
-        if idr { self.waiting = false; }
+        if idr {
+            self.waiting = false;
+            if let Some(started) = self.started.take() {
+                self.longest_wait = self.longest_wait.max(started.elapsed());
+                self.completed += 1;
+            }
+        }
     }
 }
 

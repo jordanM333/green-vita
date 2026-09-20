@@ -20,7 +20,7 @@ pub(crate) fn take_clock_reports() -> Vec<(u32, rtc::rtcp::sender_report::Sender
 }
 
 pub(crate) fn summary() -> String {
-    format!("RR tracks:{} made:{} SRseen:{} REMB:disabled",
+    format!("RR tracks:{} made:{} SRseen:{}",
         BOUND.load(Ordering::Relaxed), GENERATED.load(Ordering::Relaxed),
         SENDER_REPORTS.load(Ordering::Relaxed))
 }

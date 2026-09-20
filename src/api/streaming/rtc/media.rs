@@ -95,11 +95,15 @@ impl VideoReceiver {
         self.received_packet = true;
         self.stats.packets = self.stats.packets.saturating_add(1);
         let now = Instant::now();
-        self.flush_order(now, keyframe_requested);
+        // Process already-delivered packets before declaring a gap expired.
+        // Previously a pump delay could make us discard the exact packet in
+        // hand that would have closed the gap, then trigger seconds of IDR wait.
         if let Some((packet, received_at)) = self.order.push(packet.header.sequence_number, (packet, now), now) {
             self.receive_ordered(packet, received_at, keyframe_requested);
         }
-        self.flush_order(now, keyframe_requested);
+        while let Some((packet, received_at)) = self.order.pop_ready(now) {
+            self.receive_ordered(packet, received_at, keyframe_requested);
+        }
     }
 
     fn flush_order(&mut self, now: Instant, keyframe_requested: &mut bool) {
@@ -189,6 +193,17 @@ impl VideoReceiver {
         }
     }
 
+    pub(crate) fn request_bitrate_ceiling(&self, peer: &mut RTCPeerConnection, bps: u32) -> Option<bool> {
+        let (receiver_id, ssrc) = (self.receiver_id?, self.ssrc?);
+        let mut receiver = peer.rtp_receiver(receiver_id)?;
+        let remb = rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate {
+            sender_ssrc: 0,
+            bitrate: bps as f32,
+            ssrcs: vec![ssrc],
+        };
+        Some(receiver.write_rtcp(vec![Box::new(remb)]).is_ok())
+    }
+
     pub(crate) fn status(&mut self, now: Instant) -> Option<String> {
         if now.duration_since(self.last_stats_report) < STREAM_STATS_INTERVAL {
             return None;
@@ -224,7 +239,7 @@ impl VideoReceiver {
              RTP pk:{} jump:{}/~{} late:{} dup:{} empty:{}\n{}\n\
              AU done:{} sent:{} drop:{} seq:{} FU:{} mal:{} q:{} SPS:{} IDRwait:{} other:{}\n\
              IDR count:{} age:{idr_age} postDamageSent:{} wait:{} decoderErr:{}\n\
-             {performance}{last_error}",
+             {}\n{performance}{last_error}",
             config.decode_width,
             config.decode_height,
             config.output_width,
@@ -250,6 +265,7 @@ impl VideoReceiver {
             self.stats.post_damage_submitted,
             u8::from(self.rtp.waiting_for_keyframe()),
             self.stats.decode_errors,
+            self.rtp.recovery_summary(now),
         ))
     }
 }
