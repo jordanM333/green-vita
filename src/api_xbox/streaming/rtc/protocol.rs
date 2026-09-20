@@ -4,7 +4,7 @@ use crate::api_xbox::streaming::control::input::{InputQueue, PointerFrame};
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use bytes::BytesMut;
 use rtc::data_channel::RTCDataChannelId;
-use rtc::peer_connection::RTCPeerConnection;
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 
 #[derive(Clone, Copy)]
 pub(in crate::api_xbox::streaming) struct ChannelIds {

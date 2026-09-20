@@ -9,7 +9,7 @@ use crate::streaming::video::{
     STREAM_HEIGHT, STREAM_WIDTH,
 };
 use anyhow::Result;
-use rtc::peer_connection::RTCPeerConnection;
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use rtc::peer_connection::sdp::RTCSessionDescription;
 
 struct XboxRtcWorkerProvider {

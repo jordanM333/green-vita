@@ -66,6 +66,12 @@ jobs:
               core.setOutput('exists', 'false');
             }
 
+      - name: Test feedback negotiation and rate measurements
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          rustc --edition=2024 --target x86_64-unknown-linux-gnu --test src/api/streaming/rtc/feedback.rs -o /tmp/feedback-tests
+          /tmp/feedback-tests
+
       - name: Build VPK
         if: github.event_name == 'workflow_dispatch' || steps.release.outputs.exists == 'false'
         env:

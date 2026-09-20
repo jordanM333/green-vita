@@ -4,7 +4,7 @@ use crate::streaming::video::{DecodedFrame, DirectVideoOutput, HW_OUTPUT_HEIGHT,
 use crate::streaming::video::metrics::METRICS;
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use rtc::peer_connection::RTCPeerConnection;
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use rtc::peer_connection::sdp::RTCSessionDescription;
 use rtc::peer_connection::state::RTCPeerConnectionState;
 use rtc::peer_connection::transport::RTCIceCandidateInit;

@@ -3,7 +3,7 @@ use crate::streaming::video::{DecodedFrame, DecoderConfig, DirectVideoOutput, Vi
 use anyhow::Result;
 use bytes::Bytes;
 use rtc::media_stream::MediaStreamTrackId;
-use rtc::peer_connection::RTCPeerConnection;
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use rtc::rtp::Packet;
 use rtc::rtp_transceiver::RTCRtpReceiverId;
 use std::sync::Arc;
@@ -165,6 +165,17 @@ impl VideoReceiver {
             };
             let _ = receiver.write_rtcp(vec![Box::new(pli)]);
         }
+    }
+
+    pub(crate) fn request_bitrate_ceiling(&self, peer: &mut RTCPeerConnection) -> Option<bool> {
+        let (receiver_id, ssrc) = (self.receiver_id?, self.ssrc?);
+        let mut receiver = peer.rtp_receiver(receiver_id)?;
+        let remb = rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate {
+            sender_ssrc: 0,
+            bitrate: super::feedback::VIDEO_CEILING_BPS,
+            ssrcs: vec![ssrc],
+        };
+        Some(receiver.write_rtcp(vec![Box::new(remb)]).is_ok())
     }
 
     pub(crate) fn status(&mut self, now: Instant) -> Option<String> {

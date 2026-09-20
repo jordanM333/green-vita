@@ -1,5 +1,5 @@
 use rtc::data_channel::RTCDataChannelId;
-use rtc::peer_connection::RTCPeerConnection;
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use serde_json::{Value, json};
 use uuid::Uuid;
 

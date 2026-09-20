@@ -1,7 +1,7 @@
 use super::ice;
 use anyhow::{Context, Result};
 use bytes::BytesMut;
-use rtc::peer_connection::RTCPeerConnection;
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use rtc::sansio::Protocol;
 use rtc::shared::{TaggedBytesMut, TransportContext, TransportProtocol};
 use std::net::SocketAddr;
@@ -22,6 +22,10 @@ pub(crate) struct RtcTransport {
     receive_budget_hits: u64,
     receive_packets_max: usize,
     receive_pass_max_us: u128,
+    receive_rate: super::feedback::ReceiveRate,
+    rr_sent: u64,
+    feedback_sent: u64,
+    send_errors: u64,
 }
 
 impl RtcTransport {
@@ -62,20 +66,33 @@ impl RtcTransport {
             receive_budget_hits: 0,
             receive_packets_max: 0,
             receive_pass_max_us: 0,
+            receive_rate: super::feedback::ReceiveRate::new(),
+            rr_sent: 0,
+            feedback_sent: 0,
+            send_errors: 0,
         })
     }
 
-    pub(crate) async fn flush(&self, peer: &mut RTCPeerConnection) {
+    pub(crate) async fn flush(&mut self, peer: &mut RTCPeerConnection) {
         while let Some(outgoing) = peer.poll_write() {
             if let Err(error) = self
                 .socket
                 .send_to(&outgoing.message, outgoing.transport.peer_addr)
                 .await
             {
+                self.send_errors += 1;
                 eprintln!(
                     "Failed to send WebRTC UDP packet to {}: {error}",
                     outgoing.transport.peer_addr
                 );
+            } else if outgoing.message.len() >= 8 && outgoing.message[0] >> 6 == 2 {
+                // SRTCP keeps its first RTCP header clear. Count successful UDP sends,
+                // not server acknowledgements; encrypted REMB contents are not inspected.
+                match outgoing.message[1] {
+                    201 => self.rr_sent += 1,
+                    206 => self.feedback_sent += 1,
+                    _ => {}
+                }
             }
         }
     }
@@ -86,6 +103,7 @@ impl RtcTransport {
         loop {
             match self.socket.try_recv_from(&mut self.recv_buf) {
                 Ok((n, peer_addr)) => {
+                    self.receive_rate.receive(n, Instant::now());
                     received += 1;
                     if let Err(error) = peer.handle_read(TaggedBytesMut {
                         now: Instant::now(),
@@ -118,9 +136,10 @@ impl RtcTransport {
 
     pub(crate) fn take_receive_summary(&mut self) -> String {
         let summary = format!(
-            "RX passes:{} budget:{} maxPk:{} max:{}us",
+            "RX passes:{} budget:{} maxPk:{} max:{}us\nUDP:{} RRsent:{} PSFB:{} txErr:{}",
             self.receive_passes, self.receive_budget_hits,
             self.receive_packets_max, self.receive_pass_max_us,
+            self.receive_rate.summary(Instant::now()), self.rr_sent, self.feedback_sent, self.send_errors,
         );
         self.receive_passes = 0;
         self.receive_budget_hits = 0;
