@@ -8,4 +8,6 @@ mod reports;
 mod clock;
 #[path = "../../../src/streaming/video/freshness.rs"]
 pub(crate) mod freshness;
-pub(crate) mod streaming { pub(crate) mod video { pub(crate) use crate::freshness; } }
+#[path = "../../../src/streaming/video/timing.rs"]
+pub(crate) mod timing;
+pub(crate) mod streaming { pub(crate) mod video { pub(crate) use crate::{freshness, timing}; } }

@@ -50,6 +50,7 @@ pub(crate) trait RtcSessionBackend {
     fn send_pointer_event(&mut self, peer: &mut RTCPeerConnection, event: PointerEvent);
     fn notify_keyframe_requested(&mut self, peer: &mut RTCPeerConnection);
     fn server_video_size(&self) -> Option<(u32, u32)>;
+    fn send_rendered_frame(&mut self, peer: &mut RTCPeerConnection, frame: crate::streaming::video::timing::PresentedFrame) -> bool;
 }
 
 pub(crate) struct RtcSession<B: RtcSessionBackend> {
@@ -68,6 +69,7 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     audio_clock: RtpClockProbe,
     video_rate: super::feedback::ReceiveRate,
     video_ceiling: super::feedback::VideoCeiling,
+    direct_output: Arc<DirectVideoOutput>,
 }
 
 impl<B: RtcSessionBackend> RtcSession<B> {
@@ -79,7 +81,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     ) -> Result<Self> {
         let transport =
             RtcTransport::bind(&mut peer, config.stun_server, config.route_probe).await?;
-        let video = VideoReceiver::new(config.decoder, direct_output)?;
+        let video = VideoReceiver::new(config.decoder, Arc::clone(&direct_output))?;
         crate::streaming::video::trace::reset();
 
         Ok(Self {
@@ -98,6 +100,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             audio_clock: RtpClockProbe::new(i64::from(config.audio_sample_rate)),
             video_rate: super::feedback::ReceiveRate::new(),
             video_ceiling: Default::default(),
+            direct_output,
         })
     }
 
@@ -140,6 +143,16 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         let gathered_candidates = self.handle_peer_events();
         let mut keyframe_requested = self.handle_peer_messages();
         self.video.drain_decoder(&mut keyframe_requested);
+
+        // Feedback identifies a matched output that has completed rendering.
+        // Decode-only, replaced and unknown-PTS pictures never enter this slot.
+        let presented = self.direct_output.presentation.lock().ok().and_then(|mut state| state.take());
+        if let Some(frame) = presented {
+            let sent = self.backend.send_rendered_frame(&mut self.peer, frame);
+            let counter = if sent { &METRICS.frame_feedback_sent } else { &METRICS.frame_feedback_failed };
+            counter.fetch_add(1, Ordering::Relaxed);
+            crate::streaming::video::trace::record("frame_feedback", frame.timing.rtp_timestamp, u64::from(sent));
+        }
 
         let now = Instant::now();
         // rtc-rs is sans-I/O, so its expired internal timer must be advanced by our pump.
@@ -186,7 +199,9 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     }
 
     pub(crate) fn video_timing(&self) -> Option<crate::streaming::video::freshness::VideoTiming> {
-        self.video_clock.timing()
+        let sample = self.video_clock.timing()?;
+        let rendered = self.direct_output.presentation.lock().ok().and_then(|state| state.latest);
+        Some(sample.with_presented_frame(rendered, Instant::now()))
     }
 
     fn connection_debug(&mut self, now: Instant) -> String {

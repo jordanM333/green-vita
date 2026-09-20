@@ -270,7 +270,8 @@ fn decode_queued_access_unit(
         decoder
             .as_mut()
             .expect("decoder recreated above")
-            .decode(&access_unit.data, direct_target.target)
+            .decode(&access_unit.data, direct_target.target, access_unit.rtp_timestamp,
+                access_unit.received_at, decode_started_at, access_unit.generation)
     }));
     let decode_us = decode_started_at.elapsed().as_micros() as u64;
     super::trace::record("decode_return", access_unit.rtp_timestamp, decode_us);
@@ -284,11 +285,23 @@ fn decode_queued_access_unit(
     }
 
     match decode_result {
-        Ok(Ok(true)) => {
+        Ok(Ok(Some(picture))) => {
+            if let Some(timing) = picture.timing {
+                if timing.epoch != generation.load(Ordering::Acquire) {
+                    metrics::METRICS.stale_generation.fetch_add(1, Ordering::Relaxed);
+                    super::trace::record("old_picture_epoch", timing.rtp_timestamp, timing.epoch);
+                    return;
+                }
+                metrics::METRICS.output_pts_matched.fetch_add(1, Ordering::Relaxed);
+                let age_us = timing.decoded_at.saturating_duration_since(timing.received_at).as_micros() as u64;
+                super::trace::record("picture_output_rtp", timing.rtp_timestamp, age_us);
+            } else {
+                metrics::METRICS.output_pts_unmatched.fetch_add(1, Ordering::Relaxed);
+            }
             super::trace::record("picture_produced", access_unit.rtp_timestamp,
                 access_unit.received_at.elapsed().as_micros() as u64);
             metrics::METRICS.decoded.fetch_add(1, Ordering::Relaxed);
-            let (texture_index, generation) = direct_target.publish();
+            let (texture_index, generation) = direct_target.publish(picture.timing);
             super::trace::record("picture_generation", access_unit.rtp_timestamp, generation);
             metrics::METRICS.pipeline_age_us.store(
                 access_unit.queued_at.elapsed().as_micros() as u64,
@@ -303,7 +316,7 @@ fn decode_queued_access_unit(
                 }),
             );
         }
-        Ok(Ok(false)) => {
+        Ok(Ok(None)) => {
             super::trace::record("no_picture", access_unit.rtp_timestamp, 0);
             metrics::METRICS.no_picture.fetch_add(1, Ordering::Relaxed);
         }

@@ -1,6 +1,9 @@
 //! Bounded, metadata-only flight recorder. No media payloads, URLs or tokens.
 //! Timestamps identify submissions, not guaranteed AVC output PTS: a no-picture
 //! decoder call means hardware output association must not be assumed exact.
+//! The explicit picture_output_rtp / receive_to_gpu_done_us / frame_feedback
+//! stages instead carry a verified output RTP identity. decoder_output_pts uses
+//! the submission RTP column and stores the decoder's raw 90 kHz PTS in value.
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Instant;

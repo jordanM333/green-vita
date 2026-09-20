@@ -121,11 +121,9 @@ Frame-signal host tests cover publication before waiting, publication during a
 wait, coalesced bursts, and stale notifications after consumption. The existing
 receiver report, reordering, H264 recovery and REMB tests remain build gates.
 
-The reference Xbox player sends rendered-frame metadata on its input channel.
-This build deliberately does not fabricate that report: the Vita SDK requires
-unknown decoder PTS values, and an input submission timestamp is not a verified
-output picture identity after buffering. Decoder capacity, timestamps, output
-format, stream requests, input protocol and authentication remain unchanged.
+Test 27 did not send Xbox rendered-frame metadata because input submission
+order does not prove output picture identity. Test 29 adds verified output PTS
+matching as described below; it never labels a picture by decode-call order.
 
 This targets the proven client display scheduling delay. It does not establish
 that the entire reported Cloud delay is fixed; that needs a device comparison.
@@ -164,3 +162,50 @@ from decoded picture to GPU completion, so it would not trigger automatic
 recovery. Delay before the sender's RTP timestamp, input-path delay, and actual
 scanout remain outside that measurement. Manual refresh provides the known
 reconnect workaround; the longer history preserves evidence for further fixes.
+
+
+## Matched decoder output and Xbox frame reports (test 29)
+
+The Vita header's old timestamp comment is incomplete: the Vita FFmpeg decoder
+passes 90 kHz PTS to `SceAvcdecAu` and reads `SceAvcdecPicture.info.pts` back.
+Reference: https://github.com/xfangfang/wiliwili/blob/88e5876bea9502d06f46a8656e3530684d3aaf7d/scripts/psv/ffmpeg/ffmpeg.patch
+
+We now pass extended 90 kHz RTP timestamps as PTS (DTS stays unknown) and match
+returned PTS against at most 256 submitted AU records. No-picture calls retain
+records. Unknown, missing, already-consumed or evicted PTS do not produce frame
+reports. Matched pictures from a previous recovery epoch are not published.
+Output buffers, decoder capacity/reference count and compressed-frame admission
+remain unchanged. This needs a device check that `PTS matched` advances and
+`unmatched` stays low; host tests cannot validate the hardware's PTS behavior.
+
+After GPU/display-callback completion, the matched picture's first packet,
+submission, decode and render times are sent as Xbox input-channel Metadata
+(type 1, one 28-byte record after the 14-byte header and one-byte count). All
+seven u32 fields use the reference layout; the local times use the same
+monotonic origin as gamepad reports. The reference implementation is:
+https://github.com/unknownskl/xbox-xcloud-player/blob/main/src/channel/input/packet.ts
+https://github.com/unknownskl/xbox-xcloud-player/blob/main/src/render/video.ts
+
+Only the newest pending completed-render report is retained. Repeated redraws,
+replaced pictures and reports held longer than 250 ms are not sent. Controller
+input remains immediate and uses the same sequence counter. `frameReport` counts
+successful local sends / failed or discarded sends, not Xbox acknowledgements.
+GPU completion is still not a physical panel scanout timestamp.
+
+`receiveToGPU` measures first packet to render completion using the matched
+picture, including any time buffered inside AVCDEC. The Home recovery guard
+uses the larger of this fresh measurement and relative RTP arrival growth;
+it preserves the rendered frame's identity so one old output cannot repeatedly
+count as sustained delay. Test 28's grace, cooldown and attempt limit remain.
+This closes a measurement/feedback gap; it does not establish that missing frame
+reports caused the user's one-second drift or that the drift is now fixed.
+
+New trace stages distinguish output identity from the legacy submission rows:
+- `decoder_output_pts`: raw returned 90 kHz PTS in value, submission RTP in column 3.
+- `picture_output_rtp`: matched output RTP in column 3, first-packet-to-decode microseconds in value.
+- `receive_to_gpu_done_us`: matched output RTP and first-packet-to-GPU microseconds.
+- `frame_feedback`: matched output RTP and local send success (1 or 0).
+- `decoder_pts_unmatched`: submission RTP, value 1 for unknown PTS, 0 for an unmatched value.
+- `old_picture_epoch`: output RTP and rejected recovery epoch.
+
+Test 28 `manual_refresh`/`auto_refresh` values are milliseconds, not microseconds.

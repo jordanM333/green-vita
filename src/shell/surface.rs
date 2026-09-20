@@ -18,7 +18,7 @@ pub struct VitaSurface {
     video_output_buffers: Option<Vec<CdramBlock>>,
     displayed_video_texture: Option<usize>,
     // Output generation, not submission RTP timestamp: AVCDEC may buffer an input.
-    pending_video_present: Option<(u64, Instant)>,
+    pending_video_present: Option<(u64, Instant, Option<crate::streaming::video::timing::FrameTiming>)>,
     direct_video_output: Option<Arc<DirectVideoOutput>>,
     video_width: u32,
     video_height: u32,
@@ -80,7 +80,7 @@ impl VitaSurface {
 
         // The decoder publishes a completed CDRAM frame directly to this shared output. The
         // frame handle that travels through RTC and app mailboxes can already be obsolete.
-        let Some((index, target, generation, decoded_at)) = self
+        let Some((index, target, generation, decoded_at, timing)) = self
             .direct_video_output
             .as_ref()
             .and_then(|output| output.take_latest_for_display())
@@ -144,7 +144,7 @@ impl VitaSurface {
         metrics.video_upload_count.fetch_add(1, Ordering::Relaxed);
         metrics.video_upload_max_us.fetch_max(upload_us, Ordering::Relaxed);
         self.displayed_video_texture = Some(index);
-        self.pending_video_present = Some((generation, decoded_at));
+        self.pending_video_present = Some((generation, decoded_at, timing));
         Ok(())
     }
 
@@ -302,7 +302,20 @@ impl VitaSurface {
             metrics.gpu_wait_count.fetch_add(1, Ordering::Relaxed);
             metrics.gpu_wait_max_us.fetch_max(gpu_us, Ordering::Relaxed);
             crate::streaming::video::trace::record("gpu_queue_wait_us", 0, gpu_us);
-            if let Some((generation, decoded_at)) = self.pending_video_present.take() {
+            if let Some((generation, decoded_at, timing)) = self.pending_video_present.take() {
+                let rendered_at = Instant::now();
+                if let Some(output) = self.direct_video_output.as_ref()
+                    && let Ok(mut presentation) = output.presentation.lock()
+                {
+                    presentation.record(generation, timing, rendered_at);
+                }
+                if let Some(timing) = timing {
+                    let age = rendered_at.saturating_duration_since(timing.received_at).as_micros() as u64;
+                    crate::streaming::video::trace::record("receive_to_gpu_done_us", timing.rtp_timestamp, age);
+                    metrics.received_gpu_sum_us.fetch_add(age, Ordering::Relaxed);
+                    metrics.received_gpu_count.fetch_add(1, Ordering::Relaxed);
+                    metrics.received_gpu_max_us.fetch_max(age, Ordering::Relaxed);
+                }
                 crate::streaming::video::trace::record("present_generation", 0, generation);
                 let age_us = decoded_at.elapsed().as_micros() as u64;
                 crate::streaming::video::trace::record("decoded_to_gpu_done_us", 0, age_us);

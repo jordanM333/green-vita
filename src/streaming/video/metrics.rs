@@ -1,6 +1,14 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) struct VideoMetrics {
+    pub(crate) output_pts_matched: AtomicU64,
+    pub(crate) output_pts_unmatched: AtomicU64,
+    pub(crate) received_gpu_sum_us: AtomicU64,
+    pub(crate) received_gpu_count: AtomicU64,
+    pub(crate) received_gpu_max_us: AtomicU64,
+    pub(crate) frame_feedback_sent: AtomicU64,
+    pub(crate) frame_feedback_failed: AtomicU64,
+
     pub(crate) rtp_assembly_sum_us: AtomicU64,
     pub(crate) rtp_assembly_count: AtomicU64,
     pub(crate) rtp_assembly_max_us: AtomicU64,
@@ -83,6 +91,14 @@ pub(crate) struct VideoMetrics {
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
+    output_pts_matched: AtomicU64::new(0),
+    output_pts_unmatched: AtomicU64::new(0),
+    received_gpu_sum_us: AtomicU64::new(0),
+    received_gpu_count: AtomicU64::new(0),
+    received_gpu_max_us: AtomicU64::new(0),
+    frame_feedback_sent: AtomicU64::new(0),
+    frame_feedback_failed: AtomicU64::new(0),
+
     rtp_assembly_sum_us: AtomicU64::new(0),
     rtp_assembly_count: AtomicU64::new(0),
     rtp_assembly_max_us: AtomicU64::new(0),
@@ -232,6 +248,13 @@ pub fn video_performance_summary() -> String {
     let rtc_pump_count = METRICS.rtc_pump_count.swap(0, Ordering::Relaxed);
     let rtc_pump_avg = rtc_pump_sum.checked_div(rtc_pump_count).unwrap_or(0) / 1000;
     let rtc_pump_max = METRICS.rtc_pump_max_us.swap(0, Ordering::Relaxed) / 1000;
+    let received_gpu_sum = METRICS.received_gpu_sum_us.swap(0, Ordering::Relaxed);
+    let received_gpu_count = METRICS.received_gpu_count.swap(0, Ordering::Relaxed);
+    let received_gpu_avg = received_gpu_sum.checked_div(received_gpu_count).unwrap_or(0) / 1000;
+    let received_gpu_max = METRICS.received_gpu_max_us.swap(0, Ordering::Relaxed) / 1000;
+    let frame_feedback = format!("PTS matched/unmatched:{}/{} receiveToGPU:{received_gpu_avg}/{received_gpu_max}ms frameReport:{}/{}",
+        METRICS.output_pts_matched.load(Ordering::Relaxed), METRICS.output_pts_unmatched.load(Ordering::Relaxed),
+        METRICS.frame_feedback_sent.load(Ordering::Relaxed), METRICS.frame_feedback_failed.load(Ordering::Relaxed));
     let base = format!(
         "Q depth/max:{}/{} AUage:{au_age_average}/{au_age_max}ms dec:{decode_average}/{decode_max}ms up:{upload_average}/{upload_max}ms paint:{paint_average}/{paint_max}ms ui:{ui_loop_average}/{ui_loop_max}ms\n\
          FPS hwCall:{} decoded:{} shown:{} ui:{paint_count} idle:{} pic:{} noPic:{} noOut:{} qFull/s:{} asm:{rtp_average}/{rtp_max}ms\n\
@@ -256,7 +279,7 @@ pub fn video_performance_summary() -> String {
         METRICS.resets.load(Ordering::Relaxed),
     );
     format!(
-        "{base}\nDelay SDL:{}ms RTPbuf:{}ms gaps:{} late:{} audioLost:{} opusQ:{} pcmQ:{} batchAge:{batch_age_avg}/{batch_age_max}ms underrun:{} trim:{} skip:{} clr:{} lost:{}\nInput local:{input_age_avg}/{input_age_max}ms RTCpump:{rtc_pump_avg}/{rtc_pump_max}ms",
+        "{base}\n{frame_feedback}\nDelay SDL:{}ms RTPbuf:{}ms gaps:{} late:{} audioLost:{} opusQ:{} pcmQ:{} batchAge:{batch_age_avg}/{batch_age_max}ms underrun:{} trim:{} skip:{} clr:{} lost:{}\nInput local:{input_age_avg}/{input_age_max}ms RTCpump:{rtc_pump_avg}/{rtc_pump_max}ms",
         METRICS.audio_sdl_queue_ms.load(Ordering::Relaxed),
         METRICS.audio_rtp_backlog_ms.load(Ordering::Relaxed),
         METRICS.audio_rtp_gaps.load(Ordering::Relaxed),

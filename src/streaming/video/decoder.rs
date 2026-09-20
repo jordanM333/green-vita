@@ -1,4 +1,6 @@
 //! PS Vita hardware H.264 decoder (`sceVideodec`/`sceAvcdec`).
+use super::timing::{FrameTiming, PictureTracker, UNKNOWN_PTS};
+use std::time::Instant;
 use super::memory::{CdramBlock, release_reserved_decoder_cdram};
 use super::{DecoderConfig, VideoTextureTarget, metrics};
 use anyhow::{Result, bail};
@@ -78,7 +80,12 @@ impl Drop for AvcdecDecoder {
     }
 }
 
+pub(super) struct DecodedPicture {
+    pub timing: Option<FrameTiming>,
+}
+
 pub struct HwVideoDecoder {
+    pictures: PictureTracker,
     decoder: AvcdecDecoder,
     _frame_memory: CdramBlock,
     _library: AvcdecLibrary,
@@ -134,6 +141,7 @@ impl HwVideoDecoder {
             );
 
             Ok(Self {
+                pictures: PictureTracker::default(),
                 decoder,
                 _frame_memory: frame_memory,
                 _library: library,
@@ -144,17 +152,24 @@ impl HwVideoDecoder {
         }
     }
 
-    /// Decodes one Access Unit. Returns `false` if the hardware buffered it without producing a picture yet.
-    pub fn decode(
+    /// An output is matched only by the PTS returned in the picture, never by call order.
+    pub(super) fn decode(
         &mut self,
         access_unit: &[u8],
         direct_target: VideoTextureTarget,
-    ) -> Result<bool> {
+        rtp_timestamp: u32,
+        received_at: Instant,
+        submitted_at: Instant,
+        epoch: u64,
+    ) -> Result<Option<DecodedPicture>> {
+        let pts = self.pictures.submit(rtp_timestamp, received_at, submitted_at, epoch);
         unsafe {
             let au = SceAvcdecAu {
+                // Vita FFmpeg uses the same 90 kHz PTS units and reads info.pts
+                // from the resulting picture. DTS stays unknown.
                 pts: SceVideodecTimeStamp {
-                    upper: 0xFFFFFFFF,
-                    lower: 0xFFFFFFFF,
+                    upper: (pts >> 32) as u32,
+                    lower: pts as u32,
                 },
                 dts: SceVideodecTimeStamp {
                     upper: 0xFFFFFFFF,
@@ -200,6 +215,9 @@ impl HwVideoDecoder {
                 },
                 info: std::mem::zeroed(),
             };
+            // Do not mistake an untouched zero-initialized field for RTP timestamp zero.
+            picture.info.pts.upper = u32::MAX;
+            picture.info.pts.lower = u32::MAX;
             let mut picture_ptr: *mut SceAvcdecPicture = &mut picture;
             let mut array_picture = SceAvcdecArrayPicture {
                 numOfOutput: 0,
@@ -212,7 +230,7 @@ impl HwVideoDecoder {
                 bail!("sceAvcdecDecode failed: {ret:#x}");
             }
             if array_picture.numOfOutput == 0 {
-                return Ok(false);
+                return Ok(None);
             }
             if !self.reported_first_picture {
                 eprintln!(
@@ -251,7 +269,15 @@ impl HwVideoDecoder {
                     | u64::from(picture.frame.frameHeight),
                 std::sync::atomic::Ordering::Relaxed,
             );
-            Ok(true)
+            let output_pts = (u64::from(picture.info.pts.upper) << 32)
+                | u64::from(picture.info.pts.lower);
+            let timing = self.pictures.output(output_pts, Instant::now());
+            super::trace::record("decoder_output_pts", rtp_timestamp, output_pts);
+            if timing.is_none() {
+                super::trace::record("decoder_pts_unmatched", rtp_timestamp,
+                    u64::from(output_pts == UNKNOWN_PTS));
+            }
+            Ok(Some(DecodedPicture { timing }))
         }
     }
 }

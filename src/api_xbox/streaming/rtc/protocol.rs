@@ -120,6 +120,14 @@ impl XboxRtcProtocol {
 }
 
 impl RtcSessionBackend for XboxRtcProtocol {
+    fn send_rendered_frame(&mut self, peer: &mut RTCPeerConnection, frame: crate::streaming::video::timing::PresentedFrame) -> bool {
+        if !self.input_channel_ready { return false; }
+        let Some(bytes) = self.input_queue.rendered_frame_packet(frame, std::time::Instant::now()) else {
+            return false;
+        };
+        self.send_input_bytes(peer, &bytes)
+    }
+
     fn handle_channel_open(&mut self, peer: &mut RTCPeerConnection, channel_id: RTCDataChannelId) {
         self.handle_channel_open_inner(peer, channel_id);
     }

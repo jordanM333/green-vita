@@ -1,12 +1,14 @@
 //! Wire format for xCloud's "input" data channel: gamepad + pointer report packets.
 
 use crate::streaming::input::{GamepadFrame, PointerEvent};
+use crate::streaming::video::timing::PresentedFrame;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ReportType {
     None = 0,
+    Metadata = 1,
     Gamepad = 2,
     Pointer = 4,
     ClientMetadata = 8,
@@ -193,6 +195,28 @@ impl Default for InputQueue {
 }
 
 impl InputQueue {
+    pub(crate) fn rendered_frame_packet(&mut self, frame: PresentedFrame, now: Instant) -> Option<Vec<u8>> {
+        let timing = frame.timing;
+        // A delayed RTC pump must not transmit old presentation reports. All
+        // fields share the exact monotonic origin used by the input header.
+        if timing.received_at < self.started_at || timing.submitted_at < timing.received_at
+            || timing.decoded_at < timing.submitted_at || frame.rendered_at < timing.decoded_at
+            || now < frame.rendered_at
+            || now.duration_since(frame.rendered_at) > std::time::Duration::from_millis(250)
+        { return None; }
+        let millis = |at: Instant| at.duration_since(self.started_at).as_millis() as u32;
+        let values = [timing.rtp_timestamp, millis(timing.received_at), millis(timing.submitted_at),
+            millis(timing.decoded_at), millis(frame.rendered_at), millis(now), millis(now)];
+        let timestamp_ms = now.duration_since(self.started_at).as_secs_f64() * 1_000.0;
+        let mut bytes = Vec::with_capacity(43);
+        bytes.extend_from_slice(&(ReportType::Metadata as u16).to_le_bytes());
+        bytes.extend_from_slice(&self.next_sequence().to_le_bytes());
+        bytes.extend_from_slice(&timestamp_ms.to_le_bytes());
+        bytes.push(1);
+        for value in values { bytes.extend_from_slice(&value.to_le_bytes()); }
+        Some(bytes)
+    }
+
     fn timestamp_ms(&self) -> f64 {
         // Xbox's f64 input timestamp is a monotonic uptime in milliseconds. Measuring
         // from each packet's creation made every report appear to arrive at time zero.
@@ -261,5 +285,55 @@ mod tests {
         assert!((3_000.0..4_000.0).contains(&timestamp(&metadata)));
         assert!(timestamp(&gamepad) >= timestamp(&metadata));
         assert_eq!(u32::from_le_bytes(gamepad[2..6].try_into().unwrap()), 2);
+    }
+
+    #[test]
+    fn rendered_frame_report_matches_xbox_wire_layout_and_input_clock() {
+        use crate::streaming::video::timing::FrameTiming;
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let mut queue = InputQueue::default();
+        queue.started_at = start;
+        queue.client_metadata_packet(0);
+        let frame = PresentedFrame { timing: FrameTiming {
+            rtp_timestamp: 0xf1234567, received_at: at(1000), submitted_at: at(1002),
+            decoded_at: at(1010), epoch: 0,
+        }, rendered_at: at(1017) };
+        let bytes = queue.rendered_frame_packet(frame, at(1020)).unwrap();
+        assert_eq!(bytes.len(), 43);
+        assert_eq!(&bytes[0..6], &[1, 0, 2, 0, 0, 0]);
+        assert_eq!(timestamp(&bytes), 1020.0);
+        assert_eq!(bytes[14], 1);
+        let fields: Vec<_> = bytes[15..].chunks_exact(4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).collect();
+        assert_eq!(fields, [0xf1234567, 1000, 1002, 1010, 1017, 1020, 1020]);
+        let gamepad = queue.queue_gamepad_frames([GamepadFrame::default()], true).unwrap();
+        assert_eq!(u32::from_le_bytes(gamepad[2..6].try_into().unwrap()), 3);
+    }
+
+    #[test]
+    fn stale_or_invalid_frame_reports_are_discarded_without_consuming_a_sequence() {
+        use crate::streaming::video::timing::FrameTiming;
+        let mut queue = InputQueue::default();
+        let start = queue.started_at;
+        let mut frame = PresentedFrame { timing: FrameTiming { rtp_timestamp: 0,
+            received_at: start, submitted_at: start, decoded_at: start, epoch: 0,
+        }, rendered_at: start };
+        assert!(queue.rendered_frame_packet(frame, start + Duration::from_secs(1)).is_none());
+        frame.timing.decoded_at += Duration::from_millis(1);
+        assert!(queue.rendered_frame_packet(frame, start).is_none());
+        assert_eq!(queue.sequence, 0);
+    }
+
+    #[test]
+    fn metadata_milliseconds_wrap_without_losing_rtp_identity() {
+        use crate::streaming::video::timing::FrameTiming;
+        let mut queue = InputQueue::default();
+        let now = queue.started_at + Duration::from_millis(u64::from(u32::MAX) + 2);
+        let frame = PresentedFrame { timing: FrameTiming { rtp_timestamp: 0,
+            received_at: now, submitted_at: now, decoded_at: now, epoch: 0,
+        }, rendered_at: now };
+        let bytes = queue.rendered_frame_packet(frame, now).unwrap();
+        assert_eq!(u32::from_le_bytes(bytes[15..19].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(bytes[19..23].try_into().unwrap()), 1);
     }
 }
