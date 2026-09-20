@@ -42,6 +42,7 @@ pub(crate) struct VideoReceiver {
     receiver_id: Option<RTCRtpReceiverId>,
     ssrc: Option<u32>,
     rtp: rtp::VideoRtp,
+    order: super::reorder::PacketOrder<Packet>,
     pub(crate) decoder: VideoDecodeWorker,
     pub(crate) latest_frame: Option<(u64, DecodedFrame)>,
     next_frame_id: u64,
@@ -61,6 +62,7 @@ impl VideoReceiver {
             receiver_id: None,
             ssrc: None,
             rtp: rtp::VideoRtp::new(config.decode_width, config.decode_height),
+            order: Default::default(),
             decoder: VideoDecodeWorker::spawn(config, direct_output)?,
             latest_frame: None,
             next_frame_id: 0,
@@ -77,6 +79,9 @@ impl VideoReceiver {
         receiver_id: RTCRtpReceiverId,
         ssrc: u32,
     ) {
+        if self.ssrc != Some(ssrc) {
+            self.order = Default::default();
+        }
         self.track_id = Some(track_id);
         self.receiver_id = Some(receiver_id);
         self.ssrc = Some(ssrc);
@@ -89,6 +94,21 @@ impl VideoReceiver {
     pub(crate) fn receive(&mut self, packet: Packet, keyframe_requested: &mut bool) {
         self.received_packet = true;
         self.stats.packets = self.stats.packets.saturating_add(1);
+        let now = Instant::now();
+        self.flush_order(now, keyframe_requested);
+        if let Some(packet) = self.order.push(packet.header.sequence_number, packet, now) {
+            self.receive_ordered(packet, keyframe_requested);
+        }
+        self.flush_order(now, keyframe_requested);
+    }
+
+    fn flush_order(&mut self, now: Instant, keyframe_requested: &mut bool) {
+        while let Some(packet) = self.order.pop(now) {
+            self.receive_ordered(packet, keyframe_requested);
+        }
+    }
+
+    fn receive_ordered(&mut self, packet: Packet, keyframe_requested: &mut bool) {
         let sample_stats = self.rtp.receive(&self.decoder, packet, keyframe_requested);
         macro_rules! add {
             ($field:ident) => {
@@ -121,6 +141,7 @@ impl VideoReceiver {
     }
 
     pub(crate) fn drain_decoder(&mut self, keyframe_requested: &mut bool) {
+        self.flush_order(Instant::now(), keyframe_requested);
         let mut decode_errors = 0u64;
         while let Some(result) = self
             .decoder
@@ -199,7 +220,7 @@ impl VideoReceiver {
             .unwrap_or_default();
         Some(format!(
             "SPS:{encoded_resolution} decoder:{}x{} output:{}x{} source-fps:{source_fps}\n\
-             RTP pk:{} jump:{}/~{} late:{} dup:{} empty:{}\n\
+             RTP pk:{} jump:{}/~{} late:{} dup:{} empty:{}\n{}\n\
              AU done:{} sent:{} drop:{} seq:{} FU:{} mal:{} q:{} SPS:{} IDRwait:{} other:{}\n\
              IDR count:{} age:{idr_age} postDamageSent:{} wait:{} decoderErr:{}\n\
              {performance}{last_error}",
@@ -208,11 +229,12 @@ impl VideoReceiver {
             config.output_width,
             config.output_height,
             self.stats.packets,
-            self.stats.sequence_jumps,
-            self.stats.estimated_missing_packets,
-            self.stats.late_packets,
-            self.stats.duplicate_packets,
+            self.order.stats.jumps,
+            self.order.stats.provisional_missing,
+            self.order.stats.out_of_order,
+            self.order.stats.duplicates,
             self.stats.empty_packets,
+            self.order.summary(),
             self.stats.assembled,
             self.stats.submitted,
             self.stats.dropped,

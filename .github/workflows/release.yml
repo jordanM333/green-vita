@@ -25,6 +25,9 @@ jobs:
       - name: Reproduce missing receiver reports and verify registration fix
         working-directory: tests/rtc-reports
         run: cargo test --target x86_64-unknown-linux-gnu
+      - name: Verify bounded RTP reordering and rejection of incomplete H264
+        working-directory: tests/rtp-order
+        run: cargo test --target x86_64-unknown-linux-gnu
 
   build:
     needs: feedback-tests

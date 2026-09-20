@@ -1,0 +1,13 @@
+[package]
+name = "green-vita-rtp-order-tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+rtp = { package = "rtc-rtp", version = "=0.20.0-rc.2" }
+rtc-media = "=0.20.0-rc.2"
+bytes = "1"
+h264-reader = "0.8"
