@@ -1,0 +1,15 @@
+[package]
+name = "green-vita-report-tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+interceptor = { package = "rtc-interceptor", version = "=0.20.0-rc.2" }
+rtp = { package = "rtc-rtp", version = "=0.20.0-rc.2" }
+rtcp = { package = "rtc-rtcp", version = "=0.20.0-rc.2" }
+shared = { package = "rtc-shared", version = "=0.20.0-rc.2", default-features = false }
+sansio = "1"
+

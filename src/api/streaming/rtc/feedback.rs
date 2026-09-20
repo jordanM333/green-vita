@@ -1,38 +1,5 @@
-//! Measurements and negotiated REMB ceiling; not an adaptive bandwidth estimator.
+//! Receive-rate diagnostics; this build sends no forced REMB ceiling.
 use std::time::{Duration, Instant};
-
-pub(crate) const VIDEO_CEILING_BPS: f32 = 2_000_000.0;
-pub(crate) const FEEDBACK_INTERVAL: Duration = Duration::from_millis(500);
-
-/// Restrict REMB to video payload types that the answer actually accepts.
-pub(crate) fn remb_payloads(sdp: &str) -> Vec<u8> {
-    let mut video = false;
-    let mut offered = Vec::new();
-    let mut result = Vec::new();
-    for line in sdp.lines().map(str::trim) {
-        if line.starts_with("m=") {
-            let fields: Vec<_> = line.split_whitespace().collect();
-            video = fields.first() == Some(&"m=video") && fields.get(1) != Some(&"0");
-            offered = if video {
-                fields.iter().skip(3).filter_map(|s| s.parse::<u8>().ok()).collect()
-            } else { Vec::new() };
-        } else if video {
-            if let Some(value) = line.strip_prefix("a=rtcp-fb:") {
-                let fields: Vec<_> = value.split_whitespace().collect();
-                if fields.get(1) == Some(&"goog-remb") {
-                    if fields.first() == Some(&"*") {
-                        result.extend(offered.iter().copied());
-                    } else if let Some(pt) = fields.first().and_then(|s| s.parse::<u8>().ok()) {
-                        if offered.contains(&pt) { result.push(pt); }
-                    }
-                }
-            }
-        }
-    }
-    result.sort_unstable();
-    result.dedup();
-    result
-}
 
 pub(crate) struct ReceiveRate {
     started: Instant,
@@ -89,13 +56,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remb_requires_an_accepted_video_payload() {
-        assert_eq!(remb_payloads("m=audio 9 UDP/TLS/RTP/SAVPF 111\na=rtcp-fb:* goog-remb\nm=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 goog-remb\na=rtcp-fb:103 goog-remb\n"), vec![102]);
-        assert!(remb_payloads("m=video 0 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:* goog-remb").is_empty());
-        assert!(remb_payloads("m=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 nack").is_empty());
-    }
-
-    #[test]
     fn rates_use_elapsed_time_and_report_stalls() {
         let mut rate = ReceiveRate::new();
         let start = rate.started;
@@ -105,8 +65,4 @@ mod tests {
         assert_eq!(rate.summary(start + Duration::from_millis(1200)), "0/0k gap:1100/1100ms");
     }
 
-    #[test]
-    fn wildcard_remb_does_not_enable_rejected_media() {
-        assert_eq!(remb_payloads("m=video 9 UDP/TLS/RTP/SAVPF 102 103\na=rtcp-fb:* goog-remb\nm=audio 9 UDP/TLS/RTP/SAVPF 111\na=rtcp-fb:* goog-remb"), vec![102, 103]);
-    }
 }

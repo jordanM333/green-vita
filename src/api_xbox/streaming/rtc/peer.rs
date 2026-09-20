@@ -21,6 +21,7 @@ pub(super) fn create() -> Result<(RTCPeerConnection, XboxRtcProtocol)> {
 
     let (peer_connection, ids) = peer::create(
         media_engine,
+        vec![(102, 90_000), (AUDIO_PAYLOAD_TYPE, 48_000)],
         vec![RTCIceServer {
             urls: vec![format!("stun:{STUN_SERVER}")],
             username: String::new(),

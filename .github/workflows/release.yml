@@ -22,6 +22,9 @@ jobs:
         run: |
           rustc --edition=2024 --test src/api/streaming/rtc/feedback.rs -o /tmp/feedback-tests
           /tmp/feedback-tests
+      - name: Reproduce missing receiver reports and verify registration fix
+        working-directory: tests/rtc-reports
+        run: cargo test --target x86_64-unknown-linux-gnu
 
   build:
     needs: feedback-tests

@@ -167,17 +167,6 @@ impl VideoReceiver {
         }
     }
 
-    pub(crate) fn request_bitrate_ceiling(&self, peer: &mut RTCPeerConnection) -> Option<bool> {
-        let (receiver_id, ssrc) = (self.receiver_id?, self.ssrc?);
-        let mut receiver = peer.rtp_receiver(receiver_id)?;
-        let remb = rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate {
-            sender_ssrc: 0,
-            bitrate: super::feedback::VIDEO_CEILING_BPS,
-            ssrcs: vec![ssrc],
-        };
-        Some(receiver.write_rtcp(vec![Box::new(remb)]).is_ok())
-    }
-
     pub(crate) fn status(&mut self, now: Instant) -> Option<String> {
         if now.duration_since(self.last_stats_report) < STREAM_STATS_INTERVAL {
             return None;

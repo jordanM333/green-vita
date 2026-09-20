@@ -5,14 +5,15 @@ use rtc::peer_connection::configuration::media_engine::MediaEngine;
 use rtc::peer_connection::configuration::setting_engine::SettingEngine;
 use rtc::peer_connection::transport::RTCIceServer;
 use rtc::peer_connection::RTCPeerConnectionBuilder;
-use rtc::interceptor::{NoopInterceptor, ReceiverReportBuilder, ReceiverReportInterceptor, Registry};
+use rtc::interceptor::Registry;
+use super::reports::ReceiveReports;
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use std::time::Duration;
 
 // The default peer uses NoopInterceptor: advertising RTCP feedback does not generate it.
 // Enable loss/jitter receiver reports without changing RTP ordering or adding buffers.
 pub(crate) type RTCPeerConnection =
-    rtc::peer_connection::RTCPeerConnection<ReceiverReportInterceptor<NoopInterceptor>>;
+    rtc::peer_connection::RTCPeerConnection<ReceiveReports>;
 
 pub(crate) struct RtcDataChannelConfig {
     pub label: &'static str,
@@ -26,6 +27,7 @@ pub(crate) struct RtcDataChannelConfig {
 /// ICE servers and data-channel descriptions.
 pub(crate) fn create(
     media_engine: MediaEngine,
+    receive_clocks: Vec<(u8, u32)>,
     ice_servers: Vec<RTCIceServer>,
     channels: &[RtcDataChannelConfig],
 ) -> Result<(RTCPeerConnection, Vec<RTCDataChannelId>)> {
@@ -39,9 +41,7 @@ pub(crate) fn create(
         .with_configuration(configuration)
         .with_setting_engine(setting_engine)
         .with_media_engine(media_engine)
-        .with_interceptor_registry(Registry::new().with(
-            ReceiverReportBuilder::new().with_interval(Duration::from_secs(1)).build(),
-        ))
+        .with_interceptor_registry(Registry::new().with(move |inner| ReceiveReports::new(inner, receive_clocks)))
         .build()
         .context("failed to create rtc peer connection")?;
 
