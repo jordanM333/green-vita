@@ -21,6 +21,9 @@ pub(crate) struct VideoMetrics {
     pub(crate) decode_max_us: AtomicU64,
     pub(crate) pipeline_age_us: AtomicU64,
     pub(crate) decode_calls: AtomicU64,
+    pub(crate) decoder_poll_calls: AtomicU64,
+    pub(crate) decoder_poll_pictures: AtomicU64,
+    pub(crate) decoder_poll_failed: AtomicU64,
     pub(crate) no_picture: AtomicU64,
     pub(crate) picture_dimensions: AtomicU64,
     pub(crate) au_queue_depth: AtomicU64,
@@ -118,6 +121,9 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     decode_max_us: AtomicU64::new(0),
     pipeline_age_us: AtomicU64::new(0),
     decode_calls: AtomicU64::new(0),
+    decoder_poll_calls: AtomicU64::new(0),
+    decoder_poll_pictures: AtomicU64::new(0),
+    decoder_poll_failed: AtomicU64::new(0),
     no_picture: AtomicU64::new(0),
     picture_dimensions: AtomicU64::new(0),
     au_queue_depth: AtomicU64::new(0),
@@ -277,6 +283,10 @@ pub fn video_performance_summary() -> String {
     let frame_feedback = format!("PTS matched/unmatched:{}/{} frameReport:{}/{}\nFrame age: decoder:{decoder_age} receiveToGPU:{received_gpu}",
         METRICS.output_pts_matched.load(Ordering::Relaxed), METRICS.output_pts_unmatched.load(Ordering::Relaxed),
         METRICS.frame_feedback_sent.load(Ordering::Relaxed), METRICS.frame_feedback_failed.load(Ordering::Relaxed));
+    let poll = format!("Decoder poll calls/pictures/errors:{}/{}/{}",
+        METRICS.decoder_poll_calls.load(Ordering::Relaxed),
+        METRICS.decoder_poll_pictures.load(Ordering::Relaxed),
+        METRICS.decoder_poll_failed.load(Ordering::Relaxed));
     let base = format!(
         "Q depth/max:{}/{} AUage:{au_age_average}/{au_age_max}ms dec:{decode_average}/{decode_max}ms up:{upload_average}/{upload_max}ms paint:{paint_average}/{paint_max}ms ui:{ui_loop_average}/{ui_loop_max}ms\n\
          FPS hwCall:{} decoded:{} shown:{} ui:{paint_count} idle:{} pic:{} noPic:{} noOut:{} qFull/s:{} asm:{rtp_average}/{rtp_max}ms\n\
@@ -301,7 +311,7 @@ pub fn video_performance_summary() -> String {
         METRICS.resets.load(Ordering::Relaxed),
     );
     format!(
-        "{base}\n{frame_feedback}\nDelay SDL:{}ms RTPbuf:{}ms gaps:{} late:{} audioLost:{} opusQ:{} pcmQ:{} batchAge:{batch_age_avg}/{batch_age_max}ms underrun:{} trim:{} skip:{} clr:{} lost:{}\nInput local:{input_age_avg}/{input_age_max}ms RTCpump:{rtc_pump_avg}/{rtc_pump_max}ms\nInput transport sampled:{}/{}B deferred:{} errors:{}",
+        "{base}\n{poll}\n{frame_feedback}\nDelay SDL:{}ms RTPbuf:{}ms gaps:{} late:{} audioLost:{} opusQ:{} pcmQ:{} batchAge:{batch_age_avg}/{batch_age_max}ms underrun:{} trim:{} skip:{} clr:{} lost:{}\nInput local:{input_age_avg}/{input_age_max}ms RTCpump:{rtc_pump_avg}/{rtc_pump_max}ms\nInput transport sampled:{}/{}B deferred:{} errors:{}",
         METRICS.audio_sdl_queue_ms.load(Ordering::Relaxed),
         METRICS.audio_rtp_backlog_ms.load(Ordering::Relaxed),
         METRICS.audio_rtp_gaps.load(Ordering::Relaxed),

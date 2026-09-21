@@ -1,0 +1,73 @@
+name: Build latency candidate
+on:
+  push:
+    branches: [latency-root-cause]
+    paths:
+      - 'src/**'
+      - 'vendor/**'
+      - 'Cargo.*'
+      - 'tests/**'
+      - 'tools/analyze_latency.py'
+      - '.github/workflows/latency-candidate.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: latency-candidate
+  cancel-in-progress: false
+jobs:
+  feedback-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test feedback negotiation and rate measurements
+        run: |
+          rustc --edition=2024 --test src/api/streaming/rtc/feedback.rs -o /tmp/feedback-tests
+          /tmp/feedback-tests
+      - name: Reproduce missing receiver reports and verify registration fix
+        working-directory: tests/rtc-reports
+        run: cargo test --target x86_64-unknown-linux-gnu -- --test-threads=1
+      - name: Verify decoded picture identity and Xbox frame feedback
+        working-directory: tests/frame-metadata
+        run: cargo test --target x86_64-unknown-linux-gnu
+      - name: Reproduce SCTP backlog and verify admission across WebRTC
+        working-directory: tests/rtc-transport
+        run: cargo test --locked --target x86_64-unknown-linux-gnu -- --nocapture
+      - name: Verify video wakeups and coalescing
+        working-directory: tests/frame-signal
+        run: cargo test --target x86_64-unknown-linux-gnu
+      - name: Verify bounded RTP reordering and rejection of incomplete H264
+        working-directory: tests/rtp-order
+        run: cargo test --target x86_64-unknown-linux-gnu
+      - name: Verify independent AVC output servicing against the real worker
+        working-directory: tests/decoder-pump
+        run: cargo test --locked --target x86_64-unknown-linux-gnu -- --test-threads=1 --nocapture
+      - name: Verify offline clock and returned-PTS analysis
+        run: python3 -m unittest discover -s tests/latency-analysis -v
+
+  build:
+    needs: feedback-tests
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/vita-rust/vitasdk-rs:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - name: Build candidate VPK
+        env:
+          RUSTFLAGS: "-C target-feature=-neon"
+          GREENVITA_BUILD_NUMBER: "35.${{ github.run_number }}"
+          GREENVITA_BUILD_SHA: ${{ github.sha }}
+        run: cargo vita build vpk --release
+      - name: Record binary identity
+        run: sha256sum target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk > candidate-sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: green-vita-latency-candidate-${{ github.sha }}
+          path: |
+            target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk
+            candidate-sha256.txt
+          if-no-files-found: error
+          retention-days: 30

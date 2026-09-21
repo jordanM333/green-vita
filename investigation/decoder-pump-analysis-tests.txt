@@ -1,0 +1,21 @@
+test_camera_separates_tv_response_from_extra_vita_delay (test_analysis.EvidenceTests.test_camera_separates_tv_response_from_extra_vita_delay) ... ok
+test_decoder_output_uses_returned_pts_instead_of_current_submission (test_analysis.EvidenceTests.test_decoder_output_uses_returned_pts_instead_of_current_submission) ... ok
+test_fast_decode_and_empty_queue_do_not_prove_responsiveness (test_analysis.EvidenceTests.test_fast_decode_and_empty_queue_do_not_prove_responsiveness) ... ok
+test_invalid_or_duplicate_camera_evidence_is_rejected (test_analysis.EvidenceTests.test_invalid_or_duplicate_camera_evidence_is_rejected) ... ok
+test_mixed_session_clocks_are_rejected (test_analysis.EvidenceTests.test_mixed_session_clocks_are_rejected) ... ok
+test_no_output_window_is_not_zero_residence_and_clocks_are_separate (test_analysis.EvidenceTests.test_no_output_window_is_not_zero_residence_and_clocks_are_separate) ... ok
+test_output_only_call_matches_pts_without_inventing_a_submission (test_analysis.EvidenceTests.test_output_only_call_matches_pts_without_inventing_a_submission) ... ok
+test_recovery_trials_do_not_replace_stable_network_late_trials (test_analysis.EvidenceTests.test_recovery_trials_do_not_replace_stable_network_late_trials) ... ok
+test_returned_extended_pts_wrap_is_not_a_multi_hour_lead (test_analysis.EvidenceTests.test_returned_extended_pts_wrap_is_not_a_multi_hour_lead) ... ok
+test_reused_rtp_identity_is_ambiguous_instead_of_guessed (test_analysis.EvidenceTests.test_reused_rtp_identity_is_ambiguous_instead_of_guessed) ... ok
+test_stable_sluggish_start_is_never_a_complete_pass (test_analysis.EvidenceTests.test_stable_sluggish_start_is_never_a_complete_pass) ... ok
+test_supplied_test34_excerpt_proves_late_retirement_of_no_picture_inputs (test_analysis.EvidenceTests.test_supplied_test34_excerpt_proves_late_retirement_of_no_picture_inputs) ... ok
+test_test34_startup_window_is_not_current_session_decoder_baseline (test_analysis.EvidenceTests.test_test34_startup_window_is_not_current_session_decoder_baseline) ... ok
+test_trace_ring_boundary_unknown_pts_and_repeated_outputs_do_not_invent_associations (test_analysis.EvidenceTests.test_trace_ring_boundary_unknown_pts_and_repeated_outputs_do_not_invent_associations) ... ok
+test_uncertain_threshold_does_not_false_pass (test_analysis.EvidenceTests.test_uncertain_threshold_does_not_false_pass) ... ok
+test_unsynchronized_offsets_are_not_latency (test_analysis.EvidenceTests.test_unsynchronized_offsets_are_not_latency) ... ok
+
+----------------------------------------------------------------------
+Ran 16 tests in 0.004s
+
+OK

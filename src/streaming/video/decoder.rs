@@ -163,6 +163,23 @@ impl HwVideoDecoder {
         epoch: u64,
     ) -> Result<Option<DecodedPicture>> {
         let pts = self.pictures.submit(rtp_timestamp, received_at, submitted_at, epoch);
+        self.decode_output(access_unit, pts, Some(rtp_timestamp), direct_target)
+    }
+
+    /// Service buffered output without admitting another AU or ending the stream.
+    /// Vita FFmpeg uses null/zero ES input with sceAvcdecDecode when its input
+    /// buffer is full. This is NOT DecodeStop, a flush, or a decoder recreation.
+    pub(super) fn poll(&mut self, target: VideoTextureTarget) -> Result<Option<DecodedPicture>> {
+        self.decode_output(&[], UNKNOWN_PTS, None, target)
+    }
+
+    fn decode_output(
+        &mut self,
+        access_unit: &[u8],
+        pts: u64,
+        submission: Option<u32>,
+        direct_target: VideoTextureTarget,
+    ) -> Result<Option<DecodedPicture>> {
         unsafe {
             let au = SceAvcdecAu {
                 // Vita FFmpeg uses the same 90 kHz PTS units and reads info.pts
@@ -176,7 +193,8 @@ impl HwVideoDecoder {
                     lower: 0xFFFFFFFF,
                 },
                 es: SceAvcdecBuf {
-                    pBuf: access_unit.as_ptr() as *mut c_void,
+                    pBuf: if access_unit.is_empty() { std::ptr::null_mut() }
+                        else { access_unit.as_ptr() as *mut c_void },
                     size: access_unit.len() as u32,
                 },
             };
@@ -272,9 +290,10 @@ impl HwVideoDecoder {
             let output_pts = (u64::from(picture.info.pts.upper) << 32)
                 | u64::from(picture.info.pts.lower);
             let timing = self.pictures.output(output_pts, Instant::now());
-            super::trace::record("decoder_output_pts", rtp_timestamp, output_pts);
+            super::trace::record(if submission.is_some() { "decoder_output_pts" }
+                else { "decoder_poll_output_pts" }, submission.unwrap_or(0), output_pts);
             if timing.is_none() {
-                super::trace::record("decoder_pts_unmatched", rtp_timestamp,
+                super::trace::record("decoder_pts_unmatched", submission.unwrap_or(0),
                     u64::from(output_pts == UNKNOWN_PTS));
             }
             Ok(Some(DecodedPicture { timing }))

@@ -1,5 +1,10 @@
 # GreenVita latency investigation — OPEN
 
+Follow-up: the subsequently supplied raw PTS trace and the output-servicing
+candidate are documented in [DECODER-OUTPUT-CANDIDATE.md](DECODER-OUTPUT-CANDIDATE.md).
+That update supersedes the earlier statement that no playback candidate exists.
+
+
 Update: the requested simultaneous TV/Vita recordings and Test 34 history have
 now been supplied. See [TEST34-CAPTURE-REVIEW.md](TEST34-CAPTURE-REVIEW.md) for the
 new measurements, remaining causal gap and request for existing automatic traces.

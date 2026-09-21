@@ -1,6 +1,6 @@
-use super::decoder::HwVideoDecoder;
+use super::decoder::{DecodedPicture, HwVideoDecoder};
 use super::metrics;
-use super::{DecodedFrame, DecoderConfig, DirectVideoOutput};
+use super::{DecodedFrame, DecoderConfig, DirectVideoOutput, DirectVideoTargetGuard};
 use anyhow::{Context, Result};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select_biased};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -168,8 +168,37 @@ fn run_decode_loop(
     direct_output: Arc<DirectVideoOutput>,
 ) {
     let mut decoder = Some(initial_decoder);
+    let mut drain_pending = false;
+    let mut drain_enabled = true;
 
     loop {
+        // Check stop between every hardware call, including a long buffered-output run.
+        match commands.try_recv() {
+            Ok(DecoderCommand::Stop) | Err(crossbeam_channel::TryRecvError::Disconnected) => break,
+            Err(crossbeam_channel::TryRecvError::Empty) => {}
+        }
+        if drain_enabled && drain_pending {
+            match poll_decoder(&mut decoder, &generation, &recovery_needed, &latest_result, &result_ready, &direct_output) {
+                Ok(more) => drain_pending = more,
+                Err(()) => { drain_enabled = false; drain_pending = false; }
+            }
+            // Alternate one output-only call with queued input. Do not hold the
+            // texture mutex across calls, or starve input while catching up.
+            match access_units.try_recv() {
+                Ok(access_unit) => {
+                    metrics::METRICS.au_queue_depth.store(access_units.len() as u64, Ordering::Relaxed);
+                    drain_pending |= decode_queued_access_unit(
+                        &mut decoder, config, &generation, &recovery_needed,
+                        &latest_result, &result_ready, access_unit, &direct_output,
+                    );
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => break,
+                Err(crossbeam_channel::TryRecvError::Empty) => {}
+            }
+            // Old-epoch pictures still count as drained. Continue even while
+            // RTP recovery is waiting for an IDR and there is no new input.
+            if drain_enabled && drain_pending { continue; }
+        }
         select_biased! {
             recv(commands) -> command => match command {
                 Ok(DecoderCommand::Stop) | Err(_) => break,
@@ -177,7 +206,7 @@ fn run_decode_loop(
             recv(access_units) -> access_unit => {
                 let Ok(access_unit) = access_unit else { break };
                 metrics::METRICS.au_queue_depth.store(access_units.len() as u64, Ordering::Relaxed);
-                decode_queued_access_unit(
+                drain_pending |= decode_queued_access_unit(
                     &mut decoder,
                     config,
                     &generation,
@@ -201,11 +230,11 @@ fn decode_queued_access_unit(
     result_ready: &tokio::sync::Notify,
     access_unit: QueuedAccessUnit,
     direct_output: &DirectVideoOutput,
-) {
+) -> bool {
     if access_unit.generation != generation.load(Ordering::Acquire) {
         super::trace::record("generation_drop", access_unit.rtp_timestamp, 0);
         metrics::METRICS.stale_generation.fetch_add(1, Ordering::Relaxed);
-        return;
+        return false;
     }
 
     // Never keep playing an old compressed backlog. Losing a reference picture
@@ -219,7 +248,7 @@ fn decode_queued_access_unit(
         generation.fetch_add(1, Ordering::AcqRel);
         recovery_needed.store(true, Ordering::Release);
         result_ready.notify_one();
-        return;
+        return false;
     }
 
     if decoder.is_none() {
@@ -234,7 +263,7 @@ fn decode_queued_access_unit(
                     result_ready,
                     Err(format!("failed to recreate H264 decoder: {error:#}")),
                 );
-                return;
+                return false;
             }
         }
     }
@@ -245,7 +274,7 @@ fn decode_queued_access_unit(
         generation.fetch_add(1, Ordering::AcqRel);
         recovery_needed.store(true, Ordering::Release);
         result_ready.notify_one();
-        return;
+        return false;
     };
     let age_us = access_unit.queued_at.elapsed().as_micros() as u64;
     // Acquiring an output surface can itself wait behind the renderer. Recheck
@@ -256,7 +285,7 @@ fn decode_queued_access_unit(
         generation.fetch_add(1, Ordering::AcqRel);
         recovery_needed.store(true, Ordering::Release);
         result_ready.notify_one();
-        return;
+        return false;
     }
     metrics::METRICS.au_age_sum_us.fetch_add(age_us, Ordering::Relaxed);
     metrics::METRICS.au_age_count.fetch_add(1, Ordering::Relaxed);
@@ -279,18 +308,34 @@ fn decode_queued_access_unit(
     metrics::METRICS.decode_sum_us.fetch_add(decode_us, Ordering::Relaxed);
     metrics::METRICS.decode_count.fetch_add(1, Ordering::Relaxed);
     metrics::METRICS.decode_max_us.fetch_max(decode_us, Ordering::Relaxed);
-    if access_unit.generation != generation.load(Ordering::Acquire) {
-        metrics::METRICS.stale_generation.fetch_add(1, Ordering::Relaxed);
-        return;
-    }
+    handle_decode_result(decoder, generation, recovery_needed, latest_result, result_ready,
+        Some(&access_unit), access_unit.generation, direct_target, decode_result);
+    decoder.is_some()
+}
 
+/// Return true when a picture was removed, even if its epoch prevents display.
+fn handle_decode_result(
+    decoder: &mut Option<HwVideoDecoder>,
+    generation: &AtomicU64,
+    recovery_needed: &AtomicBool,
+    latest_result: &Mutex<Option<DecodeResult>>,
+    result_ready: &tokio::sync::Notify,
+    input: Option<&QueuedAccessUnit>,
+    call_generation: u64,
+    direct_target: DirectVideoTargetGuard<'_>,
+    decode_result: std::thread::Result<Result<Option<DecodedPicture>>>,
+) -> bool {
     match decode_result {
         Ok(Ok(Some(picture))) => {
+            if call_generation != generation.load(Ordering::Acquire) {
+                metrics::METRICS.stale_generation.fetch_add(1, Ordering::Relaxed);
+                return true;
+            }
             if let Some(timing) = picture.timing {
                 if timing.epoch != generation.load(Ordering::Acquire) {
                     metrics::METRICS.stale_generation.fetch_add(1, Ordering::Relaxed);
                     super::trace::record("old_picture_epoch", timing.rtp_timestamp, timing.epoch);
-                    return;
+                    return true;
                 }
                 let decoder_age_us = timing.decoded_at.saturating_duration_since(timing.submitted_at).as_micros() as u64;
                 metrics::METRICS.decoder_age_sum_us.fetch_add(decoder_age_us, Ordering::Relaxed);
@@ -302,49 +347,80 @@ fn decode_queued_access_unit(
                 super::trace::record("picture_output_rtp", timing.rtp_timestamp, age_us);
             } else {
                 metrics::METRICS.output_pts_unmatched.fetch_add(1, Ordering::Relaxed);
+                // An output-only call has no input epoch to fall back to. An
+                // unknown picture must not put pre-recovery pixels on screen.
+                if input.is_none() { return true; }
             }
-            super::trace::record("picture_produced", access_unit.rtp_timestamp,
-                access_unit.received_at.elapsed().as_micros() as u64);
+            let output_rtp = picture.timing.map(|t| t.rtp_timestamp).unwrap_or(0);
+            let output_age = picture.timing.map(|t| t.received_at.elapsed().as_micros() as u64).unwrap_or(0);
+            super::trace::record("picture_produced_output", output_rtp, output_age);
             metrics::METRICS.decoded.fetch_add(1, Ordering::Relaxed);
             let (texture_index, generation) = direct_target.publish(picture.timing);
-            super::trace::record("picture_generation", access_unit.rtp_timestamp, generation);
-            metrics::METRICS.pipeline_age_us.store(
-                access_unit.queued_at.elapsed().as_micros() as u64,
-                Ordering::Relaxed,
-            );
-            publish_result(
-                latest_result,
-                result_ready,
-                Ok(DecodedFrame {
-                    texture_index,
-                    generation,
-                }),
-            );
+            super::trace::record("picture_generation_output", output_rtp, generation);
+            if let Some(input) = input {
+                metrics::METRICS.pipeline_age_us.store(input.queued_at.elapsed().as_micros() as u64, Ordering::Relaxed);
+            }
+            publish_result(latest_result, result_ready, Ok(DecodedFrame { texture_index, generation }));
+            true
         }
         Ok(Ok(None)) => {
-            super::trace::record("no_picture", access_unit.rtp_timestamp, 0);
-            metrics::METRICS.no_picture.fetch_add(1, Ordering::Relaxed);
+            if let Some(input) = input {
+                super::trace::record("no_picture", input.rtp_timestamp, 0);
+                metrics::METRICS.no_picture.fetch_add(1, Ordering::Relaxed);
+            }
+            false
         }
-        Ok(Err(error)) => {
+        error => {
+            // Only input decode errors use the existing recovery behavior.
+            // poll_decoder handles an unsupported output-only call separately.
+            let message = match error {
+                Ok(Err(error)) => error.to_string(),
+                Err(_) => "H264 decoder panicked and was restarted".to_owned(),
+                _ => unreachable!(),
+            };
             metrics::METRICS.resets.fetch_add(1, Ordering::Relaxed);
             *decoder = None;
             generation.fetch_add(1, Ordering::AcqRel);
             recovery_needed.store(true, Ordering::Release);
-            publish_result(latest_result, result_ready, Err(error.to_string()));
-        }
-        Err(_) => {
-            metrics::METRICS.resets.fetch_add(1, Ordering::Relaxed);
-            eprintln!("H264 decoder panicked; recreating decoder on next frame");
-            *decoder = None;
-            generation.fetch_add(1, Ordering::AcqRel);
-            recovery_needed.store(true, Ordering::Release);
-            publish_result(
-                latest_result,
-                result_ready,
-                Err("H264 decoder panicked and was restarted".to_owned()),
-            );
+            publish_result(latest_result, result_ready, Err(message));
+            false
         }
     }
+}
+
+fn poll_decoder(
+    decoder: &mut Option<HwVideoDecoder>,
+    generation: &AtomicU64,
+    recovery_needed: &AtomicBool,
+    latest_result: &Mutex<Option<DecodeResult>>,
+    result_ready: &tokio::sync::Notify,
+    direct_output: &DirectVideoOutput,
+) -> Result<bool, ()> {
+    let Some(hw) = decoder.as_mut() else { return Ok(false); };
+    let Some(target) = direct_output.lock_decode_target() else { return Ok(false); };
+    let call_generation = generation.load(Ordering::Acquire);
+    let started = Instant::now();
+    let result = catch_unwind(AssertUnwindSafe(|| hw.poll(target.target)));
+    super::trace::record("decoder_poll_return", 0, started.elapsed().as_micros() as u64);
+    metrics::METRICS.decoder_poll_calls.fetch_add(1, Ordering::Relaxed);
+    if !matches!(&result, Ok(Ok(_))) {
+        // Fail visibly once, not a reset/reconnect loop if a firmware rejects
+        // empty-input decode. Preserve its state and disable polling this session.
+        metrics::METRICS.decoder_poll_failed.fetch_add(1, Ordering::Relaxed);
+        super::trace::record("decoder_poll_failed", 0, 1);
+        let message = match result {
+            Ok(Err(error)) => format!("AVC output polling disabled for this session: {error:#}"),
+            _ => "AVC output polling panicked; disabled for this session".to_owned(),
+        };
+        eprintln!("{message}");
+        publish_result(latest_result, result_ready, Err(message));
+        return Err(());
+    }
+    if matches!(&result, Ok(Ok(Some(_)))) {
+        metrics::METRICS.decoder_poll_pictures.fetch_add(1, Ordering::Relaxed);
+    }
+    Ok(handle_decode_result(decoder, generation, recovery_needed,
+        latest_result, result_ready, None, call_generation, target, result))
 }
 
 fn publish_result(

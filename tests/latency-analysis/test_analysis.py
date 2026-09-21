@@ -106,6 +106,33 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(result["outputs"][0]["association"], "ambiguous_submission")
         self.assertIsNone(result["outputs"][0]["submit_to_output_ms"])
 
+    def test_output_only_call_matches_pts_without_inventing_a_submission(self):
+        row = self.trace_row
+        result = analysis.decoder_output_sequence([
+            row(1000, "decode_submit", 0, 30),
+            row(1050, "no_picture", 0, 0),
+            row(2000, "decoder_poll_output_pts", 0, 0)])
+        output = result["outputs"][0]
+        self.assertEqual(output["submit_to_output_ms"], 1)
+        self.assertTrue(output["output_only_call"])
+        self.assertIsNone(output["current_submission_rtp"])
+        self.assertIsNone(output["current_submission_receive_age_ms"])
+        self.assertIsNone(output["rtp_lead_ms"])
+
+    def test_supplied_test34_excerpt_proves_late_retirement_of_no_picture_inputs(self):
+        import csv
+        path = Path(__file__).parents[2] / "investigation/test34-pts-selected.csv"
+        with path.open() as f: rows = list(csv.DictReader(f))
+        result = analysis.decoder_output_sequence(rows)
+        outputs = {o["returned_rtp"]: o for o in result["outputs"]}
+        deferred = [int(r["submission_rtp_timestamp"]) for r in rows if r["stage"] == "no_picture"]
+        self.assertEqual(len(deferred), 6)
+        for rtp in deferred:
+            self.assertEqual(outputs[rtp]["association"], "retained_unique_submission")
+            self.assertGreater(outputs[rtp]["submit_to_output_ms"], 500)
+        self.assertEqual(outputs[1252175405]["submit_to_output_ms"], 996.716)
+        self.assertEqual(outputs[1252712075]["submit_to_output_ms"], 621.036)
+
     def camera(self, late, uncertainty=8):
         return [{"run": "r1", "mode": "Home", "phase": phase, "trial": str(i),
                  "press_s": "1", "tv_s": "1.1", "vita_s": str(1 + latency / 1000),

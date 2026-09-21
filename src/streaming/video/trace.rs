@@ -4,12 +4,15 @@
 //! The explicit picture_output_rtp / receive_to_gpu_done_us / frame_feedback
 //! stages instead carry a verified output RTP identity. decoder_output_pts uses
 //! the submission RTP column and stores the decoder's raw 90 kHz PTS in value.
+//! decoder_poll_output_pts has no submission; its value is the returned PTS.
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Instant;
 
 const CAPACITY: usize = 4096;
-const HISTORY_CAPACITY: usize = 600;
+// Retain at least 35 minutes of 1 Hz history for early/end acceptance checks.
+// Approximately 4 MiB with the current status format; the per-event ring stays bounded.
+const HISTORY_CAPACITY: usize = 2100;
 static TRACE: Mutex<Option<Trace>> = Mutex::new(None);
 struct Trace {
     start: Instant,

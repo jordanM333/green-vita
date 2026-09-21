@@ -33,6 +33,7 @@ def trace_summary(rows):
     stages = {
         "decode_submit": "receive_to_decode_submit_ms",
         "decode_return": "decode_call_ms",
+        "decoder_poll_return": "decoder_poll_call_ms",
         "decoder_residence_us": "matched_decoder_residence_ms",
         "receive_to_gpu_done_us": "matched_receive_to_gpu_ms",
         "decoded_to_gpu_done_us": "decoded_to_gpu_ms",
@@ -79,7 +80,7 @@ def decoder_output_sequence(rows):
     seen_pts = set()
     for row in rows:
         stage = row["stage"]
-        if stage not in ("decode_submit", "decoder_output_pts"):
+        if stage not in ("decode_submit", "decoder_output_pts", "decoder_poll_output_pts"):
             continue
         if "submission_rtp_timestamp" not in row:
             continue  # Legacy records without identity cannot establish residence.
@@ -97,7 +98,8 @@ def decoder_output_sequence(rows):
         current_candidates = submitted.get(current, [])
         outputs.append({
             "elapsed_us": now,
-            "current_submission_rtp": current,
+            "current_submission_rtp": current if stage == "decoder_output_pts" else None,
+            "output_only_call": stage == "decoder_poll_output_pts",
             "returned_pts": pts,
             "returned_rtp": returned,
             "duplicate_returned_pts": known and pts in seen_pts,
@@ -106,8 +108,8 @@ def decoder_output_sequence(rows):
                            "unknown_pts" if not known else "submission_not_retained",
             "submit_to_output_ms": (now - candidates[0][0]) / 1000 if unique else None,
             "current_submission_receive_age_ms": current_candidates[-1][1] / 1000
-                if current_candidates else None,
-            "rtp_lead_ms": distance / 90 if distance is not None and distance < (1 << 31) else None,
+                if current_candidates and stage == "decoder_output_pts" else None,
+            "rtp_lead_ms": distance / 90 if stage == "decoder_output_pts" and distance is not None and distance < (1 << 31) else None,
         })
         if known:
             seen_pts.add(pts)

@@ -1,0 +1,328 @@
+{
+  "issue_status": "open",
+  "acceptance": "not_established",
+  "trace": {
+    "rows": 92,
+    "retained_start_s": 54.30369,
+    "retained_end_s": 61.540234,
+    "retained_span_s": 7.236544,
+    "event_counts": {
+      "decode_submit": 15,
+      "decoder_output_pts": 20,
+      "decoder_residence_us": 8,
+      "receive_to_gpu_done_us": 3,
+      "decode_return": 4,
+      "no_picture": 6,
+      "au_complete": 5,
+      "recovery_begin": 4,
+      "au_drop_reason": 5,
+      "keyframe_request": 1,
+      "generation_drop": 3,
+      "recovery_end_ms": 4,
+      "old_picture_epoch": 11,
+      "au_first": 1,
+      "picture_output_rtp": 1,
+      "picture_generation": 1
+    },
+    "local_measurements": {
+      "receive_to_decode_submit_ms": {
+        "n": 15,
+        "min": 0.134,
+        "median": 8.236,
+        "p95": 95.912,
+        "max": 95.912
+      },
+      "decode_call_ms": {
+        "n": 4,
+        "min": 0.808,
+        "median": 2.8040000000000003,
+        "p95": 4.745,
+        "max": 4.745
+      },
+      "decoder_poll_call_ms": null,
+      "matched_decoder_residence_ms": {
+        "n": 8,
+        "min": 524.046,
+        "median": 616.2635,
+        "p95": 1171.452,
+        "max": 1171.452
+      },
+      "matched_receive_to_gpu_ms": {
+        "n": 3,
+        "min": 468.656,
+        "median": 645.011,
+        "p95": 1194.103,
+        "max": 1194.103
+      },
+      "decoded_to_gpu_ms": null,
+      "gpu_callback_wait_ms": null
+    },
+    "decoder_output_sequence": {
+      "outputs": [
+        {
+          "elapsed_us": 54306459,
+          "current_submission_rtp": 1252175405,
+          "output_only_call": false,
+          "returned_pts": 1252128875,
+          "returned_rtp": 1252128875,
+          "duplicate_returned_pts": false,
+          "association": "submission_not_retained",
+          "submit_to_output_ms": null,
+          "current_submission_receive_age_ms": 43.523,
+          "rtp_lead_ms": 517.0
+        },
+        {
+          "elapsed_us": 55300406,
+          "current_submission_rtp": 1252222025,
+          "output_only_call": false,
+          "returned_pts": 1252175405,
+          "returned_rtp": 1252175405,
+          "duplicate_returned_pts": false,
+          "association": "retained_unique_submission",
+          "submit_to_output_ms": 996.716,
+          "current_submission_receive_age_ms": null,
+          "rtp_lead_ms": 518.0
+        },
+        {
+          "elapsed_us": 55430042,
+          "current_submission_rtp": 1252240025,
+          "output_only_call": false,
+          "returned_pts": 1252191965,
+          "returned_rtp": 1252191965,
+          "duplicate_returned_pts": false,
+          "association": "submission_not_retained",
+          "submit_to_output_ms": null,
+          "current_submission_receive_age_ms": 3.072,
+          "rtp_lead_ms": 534.0
+        },
+        {
+          "elapsed_us": 56126860,
+          "current_submission_rtp": 1252348025,
+          "output_only_call": false,
+          "returned_pts": 1252193495,
+          "returned_rtp": 1252193495,
+          "duplicate_returned_pts": false,
+          "association": "submission_not_retained",
+          "submit_to_output_ms": null,
+          "current_submission_receive_age_ms": 55.584,
+          "rtp_lead_ms": 1717.0
+        },
+        {
+          "elapsed_us": 56821145,
+          "current_submission_rtp": 1252422095,
+          "output_only_call": false,
+          "returned_pts": 1252235525,
+          "returned_rtp": 1252235525,
+          "duplicate_returned_pts": false,
+          "association": "retained_unique_submission",
+          "submit_to_output_ms": 1430.261,
+          "current_submission_receive_age_ms": null,
+          "rtp_lead_ms": 2073.0
+        },
+        {
+          "elapsed_us": 56862257,
+          "current_submission_rtp": 1252426595,
+          "output_only_call": false,
+          "returned_pts": 1252240025,
+          "returned_rtp": 1252240025,
+          "duplicate_returned_pts": false,
+          "association": "retained_unique_submission",
+          "submit_to_output_ms": 1434.979,
+          "current_submission_receive_age_ms": null,
+          "rtp_lead_ms": 2073.0
+        },
+        {
+          "elapsed_us": 56906713,
+          "current_submission_rtp": 1252428125,
+          "output_only_call": false,
+          "returned_pts": 1252348025,
+          "returned_rtp": 1252348025,
+          "duplicate_returned_pts": false,
+          "association": "retained_unique_submission",
+          "submit_to_output_ms": 782.715,
+          "current_submission_receive_age_ms": null,
+          "rtp_lead_ms": 890.0
+        },
+        {
+          "elapsed_us": 57831273,
+          "current_submission_rtp": 1252488065,
+          "output_only_call": false,
+          "returned_pts": 1252393475,
+          "returned_rtp": 1252393475,
+          "duplicate_returned_pts": false,
+          "association": "submission_not_retained",
+          "submit_to_output_ms": null,
+          "current_submission_receive_age_ms": 44.033,
+          "rtp_lead_ms": 1051.0
+        },
+        {
+          "elapsed_us": 58348370,
+          "current_submission_rtp": 1252533245,
+          "output_only_call": false,
+          "returned_pts": 1252437125,
+          "returned_rtp": 1252437125,
+          "duplicate_returned_pts": false,
+          "association": "retained_unique_submission",
+          "submit_to_output_ms": 1405.401,
+          "current_submission_receive_age_ms": null,
+          "rtp_lead_ms": 1068.0
+        },
+        {
+          "elapsed_us": 58393606,
+          "current_submission_rtp": 1252540715,
+          "output_only_call": false,
+          "returned_pts": 1252488065,
+          "returned_rtp": 1252488065,
+          "duplicate_returned_pts": false,
+          "association": "retained_unique_submission",
+          "submit_to_output_ms": 567.2,
+          "current_submission_receive_age_ms": null,
+          "rtp_lead_ms": 585.0
+        },
+        {
+          "elapsed_us": 58724456,
+          "current_submission_rtp": 1252626305,
+          "output_only_call": false,
+          "returned_pts": 1252504715,
+          "returned_rtp": 1252504715,
+          "duplicate_returned_pts": false,
+          "association": "submission_not_retained",
+          "submit_to_output_ms": null,
+          "current_submission_receive_age_ms": 36.36,
+          "rtp_lead_ms": 1351.0
+        },
+        {
+          "elapsed_us": 59000218,
+          "current_submission_rtp": 1252656365,
+          "output_only_call": false,
+          "returned_pts": 1252509215,
+          "returned_rtp": 1252509215,
+          "duplicate_returned_pts": false,
+          "association": "submission_not_retained",
+          "submit_to_output_ms": null,
+          "current_submission_receive_age_ms": 95.912,
+          "rtp_lead_ms": 1635.0
+        },
+        {
+          "elapsed_us": 59154867,
+          "current_submission_rtp": 1252679045,
+          "output_only_call": false,
+          "returned_pts": 1252530185,
+          "returned_rtp": 1252530185,
+          "duplicate_returned_pts": false,
+          "association": "retained_unique_submission",
+          "submit_to_output_ms": 838.998,
+          "current_submission_receive_age_ms": null,
+          "rtp_lead_ms": 1654.0
+        },
+        {
+          "elapsed_us": 59222597,
+          "current_submission_rtp": 1252684985,
+          "output_only_call": false,
+          "returned_pts": 1252536215,
+          "returned_rtp": 1252536215,
+          "duplicate_returned_pts": false,
+          "association": "retained_unique_submission",
+          "submit_to_output_ms": 870.908,
+          "current_submission_receive_age_ms": null,
+          "rtp_lead_ms": 1653.0
+        },
+        {
+          "elapsed_us": 59288382,
+          "current_submission_rtp": 1252691015,
+          "output_only_call": false,
+          "returned_pts": 1252542245,
+          "returned_rtp": 1252542245,
+          "duplicate_returned_pts": false,
+          "association": "retained_unique_submission",
+          "submit_to_output_ms": 894.659,
+          "current_submission_receive_age_ms": null,
+          "rtp_lead_ms": 1653.0
+        },
+        {
+          "elapsed_us": 59472724,
+          "current_submission_rtp": 1252707575,
+          "output_only_call": false,
+          "returned_pts": 1252626305,
+          "returned_rtp": 1252626305,
+          "duplicate_returned_pts": false,
+          "association": "retained_unique_submission",
+          "submit_to_output_ms": 751.034,
+          "current_submission_receive_age_ms": null,
+          "rtp_lead_ms": 903.0
+        },
+        {
+          "elapsed_us": 59521383,
+          "current_submission_rtp": 1252712075,
+          "output_only_call": false,
+          "returned_pts": 1252656365,
+          "returned_rtp": 1252656365,
+          "duplicate_returned_pts": false,
+          "association": "retained_unique_submission",
+          "submit_to_output_ms": 524.048,
+          "current_submission_receive_age_ms": 0.148,
+          "rtp_lead_ms": 619.0
+        },
+        {
+          "elapsed_us": 59721845,
+          "current_submission_rtp": 1252730075,
+          "output_only_call": false,
+          "returned_pts": 1252674455,
+          "returned_rtp": 1252674455,
+          "duplicate_returned_pts": false,
+          "association": "retained_unique_submission",
+          "submit_to_output_ms": 607.609,
+          "current_submission_receive_age_ms": null,
+          "rtp_lead_ms": 618.0
+        },
+        {
+          "elapsed_us": 60139720,
+          "current_submission_rtp": 1252767605,
+          "output_only_call": false,
+          "returned_pts": 1252712075,
+          "returned_rtp": 1252712075,
+          "duplicate_returned_pts": false,
+          "association": "retained_unique_submission",
+          "submit_to_output_ms": 621.036,
+          "current_submission_receive_age_ms": null,
+          "rtp_lead_ms": 617.0
+        },
+        {
+          "elapsed_us": 61540209,
+          "current_submission_rtp": 1252893695,
+          "output_only_call": false,
+          "returned_pts": 1252838165,
+          "returned_rtp": 1252838165,
+          "duplicate_returned_pts": false,
+          "association": "retained_unique_submission",
+          "submit_to_output_ms": 611.499,
+          "current_submission_receive_age_ms": 0.134,
+          "rtp_lead_ms": 617.0
+        }
+      ],
+      "submit_to_output_ms": {
+        "n": 14,
+        "min": 524.048,
+        "median": 810.8565000000001,
+        "p95": 1434.979,
+        "max": 1434.979
+      },
+      "limits": [
+        "Trace-event residence has small instrumentation skew relative to the HUD's Instants.",
+        "RTP lead is source-timeline separation, not network latency or a frame count.",
+        "Missing submissions at the start of the ring are not unmatched hardware PTS.",
+        "An outstanding metadata record is not proof of a buffered picture.",
+        "This cannot determine firmware readiness or whether an empty-input call would drain it."
+      ]
+    },
+    "end_to_end_latency_ms": null,
+    "limits": [
+      "Retained span is not session duration.",
+      "decode_submit includes assembly and output-surface wait; it is not queue-only age.",
+      "decode_return is call duration, not matched output residence.",
+      "Legacy picture_produced uses submission identity; excluded from output age.",
+      "GPU callback completion is not physical panel scanout.",
+      "No input delivery, network one-way delay, or AV sync inference."
+    ]
+  }
+}

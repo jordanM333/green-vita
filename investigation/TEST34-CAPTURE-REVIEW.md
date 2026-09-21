@@ -1,5 +1,10 @@
 # Test 34: new recordings and history — issue OPEN
 
+Follow-up: the subsequently supplied raw PTS trace and the output-servicing
+candidate are documented in [DECODER-OUTPUT-CANDIDATE.md](DECODER-OUTPUT-CANDIDATE.md).
+That update supersedes the earlier statement that no playback candidate exists.
+
+
 This update incorporates the supplied `IMG_0446.mp4`, `IMG_0450.mp4`, and pasted
 history from 5.455 to 61.539 seconds. It supersedes the earlier request for a
 simultaneous TV/Vita recording: **that evidence has now been supplied**.

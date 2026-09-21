@@ -1,0 +1,57 @@
+    Updating crates.io index
+     Locking 3 packages to latest Rust 1.98.1 compatible versions
+ Downgrading anyhow v1.0.104 -> v1.0.103 (available: v1.0.104)
+ Downgrading crossbeam-channel v0.5.17 -> v0.5.16 (available: v0.5.17)
+ Downgrading tokio v1.53.1 -> v1.52.3 (available: v1.53.1)
+ Downloading crates ...
+  Downloaded anyhow v1.0.103
+  Downloaded crossbeam-channel v0.5.16
+  Downloaded tokio v1.52.3
+   Compiling anyhow v1.0.103
+   Compiling crossbeam-channel v0.5.16
+   Compiling tokio v1.52.3
+   Compiling decoder-pump-tests v0.0.0 (/workspace/scratch/6824e3a81a85/green-vita/tests/decoder-pump)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.42s
+     Running unittests src/lib.rs (/workspace/scratch/6824e3a81a85/decoder-pump-clean-target/x86_64-unknown-linux-gnu/debug/deps/decoder_pump_tests-765b715a7f373aa0)
+
+running 19 tests
+test video::frame_signal::tests::burst_publications_coalesce_without_clearing_the_latest_frame ... ok
+test video::frame_signal::tests::consumed_frame_does_not_trigger_a_phantom_render ... ok
+test video::frame_signal::tests::frame_published_before_wait_is_not_lost ... ok
+test video::frame_signal::tests::producer_wakes_a_waiting_display_without_a_poll_timer ... ok
+test video::freshness::tests::slow_decoder_output_is_visible_even_when_rtp_arrival_is_fresh ... ok
+test video::policy::tests::decode_queue_deadline_is_not_extended_by_newer_frames ... ok
+test video::policy::tests::recovery_transitions_once_and_requires_a_submitted_idr ... ok
+test video::pump_tests::real_worker_services_a_no_picture_input_and_stops_polling_when_empty ... Vita AVC decoder initialized: capacity 1280x720, output 960x544, frame memory 4 bytes
+Vita AVC first picture: frame 960x544, visible 960x544, pitch 960 pixels, output surface 960x544
+ok
+test video::pump_tests::recovery_drains_old_epochs_before_showing_new_picture ... Vita AVC decoder initialized: capacity 1280x720, output 960x544, frame memory 4 bytes
+Vita AVC first picture: frame 960x544, visible 960x544, pitch 960 pixels, output surface 960x544
+ok
+test video::pump_tests::rejected_poll_is_visible_once_without_reset_loop_or_duplicate_input ... Vita AVC decoder initialized: capacity 1280x720, output 960x544, frame memory 4 bytes
+Vita AVC first picture: frame 960x544, visible 960x544, pitch 960 pixels, output surface 960x544
+AVC output polling disabled for this session: sceAvcdecDecode failed: 0xffffffff
+ok
+test video::pump_tests::repeated_deferred_outputs_do_not_accumulate_and_displayed_pixels_stay_owned ... Vita AVC decoder initialized: capacity 1280x720, output 960x544, frame memory 4 bytes
+Vita AVC first picture: frame 960x544, visible 960x544, pitch 960 pixels, output surface 960x544
+ok
+test video::pump_tests::reproduce_fifo_growth_and_drain_without_another_input_or_reset ... Vita AVC decoder initialized: capacity 1280x720, output 960x544, frame memory 4 bytes
+Vita AVC first picture: frame 960x544, visible 960x544, pitch 960 pixels, output surface 960x544
+Controlled FIFO: legacy retains 37 pictures; output-only calls retire all 37 with zero new submissions or resets.
+ok
+test video::tests::a_two_texture_fallback_never_decodes_into_the_displayed_texture ... ok
+test video::tests::renderer_takes_newest_completed_frame_without_waiting_for_rtc_handoff ... ok
+test video::timing::tests::buffered_and_reordered_outputs_keep_their_actual_input_identity ... ok
+test video::timing::tests::old_epoch_is_preserved_so_recovery_can_reject_delayed_output ... ok
+test video::timing::tests::only_new_rendered_pictures_generate_feedback_and_pending_reports_coalesce ... ok
+test video::timing::tests::rtp_wrap_and_zero_are_valid_picture_timestamps ... ok
+test video::timing::tests::unknown_unmatched_and_evicted_pts_never_guess_a_picture ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+   Doc-tests decoder_pump_tests
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
