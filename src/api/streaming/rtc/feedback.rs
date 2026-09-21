@@ -1,6 +1,7 @@
-//! Negotiated receive ceiling and measurements. This is a fixed maximum matching
-//! the Xbox capability request, not an adaptive bandwidth estimator.
+//! Negotiated REMB feedback with delay-based congestion response and rate measurements.
 use std::time::{Duration, Instant};
+#[path = "congestion.rs"]
+mod congestion;
 
 pub(crate) const VIDEO_CEILING_BPS: u32 = 2_000_000;
 const FEEDBACK_INTERVAL: Duration = Duration::from_millis(500);
@@ -36,8 +37,8 @@ pub(crate) fn remb_payloads(sdp: &str) -> Vec<u8> {
     result
 }
 
-#[derive(Default)]
 pub(crate) struct VideoCeiling {
+    budget: congestion::ReceiveBudget,
     supported_payloads: Vec<u8>,
     active: bool,
     last_attempt: Option<Instant>,
@@ -46,7 +47,20 @@ pub(crate) struct VideoCeiling {
     over_windows: u64,
 }
 
+impl Default for VideoCeiling {
+    fn default() -> Self {
+        Self { budget: congestion::ReceiveBudget::new(VIDEO_CEILING_BPS),
+            supported_payloads: Vec::new(), active: false, last_attempt: None,
+            queued: 0, failed: 0, over_windows: 0 }
+    }
+}
+
 impl VideoCeiling {
+    pub(crate) fn receive(&mut self, bytes: usize, delay_ms: u64, now: Instant) {
+        self.budget.receive(bytes, delay_ms, now);
+    }
+    pub(crate) fn target_bps(&self) -> u32 { self.budget.target() }
+
     pub(crate) fn answer(&mut self, sdp: &str) {
         *self = Self { supported_payloads: remb_payloads(sdp), ..Default::default() };
     }
@@ -63,13 +77,13 @@ impl VideoCeiling {
     pub(crate) fn summary(&mut self, measured_kbps: u64) -> String {
         // This is an observation, not a server acknowledgement or hard wire cap.
         // Allow 25% for short-window/keyframe bursts before counting an overshoot.
-        if self.queued >= 4 && measured_kbps > u64::from(VIDEO_CEILING_BPS) / 800 {
+        if self.queued >= 4 && measured_kbps > u64::from(self.budget.target()) / 800 {
             self.over_windows += 1;
         }
-        let state = if self.active { "2000k" }
+        let state = if self.active { "adaptive" }
             else if self.supported_payloads.is_empty() { "unsupported" }
             else { "waiting-video" };
-        format!("REMB:{state} queued:{} fail:{} over-windows:{}", self.queued, self.failed, self.over_windows)
+        format!("REMB:{state} target:{}k delay:{}ms cuts:{} queued:{} fail:{} over-windows:{}", self.budget.target() / 1000, self.budget.delay_ms, self.budget.reductions, self.queued, self.failed, self.over_windows)
     }
 }
 

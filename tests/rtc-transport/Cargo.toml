@@ -11,3 +11,6 @@ sctp = { package = "rtc-sctp", version = "=0.20.0-rc.2" }
 shared = { package = "rtc-shared", version = "=0.20.0-rc.2", default-features = false }
 bytes = "1"
 rtc = { path = "../../vendor/rtc" }
+
+[patch.crates-io]
+rtc-sctp = { path = "../../vendor/rtc-sctp" }

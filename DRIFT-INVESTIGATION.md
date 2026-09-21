@@ -1,3 +1,60 @@
+# RX Test 34: input starvation and receive congestion
+
+RX Test 33 did not resolve the reported delay. The attached video identifies
+RX Test 33 Home streaming and shows video decoding continuing during the delay.
+It is not a packet trace and cannot identify the location of all remaining lag.
+
+## Confirmed Test 33 regression
+
+The 256-byte input and 128-byte presentation thresholds count unacknowledged
+payload, not just unsent data. With 60 controller plus 60 presentation reports
+per second and 100 ms RTT, normal in-flight input consumes the feedback limit.
+The previous 5 ms one-way tests missed this starvation because they asserted
+only the age of delivered messages and maximum outstanding bytes.
+
+A 29-second two-endpoint SCTP regression now reproduces:
+
+| Healthy 100 ms RTT | RX Test 33 policy | Corrected admission |
+|---|---:|---:|
+| All reports delivered | 1,378 | 3,624 |
+| Presentation reports admitted | 1 | 1,812 |
+| Maximum delivered report age | 50 ms | 50 ms |
+| Maximum gap between delivered reports | 64 ms | 16 ms |
+
+The corrected path reserves actual SCTP congestion/receive capacity, accounting
+for pending data on the association and WebRTC ingress on all its channels.
+The small application limits apply only to unsent ingress. The pump flushes
+admitted reports before processing a timeout that could reduce the send window.
+It still honors SCTP congestion control and retains current unsent controller
+state. Under intermittent loss the same test delivers 3,576 reports, admits
+1,812 presentation reports, has 50 ms maximum delivered age and a 48 ms maximum
+delivery gap. The full ICE/DTLS/SCTP API test verifies ingress rejection, continued
+sending while ACKs are absent, actual-window exhaustion and resumed fresh input.
+This demonstrates starvation and its correction, not Xbox's internal response.
+
+## Receive congestion response
+
+The previous REMB request stays at 2 Mbps even while RTP arrival delay grows.
+The negotiated REMB path now reduces its target after two 200 ms windows with
+at least 100 ms added RTP arrival delay. Decreases are limited to once a second;
+the requested floor is 500 kbps. It leaves headroom below measured video payload
+throughput and raises the target by 100 kbps only after five seconds with less
+than 40 ms added delay. The maximum remains 2 Mbps. Transient jitter does not
+trigger a reduction. Diagnostics expose the target, delay and reduction count.
+
+A virtual 2-to-1 Mbps bottleneck test with 100 ms feedback delay shows the fixed
+request accumulating over 50 seconds of backlog in one minute; the adaptive
+policy ends below 100 ms. This is a controller simulation, not evidence that
+Xbox obeys every REMB request. The actual Xbox response remains device-dependent.
+
+No automatic reconnect or latency-based decoder flush is added. Lower bitrate
+may temporarily reduce image quality. Remaining uncertainty: the recording and
+old logs do not establish that these changes remove every source of end-to-end
+delay on the user's Xbox/Vita network. Device playback is required to establish
+that outcome; compilation and simulated tests cannot do so.
+
+---
+
 # RX Test 31 drift: evidence and verification
 
 ## What the supplied logs establish

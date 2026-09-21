@@ -1,6 +1,8 @@
 //! Exercise the actual SCTP dependency with a virtual clock and two endpoints.
 //! This reproduces transport queueing; it does not emulate Xbox congestion control.
 #[cfg(test)]
+mod delivery;
+#[cfg(test)]
 mod webrtc;
 #[path = "../../../src/api_xbox/streaming/control/admission.rs"]
 pub mod admission;
@@ -9,7 +11,7 @@ pub mod admission;
 mod latest_input;
 #[cfg(test)]
 mod tests {
-    use super::admission::INPUT_OUTSTANDING_LIMIT;
+    const INPUT_OUTSTANDING_LIMIT: usize = 256; // RX Test 33 baseline policy
     use bytes::Bytes;
     use sctp::{Association, AssociationHandle, ClientConfig, DatagramEvent, Endpoint,
         EndpointConfig, Payload, PayloadProtocolIdentifier, ReliabilityType, ServerConfig,

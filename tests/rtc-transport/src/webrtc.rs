@@ -7,7 +7,8 @@ use rtc::peer_connection::transport::{CandidateConfig, CandidateHostConfig, RTCI
 use rtc::sansio::Protocol;
 use rtc::shared::{TaggedBytesMut, TransportContext, TransportProtocol};
 use std::{net::SocketAddr, time::{Duration, Instant}};
-use crate::admission::{INPUT_OUTSTANDING_LIMIT, FEEDBACK_OUTSTANDING_LIMIT};
+const INPUT_OUTSTANDING_LIMIT: usize = 256; // RX Test 33 baseline policy
+const FEEDBACK_OUTSTANDING_LIMIT: usize = 128;
 
 const CHANNEL: u16 = 1;
 struct Pair {
@@ -113,4 +114,51 @@ fn limit_counts_ingress_and_sctp_until_ack_then_accepts_fresh_state() {
     pair.a.data_channel(CHANNEL).unwrap().close().unwrap();
     assert!(pair.a.data_channel(CHANNEL).unwrap()
         .try_send_with_outstanding_limit(BytesMut::from(&[4; 38][..]), 256).is_err());
+}
+
+#[test]
+fn writable_admission_counts_unsent_ingress_without_starving_on_ack_wait() {
+    let mut pair = Pair::new();
+    assert!(pair.a.data_channel(CHANNEL).unwrap()
+        .try_send_when_writable(BytesMut::from(&[1; 38][..]), 256).is_err());
+    pair.wait_for(|p| p.a.data_channel(CHANNEL).unwrap().ready_state() == RTCDataChannelState::Open
+        && p.b.data_channel(CHANNEL).unwrap().ready_state() == RTCDataChannelState::Open);
+    pair.wait_for(|p| p.a.data_channel(CHANNEL).unwrap().outstanding_payload_bytes().is_ok_and(|n| n == 0));
+    {
+        let mut dc = pair.a.data_channel(CHANNEL).unwrap();
+        for _ in 0..2 { assert!(dc.try_send_when_writable(BytesMut::from(&[1; 43][..]), 128).unwrap()); }
+        assert!(!dc.try_send_when_writable(BytesMut::from(&[2; 43][..]), 128).unwrap());
+        for _ in 0..4 { assert!(dc.try_send_when_writable(BytesMut::from(&[1; 38][..]), 256).unwrap()); }
+        assert!(!dc.try_send_when_writable(BytesMut::from(&[2; 38][..]), 256).unwrap());
+    }
+    pair.tick(true);
+    // These 238 bytes have left for the peer. An absent ACK is not a reason
+    // to reject fresh state while the actual transport still has capacity.
+    assert_eq!(pair.a.data_channel(CHANNEL).unwrap().outstanding_payload_bytes().unwrap(), 238);
+    for _ in 0..20 {
+        let mut dc = pair.a.data_channel(CHANNEL).unwrap();
+        assert!(dc.try_send_when_writable(BytesMut::from(&[1; 38][..]), 256).unwrap());
+        assert!(dc.try_send_when_writable(BytesMut::from(&[1; 43][..]), 128).unwrap());
+        pair.tick(true);
+    }
+    let mut received = Vec::new();
+    while let Some(RTCMessage::DataChannelMessage(_, msg)) = pair.b.poll_read() { received.push(msg.data); }
+    assert_eq!(received.len(), 46, "fresh controls and feedback must both keep flowing");
+    assert!(!received.iter().any(|m| m[0] == 2), "rejected reports must never be queued");
+    // Exhaust the real congestion window without bypassing it.
+    let mut blocked = false;
+    for _ in 0..300 {
+        let accepted = pair.a.data_channel(CHANNEL).unwrap()
+            .try_send_when_writable(BytesMut::from(&[1; 38][..]), 256).unwrap();
+        if !accepted { blocked = true; break; }
+        pair.tick(true);
+    }
+    assert!(blocked, "admission must honor SCTP congestion control");
+    pair.wait_for(|p| p.a.data_channel(CHANNEL).unwrap()
+        .try_send_when_writable(BytesMut::from(&[3; 38][..]), 256).unwrap());
+    pair.wait_for(|p| {
+        while let Some(RTCMessage::DataChannelMessage(_, msg)) = p.b.poll_read() { received.push(msg.data); }
+        received.iter().any(|m| m[0] == 3)
+    });
+    assert!(!received.iter().any(|m| m[0] == 2));
 }

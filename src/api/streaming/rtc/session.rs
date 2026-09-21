@@ -154,6 +154,9 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             crate::streaming::video::trace::record("frame_feedback", frame.timing.rtp_timestamp, u64::from(sent));
         }
 
+        // Materialize admitted ephemeral reports while the sampled send capacity
+        // still applies. A timeout can shrink SCTP's congestion window.
+        self.transport.flush(&mut self.peer).await;
         let now = Instant::now();
         // rtc-rs is sans-I/O, so its expired internal timer must be advanced by our pump.
         if let Some(deadline) = self.peer.poll_timeout()
@@ -168,7 +171,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         self.request_keyframe(keyframe_requested, now);
         if self.video_ceiling.due(now)
             && let Some(success) = self.video.request_bitrate_ceiling(
-                &mut self.peer, super::feedback::VIDEO_CEILING_BPS)
+                &mut self.peer, self.video_ceiling.target_bps())
         {
             self.video_ceiling.attempted(now, success);
             crate::streaming::video::trace::record("remb_queued", 0, u64::from(success));
@@ -343,6 +346,9 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                         self.video_ceiling.observe_payload(packet.header.payload_type);
                         self.video_rate.receive(packet.payload.len(), Instant::now());
                         self.video_clock.receive(packet.header.timestamp);
+                        if let Some(timing) = self.video_clock.timing() {
+                            self.video_ceiling.receive(packet.payload.len(), timing.added_delay_ms, Instant::now());
+                        }
                         self.video.receive(packet, &mut keyframe_requested);
                     } else if self.audio.handles(&track_id) {
                         self.audio_clock.receive(packet.header.timestamp);

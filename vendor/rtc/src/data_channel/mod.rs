@@ -283,6 +283,44 @@ where
         Ok(true)
     }
 
+    /// Admit ephemeral data against SCTP's real congestion/receive windows.
+    /// Already transmitted payload is governed by SCTP, not a tiny app ACK cap.
+    /// Reserve all WebRTC ingress writes on the association before admitting a
+    /// new one; the caller must poll writes before processing more reads/timers.
+    /// `ingress_limit` bounds only bytes waiting to enter SCTP on this channel.
+    pub fn try_send_when_writable(&mut self, data: BytesMut, ingress_limit: usize) -> Result<bool> {
+        if self.ready_state() != RTCDataChannelState::Open {
+            return Err(Error::ErrDataChannelClosed);
+        }
+        let handle = self.peer_connection.data_channels.get(&self.id)
+            .and_then(|dc| dc.data_channel.as_ref())
+            .ok_or(Error::ErrDataChannelClosed)?.association_handle();
+        let mut reserved = 0usize;
+        let mut channel_queued = 0usize;
+        for msg in &self.peer_connection.pipeline_context.endpoint_handler_context.write_outs {
+            if let RTCMessageInternal::Dtls(DTLSMessage::DataChannel(app)) = &msg.message {
+                if let DataChannelEvent::Message(msg) = &app.data_channel_event {
+                    let same_association = self.peer_connection.data_channels.get(&app.data_channel_id)
+                        .and_then(|dc| dc.data_channel.as_ref())
+                        .is_some_and(|dc| dc.association_handle() == handle);
+                    if same_association { reserved = reserved.saturating_add(msg.data.len().max(1)); }
+                    if app.data_channel_id == self.id {
+                        channel_queued = channel_queued.saturating_add(msg.data.len().max(1));
+                    }
+                }
+            }
+        }
+        let association = self.peer_connection.pipeline_context.sctp_handler_context
+            .sctp_transport.sctp_associations.get_mut(&sctp::AssociationHandle(handle))
+            .ok_or(Error::ErrAssociationNotExisted)?;
+        let bytes = data.len().max(1);
+        if bytes > ingress_limit.saturating_sub(channel_queued)
+            || bytes > association.immediate_send_capacity().saturating_sub(reserved)
+        { return Ok(false); }
+        self.send(data)?;
+        Ok(true)
+    }
+
     /// send sends the binary message to the DataChannel peer
     pub fn send(&mut self, data: BytesMut) -> Result<()> {
         if self.peer_connection.data_channels.contains_key(&self.id) {
