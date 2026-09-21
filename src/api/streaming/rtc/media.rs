@@ -180,12 +180,6 @@ impl VideoReceiver {
         }
     }
 
-    pub(crate) fn recover_latency(&mut self) {
-        self.order = Default::default();
-        self.rtp.recover_latency(&self.decoder);
-        self.latest_frame = None;
-    }
-
     pub(crate) fn request_keyframe(&self, peer: &mut RTCPeerConnection) {
         // A PLI needs both identifiers recorded when the remote video track was opened.
         if let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc)
@@ -217,6 +211,7 @@ impl VideoReceiver {
         self.last_stats_report = now;
 
         let performance = crate::streaming::video::video_performance_summary();
+        let buffering = self.rtp.buffering_summary();
         let source_fps = self
             .stats
             .last_sample_duration_us
@@ -241,7 +236,7 @@ impl VideoReceiver {
             .map(|error| format!("\nlast decode error: {error}"))
             .unwrap_or_default();
         Some(format!(
-            "SPS:{encoded_resolution} decoder:{}x{} output:{}x{} source-fps:{source_fps}\n\
+            "SPS:{encoded_resolution} decoder:{}x{} output:{}x{} source-fps:{source_fps}\n{buffering}\n\
              RTP pk:{} jump:{}/~{} late:{} dup:{} empty:{}\n{}\n\
              AU done:{} sent:{} drop:{} seq:{} FU:{} mal:{} q:{} SPS:{} IDRwait:{} other:{}\n\
              IDR count:{} age:{idr_age} postDamageSent:{} wait:{} decoderErr:{}\n\

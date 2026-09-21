@@ -29,7 +29,6 @@ pub(crate) struct TitleInitialOverlay {
 
 pub struct App {
     pub settings: Settings,
-    pub(crate) home_refresh_guard: crate::streaming::video::freshness::RefreshGuard,
     pub(crate) service: Service,
     pub(crate) state: AppState,
     pub(crate) menu: MenuState,
@@ -45,7 +44,6 @@ impl App {
 
         Ok(Self {
             service,
-            home_refresh_guard: Default::default(),
             state: AppState::InitializeAuthentication,
             menu: MenuState::default(),
             title_initial_overlay: None,

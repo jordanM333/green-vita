@@ -28,8 +28,6 @@ pub(crate) struct PictureTracker {
 }
 
 impl PictureTracker {
-    pub fn flush(&mut self) { self.pending.clear(); }
-
     pub fn submit(&mut self, rtp: u32, received_at: Instant, submitted_at: Instant, epoch: u64) -> u64 {
         // RTP and Vita AVC timestamps both use 90 kHz. Extend the RTP wrap so
         // pictures on either side retain distinct identities in the decoder.
@@ -64,11 +62,6 @@ pub(crate) struct PresentationState {
 }
 
 impl PresentationState {
-    pub fn invalidate(&mut self) {
-        self.pending = None;
-        self.latest = None;
-    }
-
     pub fn record(&mut self, generation: u64, timing: Option<FrameTiming>, rendered_at: Instant) {
         if generation <= self.generation { return; }
         self.generation = generation;
@@ -83,34 +76,6 @@ impl PresentationState {
 mod tests {
     use super::*;
     use std::time::Duration;
-
-    #[test]
-    fn flush_forgets_old_pictures_but_preserves_extended_pts_across_wrap() {
-        let now = Instant::now();
-        let mut tracker = PictureTracker::default();
-        let old = tracker.submit(u32::MAX - 1499, now, now, 1);
-        tracker.flush();
-        assert!(tracker.output(old, now).is_none());
-        let new = tracker.submit(0, now, now, 2);
-        assert_eq!(new - old, 1500);
-        assert_eq!(tracker.output(new, now).unwrap().epoch, 2);
-    }
-
-    #[test]
-    fn invalidation_drops_pending_feedback_without_allowing_old_texture_to_return() {
-        let now = Instant::now();
-        let mut state = PresentationState::default();
-        let frame = Some(FrameTiming { rtp_timestamp: 42, received_at: now,
-            submitted_at: now, decoded_at: now, epoch: 1 });
-        state.record(5, frame, now);
-        state.invalidate();
-        assert!(state.take().is_none());
-        assert!(state.latest.is_none());
-        state.record(5, frame, now);
-        assert!(state.latest.is_none());
-        state.record(6, frame, now);
-        assert_eq!(state.take().unwrap().timing.rtp_timestamp, 42);
-    }
 
     #[test]
     fn buffered_and_reordered_outputs_keep_their_actual_input_identity() {

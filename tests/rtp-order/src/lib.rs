@@ -14,15 +14,9 @@ mod streaming {
         use std::sync::Mutex;
         pub enum SubmitResult { Submitted, QueueFull, Disconnected }
         #[derive(Default)]
-        pub struct VideoDecodeWorker {
-            pub submitted: Mutex<Vec<Vec<u8>>>,
-            pub flushes: std::sync::atomic::AtomicU64,
-        }
+        pub struct VideoDecodeWorker { pub submitted: Mutex<Vec<Vec<u8>>> }
         impl VideoDecodeWorker {
             pub fn begin_resync(&self) {}
-            pub fn flush_before_next_idr(&self) {
-                self.flushes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
             pub fn take_recovery_request(&self) -> bool { false }
             pub fn submit_access_unit(&self, data: Vec<u8>, _: std::time::Instant, _: u32) -> SubmitResult {
                 self.submitted.lock().unwrap().push(data);
@@ -169,33 +163,6 @@ mod tests {
             now + Duration::from_millis(7));
         assert_eq!(fixed.worker.submitted.lock().unwrap().len(), 0);
         assert_eq!(fixed.order.stats.too_late, 1);
-    }
-
-    #[test]
-    fn latency_repair_discards_partial_fu_and_gates_new_epoch_on_complete_idr() {
-        let mut assembler = video_rtp::VideoRtp::new(1280, 720);
-        let worker = VideoDecodeWorker::default();
-        let mut request = false;
-        assembler.receive(&worker, packet(10, 1000, true, &[0x65, 0xaa, 0xbb]), &mut request);
-        assembler.receive(&worker, packet(11, 2500, false, &[0x7c, 0x81, 0x88]), &mut request);
-        assembler.recover_latency(&worker);
-        assert_eq!(worker.flushes.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert!(assembler.waiting_for_keyframe());
-        // The pre-repair FU tail and a new dependent picture cannot be decoded.
-        assembler.receive(&worker, packet(12, 2500, true, &[0x7c, 0x41, 0x99]), &mut request);
-        assembler.receive(&worker, packet(13, 4000, true, &[0x61, 0xaa, 0xbb]), &mut request);
-        assert_eq!(worker.submitted.lock().unwrap().len(), 1);
-        assert!(assembler.waiting_for_keyframe());
-        assembler.receive(&worker, packet(14, 5500, false, &[0x7c, 0x85, 0xcc]), &mut request);
-        assert!(assembler.waiting_for_keyframe());
-        assembler.receive(&worker, packet(15, 5500, true, &[0x7c, 0x45, 0xdd]), &mut request);
-        assert!(!assembler.waiting_for_keyframe());
-        assembler.receive(&worker, packet(16, 7000, true, &[0x61, 0xee, 0xff]), &mut request);
-        assert_eq!(*worker.submitted.lock().unwrap(), vec![
-            vec![0, 0, 0, 1, 0x65, 0xaa, 0xbb],
-            vec![0, 0, 0, 1, 0x65, 0xcc, 0xdd],
-            vec![0, 0, 0, 1, 0x61, 0xee, 0xff],
-        ]);
     }
 
     #[test]

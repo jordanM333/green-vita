@@ -172,7 +172,7 @@ impl App {
                 }
                 self.menu.open = false;
             }
-            Command::RefreshStream => self.refresh_home_stream(false),
+            Command::RefreshStream => self.refresh_home_stream(),
             Command::Settings => {
                 self.open_settings();
             }

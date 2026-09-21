@@ -138,16 +138,10 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     }
 
     pub async fn pump(&mut self) -> Result<Vec<RTCIceCandidateInit>> {
-        let repair = self.direct_output.repair_requested.swap(false, Ordering::AcqRel);
-        if repair {
-            self.video.recover_latency();
-            self.direct_output.discard_pending();
-            crate::streaming::video::trace::record("video_catchup_begin", 0, 0);
-        }
         self.transport.flush(&mut self.peer).await;
         self.transport.receive(&mut self.peer);
         let gathered_candidates = self.handle_peer_events();
-        let mut keyframe_requested = self.handle_peer_messages() || repair;
+        let mut keyframe_requested = self.handle_peer_messages();
         self.video.drain_decoder(&mut keyframe_requested);
 
         // Feedback identifies a matched output that has completed rendering.

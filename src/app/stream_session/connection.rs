@@ -91,7 +91,6 @@ pub(in crate::app) async fn cleanup_active_sessions(api: &ApiClient, kind: Strea
 
 impl App {
     pub(in crate::app) fn start_stream_for_target(&mut self, target: StreamStartTarget) {
-        self.home_refresh_guard = Default::default();
         let api = self.service.api.clone();
         let kind = target.kind;
         let target_id = target.target_id.clone();

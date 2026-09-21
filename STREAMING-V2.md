@@ -287,3 +287,60 @@ rejection during repair. The target build checks the new SDK import and UI path.
 Only a longer Home device session can confirm whether decoder catch-up actually
 reduces the recurring lag. If the decoder age stays low while lag grows, the
 remaining cause is elsewhere and this flush intentionally will not fire.
+
+
+## RX Test 31 audit: remove automatic interruption
+
+The supplied runs are chronologically reversed: the fresh-process run ends at
+63.082 seconds with PTS matched 2967; the earlier pasted reconnect run begins
+with the same inherited process counter. RTC counters restart per connection.
+Within each run, test31's catch-up also reset reorder statistics; these cannot
+be summed or treated as monotonic connection totals.
+
+Confirmed recovery regression: healthy intervals report 85–120 ms from input
+submission to matched decoder output, despite 2–3 ms individual decode calls
+and an almost empty compressed-AU queue. Test31's 100 ms / 500 ms trigger
+therefore overlaps the observed healthy pipeline. A successful flush could
+still settle above 100 ms, fail its completion condition, and escalate to a
+full reconnect after three seconds. Host tests checked the chosen threshold,
+not whether it corresponded to healthy device behavior.
+
+Remove both automatic latency-driven flushes and full reconnects, including
+pending repair notices and their dormant hardware-flush plumbing. Keep actual
+packet-damage / decoder-error recovery, matched output PTS, age measurements,
+and Quick menu > Refresh stream. Only that explicit menu action restarts the
+Home connection. HUD says refresh:manual. No automatic controller acknowledgement
+is synthesized; a user-requested full reconnect may still show Xbox's prompt.
+
+The incoming-video failure is not established as fixed:
+
+| Run / time | Decoded FPS | Decoder age avg/max | Video payload | Video RTP relative growth |
+| --- | --- | --- | --- | --- |
+| Fresh / 59.077 s | 61 | 85/106 ms | 1927 kbps | 1 ms |
+| Fresh / 61.079 s | 7 | 380/483 ms | 310 kbps | 914 ms |
+| Fresh / 63.082 s | 0 | no new output | 194 kbps | 2466 ms |
+| Reconnect / 52.280 s | 51 | 157/317 ms | 1362 kbps | 154 ms |
+| Reconnect / 55.283 s | 2 | 2233/2324 ms | 47 kbps | 2437 ms |
+
+At the collapses the receiver still pumps roughly 420 times per second, hits
+no receive budget limits, and receives at most one datagram per pass. Individual
+decode calls remain about 2 ms. This is evidence against a seconds-long backlog
+in the measured compressed-AU queue. It does not distinguish Xbox pacing, Wi-Fi
+or OS buffering, or a feedback interaction. Old buffered output also becomes
+old in wall time when new input stops; decoder residence alone cannot identify
+a decoder throughput fault. ICE RTT is not capture-to-display latency.
+
+Vita Moonlight explicitly supplies H.264 VUI buffering restrictions:
+https://github.com/xyzz/vita-moonlight/blob/984603bd6f93f752593048fe494b5ffca14514e1/libgamestream/sps.c
+That is a possible explanation for the steady multi-frame decoder residence,
+not proof of this Xbox stream's SPS or the incoming-rate collapse. Do not rewrite
+profile, reference count or reorder constraints without inspecting the actual
+stream. The existing SPS parser now records profile, level, reference count,
+reorder allowance and DPB limit in H264 diagnostics and saved history. Absent
+restrictions say unspecified, rather than falsely reporting zero. Encoded
+bytes and hardware dimensions remain untouched.
+
+This correction stops the automatic interruption regression. It is not a
+claim that home-streaming drift is solved, and should not be presented as
+another confirmed latency fix. Long-duration Vita validation remains unavailable
+in CI; the Vita compile and host suite only validate code and protocol invariants.

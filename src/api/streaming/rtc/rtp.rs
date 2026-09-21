@@ -155,6 +155,7 @@ pub(super) struct VideoRtp {
     recovery: Recovery,
     decoder_capacity: (u32, u32),
     last_sps_resolution: Option<(u32, u32)>,
+    sps_buffering: Option<String>,
     last_arrival_sequence: Option<u16>,
     last_idr_at: Option<Instant>,
     suspect_reference: bool,
@@ -374,6 +375,7 @@ impl VideoRtp {
             recovery: Recovery::default(),
             decoder_capacity: (decode_width, decode_height),
             last_sps_resolution: None,
+            sps_buffering: None,
             last_arrival_sequence: None,
             last_idr_at: None,
             suspect_reference: false,
@@ -384,13 +386,8 @@ impl VideoRtp {
         self.recovery.waiting()
     }
 
-    pub(super) fn recover_latency(&mut self, worker: &VideoDecodeWorker) {
-        self.pending = None;
-        self.next_sequence = None;
-        self.depacketizer = H264Packet::default();
-        self.recovery.damage();
-        self.suspect_reference = true;
-        worker.flush_before_next_idr();
+    pub(super) fn buffering_summary(&self) -> &str {
+        self.sps_buffering.as_deref().unwrap_or("H264: waiting for SPS")
     }
 
     pub(super) fn recovery_summary(&self, now: Instant) -> String {
@@ -579,6 +576,12 @@ impl VideoRtp {
         self.last_frame_timestamp = Some(completed.timestamp);
 
         let unit = inspect_h264_access_unit(&data);
+        if let Some(summary) = unit.buffering {
+            if self.sps_buffering.as_ref() != Some(&summary) {
+                eprintln!("{summary}");
+                self.sps_buffering = Some(summary);
+            }
+        }
         if unit.has_idr {
             stats.idr = 1;
             self.last_idr_at = Some(Instant::now());
@@ -676,12 +679,14 @@ fn timestamp_is_newer(candidate: u32, reference: u32) -> bool {
 struct AccessUnitInfo {
     has_idr: bool,
     resolution: Option<(u32, u32)>,
+    buffering: Option<String>,
 }
 
 fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
     let mut info = AccessUnitInfo {
         has_idr: false,
         resolution: None,
+        buffering: None,
     };
     let mut reader = AnnexBReader::accumulate(|nal: RefNal<'_>| {
         let Ok(header) = nal.header() else {
@@ -694,9 +699,19 @@ fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
             }
             UnitType::SeqParameterSet => {
                 if nal.is_complete() {
-                    info.resolution = SeqParameterSet::from_bits(nal.rbsp_bits())
-                        .and_then(|sps| sps.pixel_dimensions())
-                        .ok();
+                    if let Ok(sps) = SeqParameterSet::from_bits(nal.rbsp_bits()) {
+                        info.resolution = sps.pixel_dimensions().ok();
+                        let restrictions = sps.vui_parameters.as_ref()
+                            .and_then(|vui| vui.bitstream_restrictions.as_ref());
+                        let buffering = restrictions.map(|r| format!(
+                            "reorder:{} dpb:{}", r.max_num_reorder_frames, r.max_dec_frame_buffering
+                        )).unwrap_or_else(|| "reorder:unspecified dpb:unspecified".to_owned());
+                        // Observe the source's instructions before changing decoder
+                        // buffering. Allocating one reference frame does not establish
+                        // what the SPS tells AVCDEC to retain for output.
+                        info.buffering = Some(format!("H264: {:?} level:{} refs:{} {buffering}",
+                            sps.profile(), sps.level_idc, sps.max_num_ref_frames));
+                    }
                 }
                 NalInterest::Buffer
             }
