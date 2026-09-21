@@ -1,5 +1,10 @@
 # GreenVita latency investigation — OPEN
 
+Update: the requested simultaneous TV/Vita recordings and Test 34 history have
+now been supplied. See [TEST34-CAPTURE-REVIEW.md](TEST34-CAPTURE-REVIEW.md) for the
+new measurements, remaining causal gap and request for existing automatic traces.
+The recording request below is historical and should not be repeated.
+
 Reviewed 2026-09-21. This is an evidence review and diagnostic/test tooling change,
 **not a candidate playback fix**. There is no verified explanation yet for the
 remaining reported 5–6-second delay, and no new VPK is warranted by these findings.

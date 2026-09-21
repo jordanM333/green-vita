@@ -1,0 +1,68 @@
+{
+  "log_revision": "d7397bf4ccbcce08b7df9069b083be1f15306471",
+  "log_elapsed_range_ms": [
+    5455,
+    61539
+  ],
+  "log_provenance": "User-pasted history in this conversation. Selected lines in test34-selected-history.txt; no claim those excerpts are the full history.",
+  "videos": [
+    {
+      "filename": "IMG_0446.mp4",
+      "sha256": "d97e9b74999ae9992730fe2222b4038b4ef10ca666ea3ff2d9accdbc67103a05",
+      "condition": "No refresh (user identification)",
+      "frames": 554,
+      "first_frame_pts_s": 0.0,
+      "last_frame_pts_s": 18.433333,
+      "fps": 30
+    },
+    {
+      "filename": "IMG_0450.mp4",
+      "sha256": "3a63643c5344203f48263a72deef047e956f2b582aae784961095676f1cd3c23",
+      "condition": "After refresh (user identification)",
+      "frames": 501,
+      "first_frame_pts_s": 0.0,
+      "last_frame_pts_s": 16.666667,
+      "fps": 30
+    }
+  ],
+  "display_events": [
+    {
+      "clip": "IMG_0446.mp4",
+      "event": "First large explosion in the room (TV flash at 9.4 s)",
+      "tv_onset_frame_interval": [
+        281,
+        282
+      ],
+      "vita_onset_frame_interval": [
+        339,
+        341
+      ],
+      "vita_minus_tv_sampling_interval_ms": [
+        1900,
+        2000
+      ],
+      "additional_uncertainty": "Rolling shutter, exposure and visible effect threshold; no physical button contact timestamp.",
+      "absolute_input_latency_ms": null
+    },
+    {
+      "clip": "IMG_0450.mp4",
+      "event": "First large explosion after refresh",
+      "tv_onset_frame_interval": [
+        60,
+        61
+      ],
+      "vita_onset_frame_interval": [
+        64,
+        65
+      ],
+      "vita_minus_tv_sampling_interval_ms": [
+        100,
+        167
+      ],
+      "additional_uncertainty": "Rolling shutter, exposure and visible effect threshold; this isolated early event is not a sustained result.",
+      "absolute_input_latency_ms": null
+    }
+  ],
+  "session_alignment": "No unique camera-frame-to-log-elapsed anchor. Do not assign a precise log row to either clip event.",
+  "acceptance": "not_established"
+}

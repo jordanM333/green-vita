@@ -1,0 +1,132 @@
+# Selected verbatim lines from the user-pasted Test 34 history. Deliberately not
+# the full log: excerpts preserve startup contamination, stalls, sustained age
+# plateaus, the largest reported decoder-age window, and the final window.
+# The full supplied range is elapsed_ms=5455 through elapsed_ms=61539.
+
+elapsed_ms=5455
+Build: RX Test 34 revision d7397bf4ccbcce08b7df9069b083be1f15306471
+H264: waiting for SPS
+RTP pk:0 jump:0/~0 late:0 dup:0 empty:0
+Q depth/max:0/3 AUage:0/2ms dec:2/5ms up:1/1ms paint:2/18ms ui:5/1117ms
+FPS hwCall:40 decoded:34 shown:29 ui:2121 idle:0 pic:960x544 noPic:0 noOut:0 qFull/s:0 asm:0/0ms
+Stage texRepl:807 showAge:5/13ms staleAU:860 noDec:0 mailRepl:0 handoffRepl:518 resync:55 reset:0
+PTS matched/unmatched:7544/0 frameReport:6736/0
+Frame age: decoder:857/888ms receiveToGPU:875/902ms
+
+elapsed_ms=8460
+Build: RX Test 34 revision d7397bf4ccbcce08b7df9069b083be1f15306471
+RTP pk:264 jump:3/~4 late:4 dup:0 empty:0
+Recovery wait:0ms max:0ms completed:0
+Q depth/max:0/3 AUage:0/2ms dec:2/8ms up:1/1ms paint:9/9ms ui:16/20ms
+FPS hwCall:60 decoded:60 shown:56 ui:55 idle:9 pic:960x544 noPic:0 noOut:0 qFull/s:0 asm:0/3ms
+Frame age: decoder:69/85ms receiveToGPU:91/100ms
+Input local:1/2ms RTCpump:0/3ms
+Input transport sampled:205/3389B deferred:890 errors:0
+Link ICE:65ms/? DCbuf:0/45 | SR offset* V:16715ms d+1 rel+4ms SR:4/0s A:? SR:0 rel+4ms V-A:?
+
+elapsed_ms=12463
+Build: RX Test 34 revision d7397bf4ccbcce08b7df9069b083be1f15306471
+RTP pk:1088 jump:7/~9 late:9 dup:0 empty:0
+Recovery wait:592ms max:592ms completed:0
+Q depth/max:0/3 AUage:0/4ms dec:2/6ms up:1/1ms paint:9/9ms ui:16/18ms
+FPS hwCall:21 decoded:20 shown:18 ui:20 idle:124 pic:960x544 noPic:1 noOut:0 qFull/s:0 asm:8/195ms
+Frame age: decoder:79/131ms receiveToGPU:101/150ms
+Input local:1/2ms RTCpump:0/3ms
+Input transport sampled:1441/3389B deferred:890 errors:0
+Link ICE:11ms/? DCbuf:1/47 | SR offset* V:16792ms d+78 rel+80ms SR:21/0s A:16805ms d+89 rel+93ms SR:1/1s V-A:-13ms
+
+elapsed_ms=13466
+Build: RX Test 34 revision d7397bf4ccbcce08b7df9069b083be1f15306471
+RTP pk:1307 jump:12/~14 late:14 dup:0 empty:0
+Recovery wait:1595ms max:1595ms completed:0
+Q depth/max:0/3 AUage:0/0ms dec:0/0ms up:0/0ms paint:9/9ms ui:16/17ms
+FPS hwCall:0 decoded:0 shown:0 ui:4 idle:173 pic:960x544 noPic:0 noOut:0 qFull/s:0 asm:6/156ms
+Frame age: decoder:n/a receiveToGPU:n/a
+Input local:1/2ms RTCpump:0/3ms
+Input transport sampled:2087/3389B deferred:1080 errors:0
+Link ICE:11ms/? DCbuf:1/47 | SR offset* V:16738ms d+24 rel+27ms SR:26/0s A:16793ms d+77 rel+82ms SR:1/2s V-A:-55ms
+
+elapsed_ms=14467
+Build: RX Test 34 revision d7397bf4ccbcce08b7df9069b083be1f15306471
+RTP pk:1506 jump:14/~16 late:16 dup:0 empty:0
+Recovery wait:0ms max:2405ms completed:1
+Q depth/max:0/3 AUage:1/6ms dec:2/3ms up:0/0ms paint:9/9ms ui:15/17ms
+FPS hwCall:6 decoded:0 shown:0 ui:3 idle:177 pic:960x544 noPic:0 noOut:0 qFull/s:0 asm:2/13ms
+Frame age: decoder:n/a receiveToGPU:n/a
+Input transport sampled:2163/3389B deferred:1372 errors:0
+Link ICE:11ms/? DCbuf:1/47 | SR offset* V:16876ms d+162 rel+165ms SR:30/0s A:16873ms d+157 rel+162ms SR:1/3s V-A:3ms
+
+elapsed_ms=17469
+Build: RX Test 34 revision d7397bf4ccbcce08b7df9069b083be1f15306471
+RTP pk:2187 jump:19/~21 late:21 dup:0 empty:0
+Recovery wait:0ms max:2405ms completed:3
+Q depth/max:0/3 AUage:0/0ms dec:2/2ms up:0/0ms paint:9/9ms ui:16/17ms
+FPS hwCall:6 decoded:0 shown:0 ui:3 idle:173 pic:960x544 noPic:0 noOut:0 qFull/s:1 asm:8/125ms
+Frame age: decoder:n/a receiveToGPU:n/a
+Input transport sampled:1373/3389B deferred:2384 errors:0
+Link ICE:2610ms/? DCbuf:1/47 | SR offset* V:16714ms d+0 rel+2ms SR:44/0s A:16709ms d-7 rel+2ms SR:2/0s V-A:5ms
+
+elapsed_ms=19475
+Build: RX Test 34 revision d7397bf4ccbcce08b7df9069b083be1f15306471
+RTP pk:2428 jump:19/~21 late:21 dup:0 empty:0
+Recovery wait:0ms max:2405ms completed:3
+Q depth/max:0/3 AUage:0/4ms dec:2/5ms up:1/2ms paint:9/10ms ui:17/23ms
+FPS hwCall:60 decoded:60 shown:48 ui:48 idle:24 pic:960x544 noPic:0 noOut:0 qFull/s:0 asm:0/11ms
+Frame age: decoder:136/168ms receiveToGPU:157/172ms
+Link ICE:267ms/? DCbuf:1/55 | SR offset* V:16715ms d+1 rel+4ms SR:50/0s A:16711ms d-5 rel+4ms SR:2/2s V-A:4ms
+
+elapsed_ms=34502
+Build: RX Test 34 revision d7397bf4ccbcce08b7df9069b083be1f15306471
+RTP pk:4484 jump:77/~105 late:105 dup:0 empty:0
+Recovery wait:0ms max:2405ms completed:14
+Q depth/max:0/3 AUage:0/2ms dec:3/6ms up:1/1ms paint:9/11ms ui:17/21ms
+FPS hwCall:60 decoded:59 shown:52 ui:52 idle:12 pic:960x544 noPic:0 noOut:0 qFull/s:0 asm:0/0ms
+Frame age: decoder:170/195ms receiveToGPU:192/201ms
+Link ICE:122ms/? DCbuf:1/102 | SR offset* V:16722ms d+8 rel+11ms SR:96/0s A:16724ms d+8 rel+15ms SR:5/0s V-A:-2ms
+
+elapsed_ms=48516
+Build: RX Test 34 revision d7397bf4ccbcce08b7df9069b083be1f15306471
+RTP pk:6104 jump:98/~139 late:139 dup:0 empty:0
+Recovery wait:0ms max:2405ms completed:27
+Q depth/max:0/3 AUage:0/3ms dec:2/3ms up:1/1ms paint:9/10ms ui:16/20ms
+FPS hwCall:60 decoded:60 shown:57 ui:57 idle:5 pic:960x544 noPic:0 noOut:0 qFull/s:0 asm:0/0ms
+Frame age: decoder:486/499ms receiveToGPU:509/517ms
+Delay SDL:76ms RTPbuf:20ms gaps:135 late:3 audioLost:132 opusQ:0 pcmQ:1 batchAge:8/18ms underrun:84 trim:32 skip:0 clr:0 lost:0
+Input local:1/3ms RTCpump:0/4ms
+Input transport sampled:124/3389B deferred:2876 errors:0
+Link ICE:7ms/? DCbuf:0/106 | SR offset* V:16716ms d+2 rel+5ms SR:129/0s A:16713ms d-3 rel+8ms SR:8/0s V-A:3ms
+
+elapsed_ms=51521
+Build: RX Test 34 revision d7397bf4ccbcce08b7df9069b083be1f15306471
+RTP pk:6348 jump:100/~141 late:141 dup:0 empty:0
+Recovery wait:0ms max:2405ms completed:27
+Q depth/max:0/3 AUage:0/2ms dec:2/4ms up:1/1ms paint:9/10ms ui:16/21ms
+FPS hwCall:60 decoded:60 shown:58 ui:57 idle:5 pic:960x544 noPic:0 noOut:0 qFull/s:0 asm:0/2ms
+Frame age: decoder:486/497ms receiveToGPU:509/517ms
+Input transport sampled:253/3389B deferred:2876 errors:0
+Link ICE:5ms/? DCbuf:0/106 | SR offset* V:16714ms d+0 rel+2ms SR:133/0s A:16715ms d-1 rel+10ms SR:8/3s V-A:-1ms
+
+elapsed_ms=55526
+Build: RX Test 34 revision d7397bf4ccbcce08b7df9069b083be1f15306471
+RTP pk:6863 jump:110/~164 late:155 dup:0 empty:0
+Recovery wait:94ms max:2405ms completed:30
+Q depth/max:0/3 AUage:0/4ms dec:2/4ms up:1/1ms paint:9/9ms ui:17/19ms
+FPS hwCall:39 decoded:37 shown:24 ui:24 idle:110 pic:960x544 noPic:1 noOut:0 qFull/s:1 asm:13/45ms
+Frame age: decoder:1121/1349ms receiveToGPU:1209/1406ms
+Input local:1/3ms RTCpump:0/4ms
+Input transport sampled:38/3389B deferred:3112 errors:0
+Link ICE:11ms/? DCbuf:0/107 | SR offset* V:17655ms d+941 rel+944ms SR:143/0s A:16708ms d-8 rel+3ms SR:9/2s V-A:947ms
+
+elapsed_ms=61539
+Build: RX Test 34 revision d7397bf4ccbcce08b7df9069b083be1f15306471
+RTP pk:7631 jump:116/~172 late:163 dup:0 empty:0
+Recovery wait:0ms max:2405ms completed:34
+Q depth/max:0/3 AUage:0/3ms dec:3/4ms up:1/2ms paint:3/4ms ui:12/14ms
+FPS hwCall:60 decoded:60 shown:53 ui:58 idle:0 pic:960x544 noPic:0 noOut:0 qFull/s:0 asm:0/0ms
+Stage texRepl:1139 showAge:7/14ms staleAU:1298 noDec:0 mailRepl:0 handoffRepl:778 resync:89 reset:0
+PTS matched/unmatched:9400/0 frameReport:8190/70
+Frame age: decoder:620/639ms receiveToGPU:638/647ms
+Delay SDL:85ms RTPbuf:20ms gaps:142 late:3 audioLost:139 opusQ:0 pcmQ:1 batchAge:9/16ms underrun:88 trim:35 skip:0 clr:0 lost:0
+Input local:0/0ms RTCpump:0/3ms
+Input transport sampled:129/3389B deferred:3112 errors:0
+Link ICE:4ms/? DCbuf:0/107 | SR offset* V:16713ms d-1 rel+2ms SR:161/0s A:16711ms d-5 rel+2ms SR:10/2s V-A:2ms
