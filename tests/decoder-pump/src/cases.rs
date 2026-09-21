@@ -48,9 +48,9 @@ fn real_worker_services_a_no_picture_input_and_stops_polling_when_empty() {
     let(_,target,_,_,timing)=output.take_latest_for_display().unwrap();
     assert_eq!(timing.unwrap().rtp_timestamp,1252674455);
     assert_eq!(unsafe{std::ptr::read_unaligned(target.ptr as *const u64)},1252674455);
-    wait_for(||FAKE.lock().unwrap().polls==2); // one output, then empty
+    wait_for(||FAKE.lock().unwrap().polls==1); // output retires the only pending PTS
     std::thread::sleep(Duration::from_millis(20));
-    assert_eq!(FAKE.lock().unwrap().polls,2); // no idle spin
+    assert_eq!(FAKE.lock().unwrap().polls,1); // no idle spin or empty-queue hardware call
     assert_eq!(FAKE.lock().unwrap().inputs,vec![1252674455]);
     assert_eq!(FAKE.lock().unwrap().deletes,0);
     worker.shutdown();assert_eq!(FAKE.lock().unwrap().deletes,1);
@@ -80,13 +80,15 @@ fn recovery_drains_old_epochs_before_showing_new_picture() {
 
 #[test]
 fn rejected_poll_is_visible_once_without_reset_loop_or_duplicate_input() {
-    reset();let(output,_pixels)=surfaces();FAKE.lock().unwrap().reject_poll=true;
+    reset();let(output,_pixels)=surfaces();
+    {let mut f=FAKE.lock().unwrap();f.reject_poll=true;f.suppress_inputs=1;}
     let before=metrics::METRICS.decoder_poll_failed.load(Ordering::Relaxed);
     let mut worker=VideoDecodeWorker::spawn(config(),output.clone()).unwrap();
     for rtp in 1..=3 {
         assert!(matches!(worker.submit_access_unit(vec![1],Instant::now(),rtp),worker::SubmitResult::Submitted));
         wait_for(||FAKE.lock().unwrap().inputs.len()==rtp as usize);
-        wait_for(||output.has_pending_frame());output.take_latest_for_display();
+        if rtp==1 { wait_for(||FAKE.lock().unwrap().polls==1); }
+        else {wait_for(||output.has_pending_frame());output.take_latest_for_display();}
     }
     assert_eq!(FAKE.lock().unwrap().polls,1);assert_eq!(FAKE.lock().unwrap().created,1);
     assert_eq!(FAKE.lock().unwrap().deletes,0);assert_eq!(metrics::METRICS.decoder_poll_failed.load(Ordering::Relaxed),before+1);
@@ -111,5 +113,6 @@ fn repeated_deferred_outputs_do_not_accumulate_and_displayed_pixels_stay_owned()
         displayed=Some((target.ptr,u64::from(rtp)));
     }
     let f=FAKE.lock().unwrap();assert_eq!(f.inputs,f.outputs);assert_eq!(f.created,1);assert_eq!(f.deletes,0);
+    assert_eq!(f.polls,40); // exactly the 40 deferred outputs, no ordinary-case probes
     drop(f);worker.shutdown();
 }

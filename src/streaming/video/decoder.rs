@@ -166,6 +166,8 @@ impl HwVideoDecoder {
         self.decode_output(access_unit, pts, Some(rtp_timestamp), direct_target)
     }
 
+    pub(super) fn has_pending_output(&self) -> bool { self.pictures.has_pending() }
+
     /// Service buffered output without admitting another AU or ending the stream.
     /// Vita FFmpeg uses null/zero ES input with sceAvcdecDecode when its input
     /// buffer is full. This is NOT DecodeStop, a flush, or a decoder recreation.

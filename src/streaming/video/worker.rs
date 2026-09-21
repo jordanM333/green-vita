@@ -310,7 +310,7 @@ fn decode_queued_access_unit(
     metrics::METRICS.decode_max_us.fetch_max(decode_us, Ordering::Relaxed);
     handle_decode_result(decoder, generation, recovery_needed, latest_result, result_ready,
         Some(&access_unit), access_unit.generation, direct_target, decode_result);
-    decoder.is_some()
+    decoder.as_ref().is_some_and(HwVideoDecoder::has_pending_output)
 }
 
 /// Return true when a picture was removed, even if its epoch prevents display.
@@ -397,6 +397,9 @@ fn poll_decoder(
     direct_output: &DirectVideoOutput,
 ) -> Result<bool, ()> {
     let Some(hw) = decoder.as_mut() else { return Ok(false); };
+    // Once every admitted PTS has returned there is nothing to ask the firmware
+    // for. Avoid an empty hardware call in the ordinary one-input/one-output case.
+    if !hw.has_pending_output() { return Ok(false); }
     let Some(target) = direct_output.lock_decode_target() else { return Ok(false); };
     let call_generation = generation.load(Ordering::Acquire);
     let started = Instant::now();

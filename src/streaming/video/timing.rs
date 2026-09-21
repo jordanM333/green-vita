@@ -28,6 +28,9 @@ pub(crate) struct PictureTracker {
 }
 
 impl PictureTracker {
+    /// Unretired metadata is a reason to try output, not a firmware readiness count.
+    pub fn has_pending(&self) -> bool { !self.pending.is_empty() }
+
     pub fn submit(&mut self, rtp: u32, received_at: Instant, submitted_at: Instant, epoch: u64) -> u64 {
         // RTP and Vita AVC timestamps both use 90 kHz. Extend the RTP wrap so
         // pictures on either side retain distinct identities in the decoder.

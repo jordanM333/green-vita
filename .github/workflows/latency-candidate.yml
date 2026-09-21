@@ -14,7 +14,7 @@ permissions:
   contents: read
 concurrency:
   group: latency-candidate
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   feedback-tests:
     runs-on: ubuntu-latest

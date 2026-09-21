@@ -52,7 +52,9 @@ Changing the generation only rejects pictures; it does not remove that backlog.
 The candidate services output independently with a null pointer and zero-length
 ES buffer, without submitting another AU. It alternates one such call with queued
 input, drains during input gaps/recovery until no picture is returned, checks stop
-between calls, and releases the texture mutex after each call. Returned PTS still
+between calls, and releases the texture mutex after each call. If every admitted
+PTS has returned, it skips the hardware poll entirely; metadata presence permits
+a probe but is not taken as proof of firmware readiness. Returned PTS still
 controls timing, epoch rejection and feedback. Old-epoch output counts as drain
 progress, even though it is never published. No arbitrary compressed P-frame
 skipping, DecodeStop, latency-triggered reset, or reconnect is introduced.
