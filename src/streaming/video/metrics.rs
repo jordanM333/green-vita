@@ -88,6 +88,10 @@ pub(crate) struct VideoMetrics {
     pub(crate) input_failed_total: AtomicU64,
     pub(crate) input_buffered_high: AtomicU64,
     pub(crate) input_buffered_events: AtomicU64,
+    pub(crate) input_outstanding_bytes: AtomicU64,
+    pub(crate) input_outstanding_max: AtomicU64,
+    pub(crate) input_admission_deferred: AtomicU64,
+    pub(crate) input_admission_errors: AtomicU64,
     pub(crate) rtc_pump_sum_us: AtomicU64,
     pub(crate) rtc_pump_count: AtomicU64,
     pub(crate) rtc_pump_max_us: AtomicU64,
@@ -180,6 +184,10 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     input_failed_total: AtomicU64::new(0),
     input_buffered_high: AtomicU64::new(0),
     input_buffered_events: AtomicU64::new(0),
+    input_outstanding_bytes: AtomicU64::new(0),
+    input_outstanding_max: AtomicU64::new(0),
+    input_admission_deferred: AtomicU64::new(0),
+    input_admission_errors: AtomicU64::new(0),
     rtc_pump_sum_us: AtomicU64::new(0),
     rtc_pump_count: AtomicU64::new(0),
     rtc_pump_max_us: AtomicU64::new(0),
@@ -293,7 +301,7 @@ pub fn video_performance_summary() -> String {
         METRICS.resets.load(Ordering::Relaxed),
     );
     format!(
-        "{base}\n{frame_feedback}\nDelay SDL:{}ms RTPbuf:{}ms gaps:{} late:{} audioLost:{} opusQ:{} pcmQ:{} batchAge:{batch_age_avg}/{batch_age_max}ms underrun:{} trim:{} skip:{} clr:{} lost:{}\nInput local:{input_age_avg}/{input_age_max}ms RTCpump:{rtc_pump_avg}/{rtc_pump_max}ms",
+        "{base}\n{frame_feedback}\nDelay SDL:{}ms RTPbuf:{}ms gaps:{} late:{} audioLost:{} opusQ:{} pcmQ:{} batchAge:{batch_age_avg}/{batch_age_max}ms underrun:{} trim:{} skip:{} clr:{} lost:{}\nInput local:{input_age_avg}/{input_age_max}ms RTCpump:{rtc_pump_avg}/{rtc_pump_max}ms\nInput transport sampled:{}/{}B deferred:{} errors:{}",
         METRICS.audio_sdl_queue_ms.load(Ordering::Relaxed),
         METRICS.audio_rtp_backlog_ms.load(Ordering::Relaxed),
         METRICS.audio_rtp_gaps.load(Ordering::Relaxed),
@@ -307,5 +315,9 @@ pub fn video_performance_summary() -> String {
         METRICS.audio_queue_resets.load(Ordering::Relaxed),
         METRICS.audio_opus_dropped.load(Ordering::Relaxed)
             + METRICS.audio_batch_dropped.load(Ordering::Relaxed),
+        METRICS.input_outstanding_bytes.load(Ordering::Relaxed),
+        METRICS.input_outstanding_max.load(Ordering::Relaxed),
+        METRICS.input_admission_deferred.load(Ordering::Relaxed),
+        METRICS.input_admission_errors.load(Ordering::Relaxed),
     )
 }

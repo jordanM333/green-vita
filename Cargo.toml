@@ -27,6 +27,7 @@ vita-newlib-shims = "0.3"
 vitasdk-sys = { version = "0.3", features = ["SceGxm_stub", "SceAppUtil_stub", "SceKernelDmacMgr_stub", "SceKernelThreadMgr_stub", "SceLibKernel_stub", "SceVideodec_stub", "SceSysmem_stub", "SceSysmodule_stub"] }
 
 [patch.crates-io]
+rtc = { path = "vendor/rtc" }
 ring = { git = "https://github.com/vita-rust/ring.git", branch = "v0.17.14-vita" }
 rtc-shared = { git = "https://github.com/Day-OS/rtc.git", branch = "vita" }
 

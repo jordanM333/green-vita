@@ -24,6 +24,9 @@ const MAX_PENDING_EVENTS: usize = 32;
 const MAX_PENDING_AUDIO_BATCHES: usize = 16;
 const SDP_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(45);
 
+#[path = "latest_input.rs"]
+mod latest_input;
+
 pub(crate) trait RtcWorkerProvider: Send + 'static {
     type Protocol: super::session::RtcSessionBackend;
 
@@ -272,6 +275,7 @@ async fn run_session<B: super::session::RtcSessionBackend>(
     let mut consecutive_pump_errors = 0u32;
     let mut active_gamepad_pulse: Option<(GamepadFrame, Instant)> = None;
     let mut last_gamepad_sent: Option<(GamepadFrame, Instant)> = None;
+    let mut pending_gamepad = latest_input::LatestInput::new();
 
     loop {
         if !drain_commands(&mut session, &commands_rx) {
@@ -300,7 +304,7 @@ async fn run_session<B: super::session::RtcSessionBackend>(
                     frame: GamepadFrame::default(),
                     sampled_at: Instant::now(),
                 });
-                send_sampled_gamepad_frame(&mut session, sampled, &mut last_gamepad_sent, true);
+                pending_gamepad.replace((sampled, true));
             } else if pulse_started || latest.is_some() {
                 let mut sampled = latest.unwrap_or_else(|| SampledGamepadFrame {
                     frame: GamepadFrame::default(),
@@ -309,16 +313,14 @@ async fn run_session<B: super::session::RtcSessionBackend>(
                 // Guide/Nexus is currently the only pulsed input. Keep it asserted while normal
                 // gamepad frames continue to flow instead of immediately overwriting the press.
                 sampled.frame.nexus = sampled.frame.nexus.max(pulse.nexus);
-                send_sampled_gamepad_frame(
-                    &mut session,
-                    sampled,
-                    &mut last_gamepad_sent,
-                    pulse_started,
-                );
+                pending_gamepad.replace((sampled, pulse_started));
             }
         } else if let Some(sampled) = latest {
-            send_sampled_gamepad_frame(&mut session, sampled, &mut last_gamepad_sent, false);
+            pending_gamepad.replace((sampled, false));
         }
+        pending_gamepad.try_send(|(sampled, force)| {
+            send_sampled_gamepad_frame(&mut session, sampled, &mut last_gamepad_sent, *force)
+        });
 
         let pump_started = Instant::now();
         let pump_result = session.pump().await;
@@ -418,16 +420,16 @@ async fn run_session<B: super::session::RtcSessionBackend>(
 
 fn send_sampled_gamepad_frame<B: super::session::RtcSessionBackend>(
     session: &mut RtcSession<B>,
-    sampled: SampledGamepadFrame,
+    sampled: &SampledGamepadFrame,
     last_sent: &mut Option<(GamepadFrame, Instant)>,
     force: bool,
-) {
+) -> bool {
     let now = Instant::now();
     let unchanged_and_fresh = last_sent.as_ref().is_some_and(|(previous, sent_at)| {
         *previous == sampled.frame && now.duration_since(*sent_at) < GAMEPAD_REFRESH_INTERVAL
     });
     if !force && unchanged_and_fresh {
-        return;
+        return true;
     }
 
     let age_us = now.saturating_duration_since(sampled.sampled_at).as_micros() as u64;
@@ -439,9 +441,11 @@ fn send_sampled_gamepad_frame<B: super::session::RtcSessionBackend>(
         METRICS.input_send_age_sum_us.fetch_add(age_us, Ordering::Relaxed);
         METRICS.input_send_age_count.fetch_add(1, Ordering::Relaxed);
         METRICS.input_send_age_max_us.fetch_max(age_us, Ordering::Relaxed);
-        *last_sent = Some((sampled.frame, now));
+        *last_sent = Some((sampled.frame.clone(), now));
+        true
     } else {
         METRICS.input_failed_total.fetch_add(1, Ordering::Relaxed);
+        false
     }
 }
 

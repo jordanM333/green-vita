@@ -1,6 +1,9 @@
 use crate::api::streaming::rtc::session::RtcSessionBackend;
 use crate::api_xbox::streaming::control::channel::{self, HandshakeStage};
 use crate::api_xbox::streaming::control::input::{InputQueue, PointerFrame};
+use crate::api_xbox::streaming::control::admission::{INPUT_OUTSTANDING_LIMIT, FEEDBACK_OUTSTANDING_LIMIT};
+use crate::streaming::video::metrics::METRICS;
+use std::sync::atomic::Ordering;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use bytes::BytesMut;
 use rtc::data_channel::RTCDataChannelId;
@@ -43,7 +46,7 @@ impl XboxRtcProtocol {
         let Some(bytes) = self.input_queue.queue_gamepad_frames([frame], true) else {
             return false;
         };
-        self.send_input_bytes(peer, &bytes)
+        self.send_input_bytes(peer, &bytes, INPUT_OUTSTANDING_LIMIT)
     }
 
     fn send_pointer_event_inner(&mut self, peer: &mut RTCPeerConnection, event: PointerEvent) {
@@ -55,7 +58,7 @@ impl XboxRtcProtocol {
         }) else {
             return;
         };
-        let _ = self.send_input_bytes(peer, &bytes);
+        let _ = self.send_input_bytes(peer, &bytes, INPUT_OUTSTANDING_LIMIT);
     }
 
     fn handle_channel_open_inner(
@@ -110,9 +113,26 @@ impl XboxRtcProtocol {
         }
     }
 
-    fn send_input_bytes(&self, peer: &mut RTCPeerConnection, bytes: &[u8]) -> bool {
+    fn send_input_bytes(&self, peer: &mut RTCPeerConnection, bytes: &[u8], limit: usize) -> bool {
         if let Some(mut input_channel) = peer.data_channel(self.channel_ids.input) {
-            input_channel.send(BytesMut::from(bytes)).is_ok()
+            match input_channel.try_send_with_outstanding_limit(BytesMut::from(bytes), limit) {
+                Ok(accepted) => {
+                    if let Ok(pending) = input_channel.outstanding_payload_bytes() {
+                        METRICS.input_outstanding_bytes.store(pending as u64, Ordering::Relaxed);
+                        METRICS.input_outstanding_max.fetch_max(pending as u64, Ordering::Relaxed);
+                    }
+                    if !accepted {
+                        // The worker retries current controller state; frame feedback is
+                        // replaced by the next presentation. Never retain rejected bytes.
+                        METRICS.input_admission_deferred.fetch_add(1, Ordering::Relaxed);
+                    }
+                    accepted
+                }
+                Err(_) => {
+                    METRICS.input_admission_errors.fetch_add(1, Ordering::Relaxed);
+                    false
+                }
+            }
         } else {
             false
         }
@@ -125,7 +145,7 @@ impl RtcSessionBackend for XboxRtcProtocol {
         let Some(bytes) = self.input_queue.rendered_frame_packet(frame, std::time::Instant::now()) else {
             return false;
         };
-        self.send_input_bytes(peer, &bytes)
+        self.send_input_bytes(peer, &bytes, FEEDBACK_OUTSTANDING_LIMIT)
     }
 
     fn handle_channel_open(&mut self, peer: &mut RTCPeerConnection, channel_id: RTCDataChannelId) {
