@@ -1,0 +1,49 @@
+{
+  "status": "candidate fix—on-device verification pending",
+  "build": "RX Test 35.2",
+  "source_commit": "1b88867bd76db0690fdd1448e41e1e3ac734297b",
+  "runtime_baseline": "d7397bf4ccbcce08b7df9069b083be1f15306471",
+  "source_url": "https://github.com/jordanM333/green-vita/commit/1b88867bd76db0690fdd1448e41e1e3ac734297b",
+  "workflow_url": "https://github.com/jordanM333/green-vita/actions/runs/35666778303",
+  "workflow_conclusion": "success",
+  "artifact_id": 10669668873,
+  "artifact_url": "https://github.com/jordanM333/green-vita/actions/runs/35666778303/artifacts/10669668873",
+  "artifact_expires": "2026-10-21T23:24:42Z",
+  "sdk_image": "ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc",
+  "vpk": {
+    "file_name": "GreenVita-RX-Test-35.2.vpk",
+    "bytes": 14363774,
+    "sha256": "7b172dbef3ade6201c2f990a8a2a66db03d7ccc685b45986ec211ece025ac237",
+    "title_id": "GRNVTEST1",
+    "zip_integrity": "pass",
+    "embedded_source_commit_verified": true,
+    "embedded_build_number_verified": true,
+    "package_entries_changed_since_baseline": [
+      "eboot.bin"
+    ]
+  },
+  "rollback": {
+    "file_name": "GreenVita-RX-Test-34.vpk",
+    "bytes": 14363892,
+    "sha256": "8ee5ece964b351a25ff264ac6ac467ff23113b5270fc9fffca2772ff04557ae1",
+    "title_id": "GRNVTEST1",
+    "zip_integrity": "pass",
+    "workflow_url": "https://github.com/jordanM333/green-vita/actions/runs/35641383944"
+  },
+  "ci_test_executions": {
+    "feedback": 6,
+    "receiver_reports": 13,
+    "frame_metadata": 9,
+    "rtc_transport": 11,
+    "frame_signal": 4,
+    "rtp_order": 13,
+    "decoder_pump_and_shared_video_modules": 19,
+    "python_analysis": 16,
+    "note": "Some shared production tests run in more than one suite; these are executions, not unique test counts."
+  },
+  "device_acceptance": {
+    "status": "not_run",
+    "required": "Focused check in both modes, then two uninterrupted 30-minute runs per mode with absolute response, <=100ms added drift including uncertainty, no recovery/reset cure, and separate idle/interruption/regression checks."
+  }
+}
+

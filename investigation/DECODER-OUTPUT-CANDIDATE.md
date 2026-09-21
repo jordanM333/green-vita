@@ -1,5 +1,13 @@
 # Decoder output servicing candidate — hardware verification pending
 
+**Built and package-verified: RX Test 35.2**, source
+`1b88867bd76db0690fdd1448e41e1e3ac734297b`.
+[CI run](https://github.com/jordanM333/green-vita/actions/runs/35666778303)
+passed all regression gates and the Vita VPK build. The downloaded archive and
+VPK checksums, embedded revision, title ID, and package integrity were verified.
+Only `eboot.bin` differs from Test 34. See
+[build and rollback manifest](CANDIDATE-35.2-BUILD.json) for hashes and artifact links.
+
 The newly supplied per-frame trace changes the diagnosis from aggregate residence
 growth to directly matched input/output evidence. This is a candidate correction,
 not a claim that the reported gameplay latency is fixed.
