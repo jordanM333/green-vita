@@ -1,0 +1,52 @@
+{
+  "issue_status": "open",
+  "acceptance": "not_established",
+  "trace": {
+    "rows": 4096,
+    "retained_start_s": 78.667705,
+    "retained_end_s": 86.635585,
+    "retained_span_s": 7.96788,
+    "event_counts": {
+      "picture_produced": 480,
+      "picture_generation": 480,
+      "present_return": 406,
+      "texture_take_generation": 395,
+      "texture_wait_us": 395,
+      "au_first": 481,
+      "au_complete": 481,
+      "decode_submit": 481,
+      "decode_return": 480,
+      "remb_queued": 16,
+      "no_picture": 1
+    },
+    "local_measurements": {
+      "receive_to_decode_submit_ms": {
+        "n": 481,
+        "min": 0.108,
+        "median": 0.142,
+        "p95": 6.56,
+        "max": 16.806
+      },
+      "decode_call_ms": {
+        "n": 480,
+        "min": 2.603,
+        "median": 2.7874999999999996,
+        "p95": 3.697,
+        "max": 13.615
+      },
+      "matched_decoder_residence_ms": null,
+      "matched_receive_to_gpu_ms": null,
+      "decoded_to_gpu_ms": null,
+      "gpu_callback_wait_ms": null
+    },
+    "end_to_end_latency_ms": null,
+    "limits": [
+      "Retained span is not session duration.",
+      "decode_submit includes assembly and output-surface wait; it is not queue-only age.",
+      "decode_return is call duration, not matched output residence.",
+      "Legacy picture_produced uses submission identity; excluded from output age.",
+      "GPU callback completion is not physical panel scanout.",
+      "No input delivery, network one-way delay, or AV sync inference."
+    ]
+  }
+}

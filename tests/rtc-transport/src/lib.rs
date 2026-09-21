@@ -69,7 +69,10 @@ mod tests {
         }
     }
 
-    fn simulate(stall: bool, bounded: bool, drop_forward: bool) -> (u64, u64, usize) {
+    #[derive(Clone, Copy)]
+    enum Admission { Unbounded, Test33AckCap, Test34Capacity }
+
+    fn simulate(stall: bool, admission: Admission, drop_forward: bool) -> (u64, u64, usize) {
         let mut client = Side::new(41000, false);
         let mut server = Side::new(41001, true);
         client.association = Some(client.endpoint.connect(ClientConfig::new(TransportConfig::default()), server.address).unwrap());
@@ -86,10 +89,16 @@ mod tests {
                     .set_reliability_params(true, ReliabilityType::Rexmit, 0).unwrap();
             }
             if (1000..119_000).contains(&ms) && ms % 8 == 0 {
+                let capacity = client.association.as_ref().unwrap().1.immediate_send_capacity();
                 let mut stream = client.association.as_mut().unwrap().1.stream(2).unwrap();
                 let mut bytes = vec![0; 43];
                 bytes[..8].copy_from_slice(&ms.to_le_bytes());
-                if !bounded || stream.buffered_amount().unwrap() + bytes.len() <= INPUT_OUTSTANDING_LIMIT {
+                let admitted = match admission {
+                    Admission::Unbounded => true,
+                    Admission::Test33AckCap => stream.buffered_amount().unwrap() + bytes.len() <= INPUT_OUTSTANDING_LIMIT,
+                    Admission::Test34Capacity => bytes.len() <= capacity,
+                };
+                if admitted {
                     stream.write_sctp(&Bytes::from(bytes), PayloadProtocolIdentifier::Binary).unwrap();
                 }
                 max_buffer = max_buffer.max(stream.buffered_amount().unwrap());
@@ -106,7 +115,7 @@ mod tests {
 
     #[test]
     fn steady_unreliable_input_does_not_drift_over_two_minutes() {
-        let (max_age, tail_age, max_buffer) = simulate(false, false, false);
+        let (max_age, tail_age, max_buffer) = simulate(false, Admission::Unbounded, false);
         eprintln!("steady: max age={max_age}ms tail={tail_age}ms buffered={max_buffer}B");
         assert!(max_age < 50);
         assert!(tail_age < 50);
@@ -114,7 +123,7 @@ mod tests {
 
     #[test]
     fn bounded_admission_does_not_replay_stale_reports_after_ack_stall() {
-        let (max_age, tail_age, max_buffer) = simulate(true, true, false);
+        let (max_age, tail_age, max_buffer) = simulate(true, Admission::Test33AckCap, false);
         eprintln!("bounded: max age={max_age}ms tail={tail_age}ms buffered={max_buffer}B");
         assert!(max_age < 50);
         assert!(max_buffer <= INPUT_OUTSTANDING_LIMIT);
@@ -122,7 +131,7 @@ mod tests {
 
     #[test]
     fn zero_retransmits_alone_still_delivers_two_second_old_reports() {
-        let (max_age, tail_age, max_buffer) = simulate(true, false, false);
+        let (max_age, tail_age, max_buffer) = simulate(true, Admission::Unbounded, false);
         eprintln!("ack stall: max age={max_age}ms tail={tail_age}ms buffered={max_buffer}B");
         assert!(max_age >= 1900, "baseline must reproduce delayed reports");
         assert!(max_buffer > 10_000, "baseline must reproduce the hidden backlog");
@@ -131,10 +140,26 @@ mod tests {
 
     #[test]
     fn bounded_reports_remain_fresh_after_repeated_bidirectional_outages() {
-        let (max_age, tail_age, max_buffer) = simulate(true, true, true);
+        let (max_age, tail_age, max_buffer) = simulate(true, Admission::Test33AckCap, true);
         eprintln!("bidirectional outages: max age={max_age}ms tail={tail_age}ms buffered={max_buffer}B");
         assert!(max_age < 50);
         assert!(tail_age < 50);
         assert!(max_buffer <= INPUT_OUTSTANDING_LIMIT);
+    }
+
+    #[test]
+    fn test34_capacity_admission_does_not_replay_old_reports_after_ack_outages() {
+        let (max_age, tail_age, max_buffer) = simulate(true, Admission::Test34Capacity, false);
+        eprintln!("Test34 ACK outages: max age={max_age}ms tail={tail_age}ms outstanding={max_buffer}B");
+        assert!(max_age < 50);
+        assert!(tail_age < 50);
+    }
+
+    #[test]
+    fn test34_capacity_admission_recovers_after_bidirectional_outages() {
+        let (max_age, tail_age, max_buffer) = simulate(true, Admission::Test34Capacity, true);
+        eprintln!("Test34 bidirectional outages: max age={max_age}ms tail={tail_age}ms outstanding={max_buffer}B");
+        assert!(max_age < 50);
+        assert!(tail_age < 50);
     }
 }

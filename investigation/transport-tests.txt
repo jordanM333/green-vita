@@ -1,0 +1,32 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
+     Running unittests src/lib.rs (tests/rtc-transport/target/x86_64-unknown-linux-gnu/debug/deps/green_vita_transport_tests-153efce811ff05cc)
+
+running 11 tests
+test latest_input::tests::backpressure_retains_release_and_newer_input_replaces_unsent_press ... ok
+100ms RTT with loss: (3576, 1812, 50, 48)
+test delivery::fresh_input_and_feedback_continue_through_intermittent_loss ... ok
+100ms RTT (delivered, feedback, age, gap): Test33=(1378, 1, 50, 64) fixed=(3624, 1812, 50, 16)
+test delivery::test33_ack_cap_starves_feedback_on_a_healthy_100ms_round_trip ... ok
+Test34 bidirectional outages: max age=5ms tail=5ms outstanding=5418B
+test tests::test34_capacity_admission_recovers_after_bidirectional_outages ... ok
+bidirectional outages: max age=5ms tail=5ms buffered=215B
+test tests::bounded_reports_remain_fresh_after_repeated_bidirectional_outages ... ok
+Test34 ACK outages: max age=5ms tail=5ms outstanding=5418B
+test tests::test34_capacity_admission_does_not_replay_old_reports_after_ack_outages ... ok
+bounded: max age=5ms tail=5ms buffered=215B
+test tests::bounded_admission_does_not_replay_stale_reports_after_ack_stall ... ok
+ack stall: max age=2013ms tail=5ms buffered=16254B
+test tests::zero_retransmits_alone_still_delivers_two_second_old_reports ... ok
+steady: max age=5ms tail=5ms buffered=129B
+test tests::steady_unreliable_input_does_not_drift_over_two_minutes ... ok
+test webrtc::limit_counts_ingress_and_sctp_until_ack_then_accepts_fresh_state ... ok
+test webrtc::writable_admission_counts_unsent_ingress_without_starving_on_ack_wait ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.85s
+
+   Doc-tests green_vita_transport_tests
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

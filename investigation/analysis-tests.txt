@@ -1,0 +1,13 @@
+test_camera_separates_tv_response_from_extra_vita_delay (test_analysis.EvidenceTests.test_camera_separates_tv_response_from_extra_vita_delay) ... ok
+test_fast_decode_and_empty_queue_do_not_prove_responsiveness (test_analysis.EvidenceTests.test_fast_decode_and_empty_queue_do_not_prove_responsiveness) ... ok
+test_invalid_or_duplicate_camera_evidence_is_rejected (test_analysis.EvidenceTests.test_invalid_or_duplicate_camera_evidence_is_rejected) ... ok
+test_mixed_session_clocks_are_rejected (test_analysis.EvidenceTests.test_mixed_session_clocks_are_rejected) ... ok
+test_recovery_trials_do_not_replace_stable_network_late_trials (test_analysis.EvidenceTests.test_recovery_trials_do_not_replace_stable_network_late_trials) ... ok
+test_stable_sluggish_start_is_never_a_complete_pass (test_analysis.EvidenceTests.test_stable_sluggish_start_is_never_a_complete_pass) ... ok
+test_uncertain_threshold_does_not_false_pass (test_analysis.EvidenceTests.test_uncertain_threshold_does_not_false_pass) ... ok
+test_unsynchronized_offsets_are_not_latency (test_analysis.EvidenceTests.test_unsynchronized_offsets_are_not_latency) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.001s
+
+OK

@@ -1,0 +1,11 @@
+
+running 6 tests
+test congestion::tests::backlog_reduces_sender_demand_without_waiting_for_seconds_of_delay ... ok
+test congestion::tests::brief_jitter_is_ignored_and_recovery_is_deliberate ... ok
+test tests::ceiling_requires_matching_payload_and_throttles_failed_attempts_too ... ok
+test congestion::tests::rate_feedback_clears_a_bandwidth_drop_instead_of_accumulating_delay ... ok
+test tests::rates_use_elapsed_time_and_report_stalls ... ok
+test tests::remb_requires_accepted_video_payload_and_does_not_leak_across_media ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
