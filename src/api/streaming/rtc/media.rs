@@ -180,6 +180,12 @@ impl VideoReceiver {
         }
     }
 
+    pub(crate) fn recover_latency(&mut self) {
+        self.order = Default::default();
+        self.rtp.recover_latency(&self.decoder);
+        self.latest_frame = None;
+    }
+
     pub(crate) fn request_keyframe(&self, peer: &mut RTCPeerConnection) {
         // A PLI needs both identifiers recorded when the remote video track was opened.
         if let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc)

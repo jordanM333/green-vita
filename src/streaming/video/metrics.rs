@@ -3,6 +3,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub(crate) struct VideoMetrics {
     pub(crate) output_pts_matched: AtomicU64,
     pub(crate) output_pts_unmatched: AtomicU64,
+    pub(crate) decoder_age_sum_us: AtomicU64,
+    pub(crate) decoder_age_count: AtomicU64,
+    pub(crate) decoder_age_max_us: AtomicU64,
     pub(crate) received_gpu_sum_us: AtomicU64,
     pub(crate) received_gpu_count: AtomicU64,
     pub(crate) received_gpu_max_us: AtomicU64,
@@ -93,6 +96,9 @@ pub(crate) struct VideoMetrics {
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     output_pts_matched: AtomicU64::new(0),
     output_pts_unmatched: AtomicU64::new(0),
+    decoder_age_sum_us: AtomicU64::new(0),
+    decoder_age_count: AtomicU64::new(0),
+    decoder_age_max_us: AtomicU64::new(0),
     received_gpu_sum_us: AtomicU64::new(0),
     received_gpu_count: AtomicU64::new(0),
     received_gpu_max_us: AtomicU64::new(0),
@@ -254,7 +260,13 @@ pub fn video_performance_summary() -> String {
     let received_gpu_max = METRICS.received_gpu_max_us.swap(0, Ordering::Relaxed) / 1000;
     let received_gpu = if received_gpu_count == 0 { "n/a".to_owned() }
         else { format!("{received_gpu_avg}/{received_gpu_max}ms") };
-    let frame_feedback = format!("PTS matched/unmatched:{}/{} receiveToGPU:{received_gpu} frameReport:{}/{}",
+    let decoder_age_sum = METRICS.decoder_age_sum_us.swap(0, Ordering::Relaxed);
+    let decoder_age_count = METRICS.decoder_age_count.swap(0, Ordering::Relaxed);
+    let decoder_age_avg = decoder_age_sum.checked_div(decoder_age_count).unwrap_or(0) / 1000;
+    let decoder_age_max = METRICS.decoder_age_max_us.swap(0, Ordering::Relaxed) / 1000;
+    let decoder_age = if decoder_age_count == 0 { "n/a".to_owned() }
+        else { format!("{decoder_age_avg}/{decoder_age_max}ms") };
+    let frame_feedback = format!("PTS matched/unmatched:{}/{} frameReport:{}/{}\nFrame age: decoder:{decoder_age} receiveToGPU:{received_gpu}",
         METRICS.output_pts_matched.load(Ordering::Relaxed), METRICS.output_pts_unmatched.load(Ordering::Relaxed),
         METRICS.frame_feedback_sent.load(Ordering::Relaxed), METRICS.frame_feedback_failed.load(Ordering::Relaxed));
     let base = format!(

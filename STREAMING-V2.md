@@ -239,3 +239,51 @@ The full `pipeline-status.txt`, `pipeline-history.txt` and `pipeline-trace.csv`
 in `ux0:data/green-vita-540-test` retain the measurements on stream exit/refresh.
 This addresses menu discoverability and missing diagnostics; the reported
 two-second drift is still unresolved pending those measurements.
+
+## In-session decoder catch-up (test 31)
+
+The user confirmed that test 30's full automatic reconnect restores response,
+but it interrupts play with Starting target stream and Xbox controller confirmation;
+lag later returns. PTS matches advance in the photos, but blurred/overlapping
+numbers do not establish where the delay accumulates. Reconnect remains a known
+workaround, not a demonstrated root-cause fix.
+
+Home now first repairs **measured decoder backlog**: fresh matched presented
+pictures must show at least 100 ms from hardware submission to decoded output
+for 500 ms of continuous samples. Gaps over 250 ms, stale/duplicate pictures,
+pauses, Cloud mode, network assembly age and GPU delay alone cannot trigger this
+codec flush. A five-second cooldown prevents repeated repair requests. This
+is separate from the original receive-to-render / relative RTP reconnect guard.
+
+The RTC owner discards partial/reordered video packets, advances the decode epoch,
+and requests an IDR. Old queued/in-flight AUs cannot publish; dependent P frames
+remain gated until a complete IDR is admitted. The decoder thread calls
+`sceAvcdecDecodeFlush` before decoding that new epoch, then forgets old PTS records
+while preserving extended RTP timestamp continuity. The displayed picture is
+retained until new output arrives. Audio, RTC, controller channels and the Xbox
+session stay connected, with a small Resyncing video notice rather than a start
+screen. No controller acknowledgement is synthesized.
+
+`sceAvcdecDecodeFlush` is exported by VitaSDK's SceVideodec stub (NID 0x25F31020,
+`vita-headers/db/360/SceAvcodecUser.yml`) and is used with this signature by the
+Vita FFmpeg patch linked above. Its device behavior still needs validation.
+Recovery completes only on a newly submitted, low-delay picture from a newer
+epoch. Failure to get that output within three seconds permits the existing
+full reconnect fallback, still limited to two attempts with 30 seconds between
+them. Manual Quick menu > Refresh stream continues to do a full reconnect;
+that fallback can still show Xbox's controller prompt.
+
+The HUD now separates `Frame age: decoder:average/max receiveToGPU:average/max`
+from `PTS matched/unmatched` / `frameReport`, shortens compact lines, and shows
+`catchup:completed/attempts` separately from `reconnect:used/2`. These are local
+pipeline ages, not capture-to-panel latency. The full status file retains the
+longer diagnostics. New trace rows are `video_catchup_requested`,
+`video_catchup_begin`, `decoder_flush` and `decoder_residence_us` (microseconds).
+
+Host regressions cover sustained backlog versus transient/network/render delay,
+stale/paused samples, epoch-checked completion, timeout/cooldown/reconnect budget,
+PTS invalidation across wrap, presentation invalidation, and incomplete FU/P-frame
+rejection during repair. The target build checks the new SDK import and UI path.
+Only a longer Home device session can confirm whether decoder catch-up actually
+reduces the recurring lag. If the decoder age stays low while lag grows, the
+remaining cause is elsewhere and this flush intentionally will not fire.

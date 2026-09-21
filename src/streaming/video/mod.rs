@@ -47,6 +47,7 @@ pub(crate) struct DirectVideoOutput {
     pub(crate) presentation: Mutex<timing::PresentationState>,
     frame_signal: frame_signal::FrameSignal,
     pub(crate) decoder_ready: AtomicBool,
+    pub(crate) repair_requested: AtomicBool,
     pub(crate) width: u32,
     pub(crate) height: u32,
 }
@@ -63,6 +64,7 @@ impl DirectVideoOutput {
             presentation: Mutex::new(timing::PresentationState::default()),
             frame_signal: frame_signal::FrameSignal::default(),
             decoder_ready: AtomicBool::new(false),
+            repair_requested: AtomicBool::new(false),
             width,
             height,
         }
@@ -89,6 +91,17 @@ impl DirectVideoOutput {
     pub(crate) fn has_pending_frame(&self) -> bool {
         // Input/render scheduling must not wait on the decoder's hardware call.
         self.frame_signal.is_pending()
+    }
+
+    pub(crate) fn discard_pending(&self) {
+        // Retain the displayed picture while waiting for a new keyframe.
+        if let Ok(mut state) = self.state.lock() {
+            state.pending = None;
+            self.frame_signal.set_pending(false);
+        }
+        if let Ok(mut presentation) = self.presentation.lock() {
+            presentation.invalidate();
+        }
     }
 
     pub(crate) async fn wait_for_frame(&self) {

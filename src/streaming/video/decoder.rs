@@ -7,6 +7,12 @@ use anyhow::{Result, bail};
 use std::os::raw::c_void;
 use vitasdk_sys::*;
 
+// Exported by SceVideodec (NID 0x25F31020), but missing from its public header.
+// The Vita FFmpeg implementation uses this operation for codec flushes.
+unsafe extern "C" {
+    fn sceAvcdecDecodeFlush(decoder: *mut SceAvcdecCtrl) -> i32;
+}
+
 // The idea of reducing the reference frames came from MattKC on his Vanilla project
 // Make sure to check it out, good content :)
 const AVCDEC_NUM_REF_FRAMES: u32 = 1;
@@ -95,6 +101,13 @@ pub struct HwVideoDecoder {
 }
 
 impl HwVideoDecoder {
+    pub(super) fn flush(&mut self) -> Result<()> {
+        let result = unsafe { sceAvcdecDecodeFlush(&mut self.decoder.0) };
+        if result != 0 { bail!("sceAvcdecDecodeFlush failed: {result:#x}"); }
+        self.pictures.flush();
+        Ok(())
+    }
+
     pub fn new(config: DecoderConfig) -> Result<Self> {
         unsafe {
             // Decoder capacity is the stock 1280x720 setting; Xbox can send a smaller 960x540

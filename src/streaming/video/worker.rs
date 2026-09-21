@@ -35,6 +35,7 @@ pub struct VideoDecodeWorker {
     access_units: Sender<QueuedAccessUnit>,
     commands: Sender<DecoderCommand>,
     generation: Arc<AtomicU64>,
+    flush_epoch: Arc<AtomicU64>,
     recovery_needed: Arc<AtomicBool>,
     pub(crate) latest_result: Arc<Mutex<Option<DecodeResult>>>,
     pub(crate) result_ready: Arc<tokio::sync::Notify>,
@@ -49,6 +50,8 @@ impl VideoDecodeWorker {
         let (commands, worker_commands) = bounded(1);
         let generation = Arc::new(AtomicU64::new(0));
         let worker_generation = Arc::clone(&generation);
+        let flush_epoch = Arc::new(AtomicU64::new(0));
+        let worker_flush_epoch = Arc::clone(&flush_epoch);
         let recovery_needed = Arc::new(AtomicBool::new(false));
         let worker_recovery_needed = Arc::clone(&recovery_needed);
         let latest_result = Arc::new(Mutex::new(None));
@@ -67,6 +70,7 @@ impl VideoDecodeWorker {
                     worker_access_units,
                     worker_commands,
                     worker_generation,
+                    worker_flush_epoch,
                     worker_recovery_needed,
                     worker_latest_result,
                     worker_result_ready,
@@ -83,6 +87,7 @@ impl VideoDecodeWorker {
             access_units,
             commands,
             generation,
+            flush_epoch,
             recovery_needed,
             latest_result,
             result_ready,
@@ -134,6 +139,13 @@ impl VideoDecodeWorker {
         self.generation.fetch_add(1, Ordering::AcqRel);
         metrics::METRICS.resyncs.fetch_add(1, Ordering::Relaxed);
     }
+
+    /// Called only by the RTP owner, before it admits a new recovery IDR.
+    pub(crate) fn flush_before_next_idr(&self) {
+        let epoch = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        self.flush_epoch.store(epoch, Ordering::Release);
+        metrics::METRICS.resyncs.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 impl Drop for VideoDecodeWorker {
@@ -160,6 +172,7 @@ fn run_decode_loop(
     access_units: Receiver<QueuedAccessUnit>,
     commands: Receiver<DecoderCommand>,
     generation: Arc<AtomicU64>,
+    flush_epoch: Arc<AtomicU64>,
     recovery_needed: Arc<AtomicBool>,
     latest_result: Arc<Mutex<Option<DecodeResult>>>,
     result_ready: Arc<tokio::sync::Notify>,
@@ -181,6 +194,7 @@ fn run_decode_loop(
                     &mut decoder,
                     config,
                     &generation,
+                    &flush_epoch,
                     &recovery_needed,
                     &latest_result,
                     &result_ready,
@@ -196,6 +210,7 @@ fn decode_queued_access_unit(
     decoder: &mut Option<HwVideoDecoder>,
     config: DecoderConfig,
     generation: &AtomicU64,
+    flush_epoch: &AtomicU64,
     recovery_needed: &AtomicBool,
     latest_result: &Mutex<Option<DecodeResult>>,
     result_ready: &tokio::sync::Notify,
@@ -220,6 +235,22 @@ fn decode_queued_access_unit(
         recovery_needed.store(true, Ordering::Release);
         result_ready.notify_one();
         return;
+    }
+
+    let requested_epoch = flush_epoch.load(Ordering::Acquire);
+    if requested_epoch != 0 && access_unit.generation >= requested_epoch {
+        // Only this thread touches AVCDEC. Old queued work cannot consume the
+        // flush, and the RTP recovery gate guarantees this new epoch starts at IDR.
+        if let Some(decoder) = decoder.as_mut()
+            && let Err(error) = decoder.flush()
+        {
+            generation.fetch_add(1, Ordering::AcqRel);
+            recovery_needed.store(true, Ordering::Release);
+            publish_result(latest_result, result_ready, Err(error.to_string()));
+            return;
+        }
+        let _ = flush_epoch.compare_exchange(requested_epoch, 0, Ordering::AcqRel, Ordering::Acquire);
+        super::trace::record("decoder_flush", access_unit.rtp_timestamp, requested_epoch);
     }
 
     if decoder.is_none() {
@@ -293,6 +324,11 @@ fn decode_queued_access_unit(
                     return;
                 }
                 metrics::METRICS.output_pts_matched.fetch_add(1, Ordering::Relaxed);
+                let decoder_age_us = timing.decoded_at.saturating_duration_since(timing.submitted_at).as_micros() as u64;
+                metrics::METRICS.decoder_age_sum_us.fetch_add(decoder_age_us, Ordering::Relaxed);
+                metrics::METRICS.decoder_age_count.fetch_add(1, Ordering::Relaxed);
+                metrics::METRICS.decoder_age_max_us.fetch_max(decoder_age_us, Ordering::Relaxed);
+                super::trace::record("decoder_residence_us", timing.rtp_timestamp, decoder_age_us);
                 let age_us = timing.decoded_at.saturating_duration_since(timing.received_at).as_micros() as u64;
                 super::trace::record("picture_output_rtp", timing.rtp_timestamp, age_us);
             } else {

@@ -51,15 +51,17 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                         // Use the once-per-second status; no duplicate
                         // live counters or twenty-line diagnostic paint every frame.
                         let compact = streaming.status.lines().filter(|line| {
-                            ["SPS:", "Q depth", "FPS hw", "Render draw:", "PTS matched/", "Input local:", "Link ICE:", "Recovery wait:"]
+                            ["SPS:", "Q depth", "FPS hw", "Render draw:", "PTS matched/", "Frame age:", "Input local:", "Recovery wait:"]
                                 .iter().any(|prefix| line.starts_with(prefix))
-                        }).map(|line| line.chars().take(140).collect::<String>())
+                        }).map(|line| line.chars().take(92).collect::<String>())
                             .collect::<Vec<_>>().join("\n");
                         let mode = if streaming.can_refresh() { "Home" } else { "Cloud" };
                         let measured = streaming.measured_delay_ms()
                             .map(|ms| format!("{ms}ms")).unwrap_or_else(|| "n/a".to_owned());
                         let recovery = if streaming.can_refresh() {
-                            format!("observed delay:{measured} auto refresh:{}/2", app.home_refresh_guard.automatic_count)
+                            format!("delay:{measured} catchup:{}/{} reconnect:{}/2",
+                                streaming.decoder_catchup.completed, streaming.decoder_catchup.attempts,
+                                app.home_refresh_guard.automatic_count)
                         } else { "auto refresh:off".to_owned() };
                         ui.label(egui::RichText::new(format!("RX Test {} · {mode} · {recovery}\n{compact}", crate::build_info::NUMBER))
                             .color(theme.text).size(12.0));
@@ -73,6 +75,17 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
             });
         }
     });
+
+    if streaming.decoder_catchup.pending() {
+        egui::Area::new(egui::Id::new("video_catchup_notice"))
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 36.0))
+            .interactable(false)
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new(i18n.text("streaming-resync-video"))
+                    .color(egui::Color32::WHITE)
+                    .background_color(egui::Color32::from_black_alpha(192)).size(14.0));
+            });
+    }
 
     // Keep the route to recovery visible even after the startup hint fades.
     // This is a label, so no touch/game controls are intercepted.

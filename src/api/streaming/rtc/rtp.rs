@@ -384,6 +384,15 @@ impl VideoRtp {
         self.recovery.waiting()
     }
 
+    pub(super) fn recover_latency(&mut self, worker: &VideoDecodeWorker) {
+        self.pending = None;
+        self.next_sequence = None;
+        self.depacketizer = H264Packet::default();
+        self.recovery.damage();
+        self.suspect_reference = true;
+        worker.flush_before_next_idr();
+    }
+
     pub(super) fn recovery_summary(&self, now: Instant) -> String {
         self.recovery.summary(now)
     }
