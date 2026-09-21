@@ -209,3 +209,33 @@ New trace stages distinguish output identity from the legacy submission rows:
 - `old_picture_epoch`: output RTP and rejected recovery epoch.
 
 Test 28 `manual_refresh`/`auto_refresh` values are milliseconds, not microseconds.
+
+## Device feedback after test 29
+
+The user reports roughly two seconds of gradual delay and could not find Refresh.
+Their screenshots show 2–6 ms decode, small AU queues, and video RTP relative
+arrival growth of 1–4 ms; they do not establish where the reported delay occurs.
+The compact UI accidentally excluded test 29's PTS/receiveToGPU/frameReport
+line. Its absence in a screenshot therefore does not identify an older binary.
+
+The next build embeds the CI build number and revision, displays Home/Cloud mode,
+and includes PTS matching, receive-to-GPU age, rendering and local input timing
+in the compact overlay. No matched render sample is shown as `n/a`, not zero.
+The Home guard's current measured delay and used automatic refresh attempts are
+also visible. These remain local pipeline measurements, not capture-to-display
+latency, and no new reconnect threshold or decoder behavior is introduced.
+
+The quick-menu hint now says SELECT explicitly (SDL Back is Vita SELECT), gives
+the 1.5-second hold duration, and remains visible in small text after the startup
+hint fades. Home's Refresh stream row remains directly below Return to game.
+The quick menu displays build/mode and explains that Home refresh reconnects
+without ending the game. Rows are 34 logical points to fit all six Home actions
+and the explanation at the Vita's existing 1.3 UI scale. Touch mappings and the
+short-SELECT Xbox View behavior are unchanged.
+
+Next device evidence: verify the displayed build and Home mode, capture PTS /
+receiveToGPU / frameReport while delayed, then hold SELECT and test Refresh.
+The full `pipeline-status.txt`, `pipeline-history.txt` and `pipeline-trace.csv`
+in `ux0:data/green-vita-540-test` retain the measurements on stream exit/refresh.
+This addresses menu discoverability and missing diagnostics; the reported
+two-second drift is still unresolved pending those measurements.

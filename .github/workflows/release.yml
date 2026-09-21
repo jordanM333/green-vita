@@ -92,6 +92,8 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || steps.release.outputs.exists == 'false'
         env:
           RUSTFLAGS: "-C target-feature=-neon"
+          GREENVITA_BUILD_NUMBER: ${{ github.run_number }}
+          GREENVITA_BUILD_SHA: ${{ github.sha }}
         run: cargo vita build vpk --release
 
       - name: Upload test VPK

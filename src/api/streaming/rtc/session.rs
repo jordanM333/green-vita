@@ -189,7 +189,8 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                 .map(|(width, height)| format!("{width}x{height}"))
                 .unwrap_or_else(|| "?".to_owned());
             self.status = format!(
-                "Xbox requested:{requested_width}x{requested_height} server:{server_size}\n{status}\n{link}\n{receive}\n{feedback}"
+                "Build: RX Test {} revision {}\nXbox requested:{requested_width}x{requested_height} server:{server_size}\n{status}\n{link}\n{receive}\n{feedback}",
+                crate::build_info::NUMBER, crate::build_info::REVISION,
             );
             crate::streaming::video::trace::status_snapshot(&self.status);
             eprintln!("{}", self.status);

@@ -3,6 +3,7 @@ use vita_newlib_shims as _;
 mod api;
 mod api_xbox;
 mod app;
+mod build_info;
 mod i18n;
 mod input;
 mod jobs;

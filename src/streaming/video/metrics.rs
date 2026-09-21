@@ -252,7 +252,9 @@ pub fn video_performance_summary() -> String {
     let received_gpu_count = METRICS.received_gpu_count.swap(0, Ordering::Relaxed);
     let received_gpu_avg = received_gpu_sum.checked_div(received_gpu_count).unwrap_or(0) / 1000;
     let received_gpu_max = METRICS.received_gpu_max_us.swap(0, Ordering::Relaxed) / 1000;
-    let frame_feedback = format!("PTS matched/unmatched:{}/{} receiveToGPU:{received_gpu_avg}/{received_gpu_max}ms frameReport:{}/{}",
+    let received_gpu = if received_gpu_count == 0 { "n/a".to_owned() }
+        else { format!("{received_gpu_avg}/{received_gpu_max}ms") };
+    let frame_feedback = format!("PTS matched/unmatched:{}/{} receiveToGPU:{received_gpu} frameReport:{}/{}",
         METRICS.output_pts_matched.load(Ordering::Relaxed), METRICS.output_pts_unmatched.load(Ordering::Relaxed),
         METRICS.frame_feedback_sent.load(Ordering::Relaxed), METRICS.frame_feedback_failed.load(Ordering::Relaxed));
     let base = format!(

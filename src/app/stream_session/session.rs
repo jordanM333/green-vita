@@ -64,6 +64,12 @@ impl StreamingSession {
 
     pub(crate) fn can_refresh(&self) -> bool { matches!(self.restart_target.kind, StreamKind::Home) }
 
+    pub(crate) fn measured_delay_ms(&self) -> Option<u64> {
+        self.video_timing.filter(|timing|
+            timing.received_at.elapsed() <= std::time::Duration::from_millis(1500))
+            .map(|timing| timing.added_delay_ms)
+    }
+
     pub(crate) fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
         self.hint_started_at = Instant::now();

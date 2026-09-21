@@ -73,6 +73,11 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 }
             }
             ui.add_space(12.0);
+            let home = app.state.streaming().is_some_and(|s| s.can_refresh());
+            ui.label(egui::RichText::new(format!("RX Test {} · {} streaming",
+                crate::build_info::NUMBER, if home { "Home" } else { "Cloud" }))
+                .color(theme.text));
+            ui.add_space(6.0);
             ui.set_max_width(240.0);
             for (index, item) in menu_items(app).iter().copied().enumerate() {
                 if index > 0 {
@@ -97,11 +102,15 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     item.icon(),
                     &label,
                     matches!(&app.state, AppState::Streaming(streaming) if streaming.pause_selected == index),
-                    38.0,
+                    34.0,
                 ) {
                     commands.push(item.into());
                 }
             }
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(i18n.text(if home {
+                "paused-home-refresh-help"
+            } else { "paused-cloud-refresh-help" })).color(theme.text).size(12.0));
         });
     });
 }

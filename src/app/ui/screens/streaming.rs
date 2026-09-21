@@ -5,9 +5,9 @@ use crate::i18n::I18n;
 use crate::streaming::video::metrics::METRICS;
 use std::sync::atomic::Ordering;
 
-/// Fullscreen video view with a one-time "Hold Back to pause" hint, fading out over `HINT_FADE`.
+/// Fullscreen video view with explicit Vita quick-menu instructions.
 pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
-    const HINT_VISIBLE: std::time::Duration = std::time::Duration::from_secs(2);
+    const HINT_VISIBLE: std::time::Duration = std::time::Duration::from_secs(6);
     const HINT_FADE: std::time::Duration = std::time::Duration::from_secs(1);
 
     let theme = Theme::dark();
@@ -33,7 +33,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                 ui.add_space(16.0);
                 ui.colored_label(
                     theme.text.gamma_multiply(alpha),
-                    i18n.text("streaming-hold-back"),
+                    i18n.text("streaming-open-menu"),
                 );
             });
         }
@@ -51,14 +51,20 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                         // Use the once-per-second status; no duplicate
                         // live counters or twenty-line diagnostic paint every frame.
                         let compact = streaming.status.lines().filter(|line| {
-                            ["SPS:", "AU done:", "Q depth", "FPS hw", "Link ICE:", "Video payload:", "Recovery wait:", "REMB:"]
+                            ["SPS:", "Q depth", "FPS hw", "Render draw:", "PTS matched/", "Input local:", "Link ICE:", "Recovery wait:"]
                                 .iter().any(|prefix| line.starts_with(prefix))
-                        }).map(|line| line.chars().take(115).collect::<String>())
+                        }).map(|line| line.chars().take(140).collect::<String>())
                             .collect::<Vec<_>>().join("\n");
-                        ui.label(egui::RichText::new(format!("RX TEST · decode queue: 3 AU / 50ms\n{compact}"))
+                        let mode = if streaming.can_refresh() { "Home" } else { "Cloud" };
+                        let measured = streaming.measured_delay_ms()
+                            .map(|ms| format!("{ms}ms")).unwrap_or_else(|| "n/a".to_owned());
+                        let recovery = if streaming.can_refresh() {
+                            format!("observed delay:{measured} auto refresh:{}/2", app.home_refresh_guard.automatic_count)
+                        } else { "auto refresh:off".to_owned() };
+                        ui.label(egui::RichText::new(format!("RX Test {} · {mode} · {recovery}\n{compact}", crate::build_info::NUMBER))
                             .color(theme.text).size(12.0));
                         ui.label(egui::RichText::new(format!(
-                            "Audio queued:{}ms | A:{} | diagnostics: pause menu",
+                            "Audio queued:{}ms | A:{} | Hold SELECT 1.5s for Quick menu",
                             METRICS.audio_sdl_queue_ms.load(Ordering::Relaxed),
                             METRICS.local_button_mask.load(Ordering::Relaxed) & 1,
                         )).color(theme.text_bright).size(12.0));
@@ -67,6 +73,18 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
             });
         }
     });
+
+    // Keep the route to recovery visible even after the startup hint fades.
+    // This is a label, so no touch/game controls are intercepted.
+    if !app.settings.show_stream_debug_info && streaming.hint_started_at.elapsed() >= HINT_VISIBLE + HINT_FADE {
+        egui::Area::new(egui::Id::new("stream_quick_menu_hint"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 8.0))
+            .interactable(false)
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new(i18n.text("streaming-menu-hint"))
+                    .color(egui::Color32::WHITE).background_color(egui::Color32::from_black_alpha(128)).size(12.0));
+            });
+    }
 
     if let Some(progress) = hold_progress {
         egui::Area::new(egui::Id::new("pause_hold_indicator"))
