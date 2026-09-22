@@ -43,9 +43,10 @@
     "home_baseline": "RX Test 35.2, user-reported improvement",
     "reported_mode": "User believes this attached run was Home. Current history does not record mode; do not label it Cloud.",
     "reported_network": "Xbox connects by Ethernet to a Wi-Fi extender; user reports peak throughput around 500 Mbps. Extender uplink and Vita access point are unconfirmed.",
-    "reported_trigger": "Issues occurred after setting the device down while paused and picking it back up. In-game pause, GreenVita overlay, and actual sleep/background have not yet been distinguished.",
+    "reported_trigger": "User clarified that the game was paused and GreenVita's menus were not open. The second capture also shows delivery delay shortly after streaming begins.",
     "attached_run_result": "921 snapshots over 931.567s show 11 stretches of joint audio/video arrival growth above 1s, up to about 6s. The final IDR recovery wait is 13.570s. The retained incident ring contains a 9.501s fresh-picture gap. Decoder queue is empty through most delivery stalls; catch-up bursts still cause bounded-queue recovery.",
-    "cloud_result": "Not established by these attachments; likely Home run, mode not independently confirmed.",
+    "cloud_result": "User separately reports Cloud delays too. Neither attachment records session mode, so do not label either capture Cloud solely from that statement.",
+    "second_capture_result": "752 snapshots over 764.170s; added video arrival delay reaches 8892ms, audio 7760ms; recovery maximum31422ms. Receive service remains active and the decoder queue is empty through the major slowdown. Ends with queue0 and video/audio growth27/26ms. See RX37-SECOND-DEVICE-REVIEW.md.",
     "remaining_risk": "Underlying delivery stalls are not localized to Xbox, router/Wi-Fi, Vita networking, or route selection. No further decoder tuning is justified as a remedy for those shared audio/video delivery stalls. See RX37-DEVICE-DELIVERY-REVIEW.md."
   },
   "features": {

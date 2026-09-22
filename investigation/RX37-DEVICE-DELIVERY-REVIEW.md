@@ -88,12 +88,11 @@ and [Vita event pump](https://github.com/libsdl-org/SDL/blob/SDL2/src/video/vita
 The logs narrow the fault to media delivery upstream of AU admission, which
 still includes Vita networking/driver behavior, Wi-Fi/router conditions, Xbox
 sending, and a potentially remote route. They do not isolate one of these.
-First establish whether the screen remained on in the game/GreenVita pause
-menu or the Vita actually slept or left the app. The existing logs have no
-pause/lifecycle markers, so they cannot establish that transition retroactively.
-Then select one controlled comparison with the reported-good RX35.2 Home
-baseline using the same pause behavior and network path. Do not mix Home and
-Cloud results.
+Follow-up: Jordan clarified that only the game was paused; GreenVita's menus
+were not open. He also reports Cloud delay and supplied a second capture.
+See [the second device review](RX37-SECOND-DEVICE-REVIEW.md) for the early-start
+delivery slowdown and a controlled Wi-Fi power-saving comparison on RX37.4.
+Keep the RX35.2 Home rollback available and do not mix Home and Cloud results.
 
 No new runtime adjustment or VPK is issued from this evidence alone. Keep the
 RX37 implementation and failed device evidence distinct from a proven remedy.
