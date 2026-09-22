@@ -1,6 +1,8 @@
 use super::*;
 use std::{sync::Arc, time::{Duration,Instant}};
 use crate::FAKE;
+#[path = "burst_replay.rs"]
+mod burst_replay;
 fn config()->DecoderConfig { DecoderConfig{decode_width:1280,decode_height:720,output_width:960,output_height:544} }
 fn reset() { *FAKE.lock().unwrap()=Default::default(); }
 fn surfaces()->(Arc<DirectVideoOutput>,Vec<Vec<u8>>) {
@@ -194,8 +196,6 @@ fn recovery_keyframe_followed_by_four_frame_burst_does_not_force_second_recovery
     assert!(!worker.take_recovery_request());
     let f=FAKE.lock().unwrap();
     assert_eq!(f.inputs,f.outputs);assert_eq!(f.created,1);assert_eq!(f.deletes,0);
-    let mut inputs=0;
-    for poll in &f.calls { if *poll { inputs=0; } else { inputs+=1; assert!(inputs<=2); } }
     drop(f); worker.shutdown();
 }
 
@@ -218,7 +218,7 @@ fn queue_byte_budget_releases_on_dequeue_rejection_and_shutdown() {
 }
 
 #[test]
-fn admitted_burst_still_expires_after_fifty_ms_without_decoder_reset() {
+fn intact_reference_chain_survives_fifty_ms_queue_pressure() {
     reset();let(output,_pixels)=surfaces();let(entered,release)=gate_next_call();
     let mut worker=VideoDecodeWorker::spawn(config(),output.clone()).unwrap();
     worker.submit_access_unit(vec![1],Instant::now(),1);
@@ -226,8 +226,75 @@ fn admitted_burst_still_expires_after_fifty_ms_without_decoder_reset() {
     worker.submit_access_unit(vec![1],Instant::now(),2);
     std::thread::sleep(Duration::from_millis(60));
     release.send(()).unwrap();
-    wait_for(||worker.take_recovery_request());
-    assert_eq!(FAKE.lock().unwrap().inputs,vec![1]);
+    wait_for(||FAKE.lock().unwrap().outputs.len()==2);
+    assert!(!worker.take_recovery_request());
+    assert_eq!(FAKE.lock().unwrap().inputs,vec![1,2]);
     assert_eq!(FAKE.lock().unwrap().deletes,0);
     worker.shutdown();
+}
+
+#[test]
+fn eight_frame_cloud_burst_gets_input_service_before_speculative_poll() {
+    reset(); let(output,_pixels)=surfaces();
+    FAKE.lock().unwrap().suppress_inputs=1;
+    let(entered,release)=gate_next_call();
+    let mut worker=VideoDecodeWorker::spawn(config(),output.clone()).unwrap();
+    worker.submit_access_unit(vec![1],Instant::now(),3026025493);
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    // Cloud delivered these eight consecutive AUs in under 7ms. A hardware
+    // call in the supplied trace can take 8-10ms: all eight must be admissible.
+    let burst=[3026030083,3026031613,3026033053,3026034583,
+        3026036113,3026037553,3026039083,3026040523];
+    let accepted: Vec<_>=burst.iter().map(|rtp|matches!(
+        worker.submit_access_unit(vec![1],Instant::now(),*rtp),SubmitResult::Submitted)).collect();
+    release.send(()).unwrap();
+    assert!(accepted.into_iter().all(|a|a),"RX36 six-frame queue rejects an intact burst");
+    wait_for(||FAKE.lock().unwrap().outputs.len()==9);
+    assert!(!worker.take_recovery_request());
+    let f=FAKE.lock().unwrap();
+    let (inputs,outputs,first_poll,created,deletes)=(f.inputs.clone(),f.outputs.clone(),
+        f.calls.iter().position(|poll|*poll),f.created,f.deletes);
+    drop(f);worker.shutdown();
+    assert_eq!(inputs,outputs);
+    assert_eq!(first_poll,Some(9),
+        "all queued inputs can produce output; do not insert speculative polls");
+    assert_eq!((created,deletes),(1,0));
+}
+
+#[test]
+fn sustained_no_picture_input_still_services_output_debt() {
+    reset(); let(output,_pixels)=surfaces();
+    FAKE.lock().unwrap().suppress_inputs=32;
+    let(entered,release)=gate_next_call();
+    let mut worker=VideoDecodeWorker::spawn(config(),output).unwrap();
+    worker.submit_access_unit(vec![1],Instant::now(),1);
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    for rtp in 2..=32 {
+        assert!(matches!(worker.submit_access_unit(vec![1],Instant::now(),rtp),SubmitResult::Submitted));
+    }
+    release.send(()).unwrap();
+    wait_for(||FAKE.lock().unwrap().outputs.len()==32);
+    let f=FAKE.lock().unwrap();
+    assert_eq!(f.inputs,f.outputs);
+    let mut debt=0;
+    for poll in &f.calls {
+        if *poll { debt-=1; } else { debt+=1; }
+        assert!(debt<=policy::OUTPUT_DEBT_WATERMARK,"input priority must not resurrect growing firmware backlog");
+    }
+    assert_eq!(debt,0);assert_eq!((f.created,f.deletes),(1,0));
+    drop(f);assert!(!worker.take_recovery_request());worker.shutdown();
+}
+
+#[test]
+fn small_access_units_still_have_a_hard_count_bound() {
+    reset();let(output,_pixels)=surfaces();let(entered,release)=gate_next_call();
+    let mut worker=VideoDecodeWorker::spawn(config(),output).unwrap();
+    worker.submit_access_unit(vec![1],Instant::now(),1);
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    for rtp in 2..=(policy::AU_QUEUE_CAPACITY as u32+1) {
+        assert!(matches!(worker.submit_access_unit(vec![1],Instant::now(),rtp),SubmitResult::Submitted));
+    }
+    let rejected=matches!(worker.submit_access_unit(vec![1],Instant::now(),100),SubmitResult::QueueFull);
+    release.send(()).unwrap();
+    assert!(rejected);worker.shutdown();
 }

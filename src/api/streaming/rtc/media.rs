@@ -50,6 +50,7 @@ pub(crate) struct VideoReceiver {
     last_stats_report: Instant,
     stats: VideoStats,
     decoder_config: DecoderConfig,
+    last_packet_at: Option<Instant>,
 }
 
 impl VideoReceiver {
@@ -70,6 +71,7 @@ impl VideoReceiver {
             last_stats_report: Instant::now(),
             stats: VideoStats::default(),
             decoder_config: config,
+            last_packet_at: None,
         })
     }
 
@@ -81,6 +83,7 @@ impl VideoReceiver {
     ) {
         if self.ssrc != Some(ssrc) {
             self.order = Default::default();
+            self.last_packet_at = None;
         }
         self.track_id = Some(track_id);
         self.receiver_id = Some(receiver_id);
@@ -95,6 +98,14 @@ impl VideoReceiver {
         self.received_packet = true;
         self.stats.packets = self.stats.packets.saturating_add(1);
         let now = Instant::now();
+        if let Some(last) = self.last_packet_at.replace(now) {
+            let gap = now.saturating_duration_since(last).as_micros() as u64;
+            if gap > 20_000 {
+                crate::streaming::video::trace::record("video_packet_gap_us", packet.header.timestamp, gap);
+            }
+        }
+        let missing_before = self.order.stats.missing;
+        let timestamp = packet.header.timestamp;
         // Process already-delivered packets before declaring a gap expired.
         // Previously a pump delay could make us discard the exact packet in
         // hand that would have closed the gap, then trigger seconds of IDR wait.
@@ -104,11 +115,21 @@ impl VideoReceiver {
         while let Some((packet, received_at)) = self.order.pop_ready(now) {
             self.receive_ordered(packet, received_at, keyframe_requested);
         }
+        self.record_order_loss(missing_before, timestamp);
     }
 
     fn flush_order(&mut self, now: Instant, keyframe_requested: &mut bool) {
+        let missing_before = self.order.stats.missing;
         while let Some((packet, received_at)) = self.order.pop(now) {
             self.receive_ordered(packet, received_at, keyframe_requested);
+        }
+        self.record_order_loss(missing_before, 0);
+    }
+
+    fn record_order_loss(&self, missing_before: u64, timestamp: u32) {
+        let missing = self.order.stats.missing.saturating_sub(missing_before);
+        if missing != 0 {
+            crate::streaming::video::trace::record("rtp_gap_released_packets", timestamp, missing);
         }
     }
 

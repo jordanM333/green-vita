@@ -1,5 +1,10 @@
 # RX Test 36: Cloud recovery and feature foundations
 
+**Device result: FAILED for Cloud.** Jordan's subsequent RX36.3 trace shows
+repeated six-AU QueueFull recovery and a 52ms age drop followed by a 1.946s
+fresh-picture gap. See `CLOUD-REFERENCE-CONTINUITY-CANDIDATE.md` for the next
+correction. The original host checks below did not establish playability.
+
 ## Observation, not a claimed device fix
 
 Jordan clarified that RX 35.2 was nearly flawless for Home, including walking away. Cloud still hangs at a seemingly patterned interval. Preserve 35.2 as the Home rollback baseline. The new Cloud excerpt spans 193.999197–198.286103 s. It establishes one 550.632 ms fresh-picture gap, not a recurrence period. RTP sequence loss here is a receiver observation; the trace cannot locate its origin on the network, server, or local receive path.

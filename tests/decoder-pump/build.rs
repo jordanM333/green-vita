@@ -16,4 +16,5 @@ fn main() {
     fs::write(PathBuf::from(env::var("OUT_DIR").unwrap()).join("video.rs"), module).unwrap();
     println!("cargo:rerun-if-changed={}", source.display());
     println!("cargo:rerun-if-changed=src/cases.rs");
+    println!("cargo:rerun-if-changed=src/burst_replay.rs");
 }

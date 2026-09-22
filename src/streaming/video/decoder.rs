@@ -167,6 +167,7 @@ impl HwVideoDecoder {
     }
 
     pub(super) fn has_pending_output(&self) -> bool { self.pictures.has_pending() }
+    pub(super) fn pending_output_count(&self) -> usize { self.pictures.pending_count() }
 
     /// Service buffered output without admitting another AU or ending the stream.
     /// Vita FFmpeg uses null/zero ES input with sceAvcdecDecode when its input

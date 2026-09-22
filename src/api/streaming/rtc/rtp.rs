@@ -550,6 +550,7 @@ impl VideoRtp {
         let completed = self.pending.take().expect("assembled pending video frame");
         crate::streaming::video::trace::record("au_complete", completed.timestamp,
             completed.first_packet_at.elapsed().as_micros() as u64);
+        crate::streaming::video::trace::record("au_complete_bytes", completed.timestamp, data.len() as u64);
         // Record both average and worst-case RTP assembly time for the stream HUD.
         let assembly_us = completed.first_packet_at.elapsed().as_micros() as u64;
         crate::streaming::video::metrics::METRICS

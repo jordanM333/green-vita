@@ -3,11 +3,22 @@
 //! about network or Xbox capture latency.
 use std::time::{Duration, Instant};
 
-// Cloud can deliver four complete AUs in 241us after an IDR. Admit that
-// burst plus two slots of headroom without increasing the residence deadline.
-pub(crate) const AU_QUEUE_CAPACITY: usize = 6;
+// Safety limits, not a playout target. Cloud catch-up arrives in groups of eight
+// AUs within a few milliseconds. Keep the complete reference chain while the
+// decoder catches up; a six-frame limit repeatedly destroyed healthy chains.
+// Both limits apply, including to streams made up of very small AUs.
+pub(crate) const AU_QUEUE_CAPACITY: usize = 32;
 pub(crate) const AU_QUEUE_BYTES: usize = 4 * 1024 * 1024;
-pub(crate) const AU_MAX_AGE: Duration = Duration::from_millis(50);
+pub(crate) const AU_PRESSURE_AGE: Duration = Duration::from_millis(50);
+
+// Metadata is NOT firmware readiness. Prefer a queued AU (which can also return
+// a picture) over a speculative empty call. Still service output under sustained
+// input if unretired submissions accumulate, so no-picture calls cannot create
+// the unbounded output debt seen before RX35. Idle input always permits draining.
+pub(crate) const OUTPUT_DEBT_WATERMARK: usize = 8;
+pub(crate) fn poll_before_input(queued: usize, pending: usize) -> bool {
+    pending != 0 && (queued == 0 || pending >= OUTPUT_DEBT_WATERMARK)
+}
 
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
@@ -66,10 +77,6 @@ impl Recovery {
     }
 }
 
-pub(crate) fn expired(received: Instant, now: Instant) -> bool {
-    now.saturating_duration_since(received) > AU_MAX_AGE
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,9 +96,11 @@ mod tests {
         assert!(!state.waiting());
     }
     #[test]
-    fn decode_queue_deadline_is_not_extended_by_newer_frames() {
-        let start = Instant::now();
-        assert!(!expired(start, start + AU_MAX_AGE));
-        assert!(expired(start, start + AU_MAX_AGE + Duration::from_millis(1)));
+    fn input_priority_does_not_disable_idle_or_output_debt_draining() {
+        assert!(!poll_before_input(1, 3));
+        assert!(!poll_before_input(8, 3));
+        assert!(poll_before_input(1, OUTPUT_DEBT_WATERMARK));
+        assert!(poll_before_input(0, 1));
+        assert!(!poll_before_input(0, 0));
     }
 }

@@ -325,6 +325,9 @@ async fn run_session<B: super::session::RtcSessionBackend>(
         let pump_started = Instant::now();
         let pump_result = session.pump().await;
         let pump_us = pump_started.elapsed().as_micros() as u64;
+        if pump_us > 5_000 {
+            crate::streaming::video::trace::record("rtc_pump_slow_us", 0, pump_us);
+        }
         METRICS.rtc_pump_sum_us.fetch_add(pump_us, Ordering::Relaxed);
         METRICS.rtc_pump_count.fetch_add(1, Ordering::Relaxed);
         METRICS.rtc_pump_max_us.fetch_max(pump_us, Ordering::Relaxed);

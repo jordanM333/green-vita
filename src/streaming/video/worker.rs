@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use super::policy::{AU_QUEUE_CAPACITY, QueueReservation, expired};
+use super::policy::{AU_QUEUE_CAPACITY, AU_PRESSURE_AGE, QueueReservation, poll_before_input};
 
 struct QueuedAccessUnit {
     data: Vec<u8>,
@@ -129,6 +129,7 @@ impl VideoDecodeWorker {
                 SubmitResult::Submitted
             }
             Err(TrySendError::Full(_)) => {
+                super::trace::record("queue_frame_limit", rtp_timestamp, self.access_units.len() as u64);
                 metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
                 SubmitResult::QueueFull
             }
@@ -180,7 +181,6 @@ fn run_decode_loop(
     let mut decoder = Some(initial_decoder);
     let mut drain_pending = false;
     let mut drain_enabled = true;
-    let mut consecutive_inputs = 0;
 
     loop {
         // Check stop between every hardware call, including a long buffered-output run.
@@ -189,12 +189,10 @@ fn run_decode_loop(
             Err(crossbeam_channel::TryRecvError::Empty) => {}
         }
         if drain_enabled && drain_pending {
-            // A burst needs input service before a possibly empty hardware poll.
-            // Never run more than two inputs between polls; the ordinary
-            // one-input path and independent recovery draining are unchanged.
-            if consecutive_inputs < 2 && access_units.len() >= 2 {
+            let pending = decoder.as_ref().map_or(0, HwVideoDecoder::pending_output_count);
+            if !poll_before_input(access_units.len(), pending) {
                 if let Ok(access_unit) = access_units.try_recv() {
-                    consecutive_inputs += 1;
+                    metrics::METRICS.au_queue_depth.store(access_units.len() as u64, Ordering::Relaxed);
                     drain_pending |= decode_queued_access_unit(
                         &mut decoder, config, &generation, &recovery_needed,
                         &latest_result, &result_ready, access_unit, &direct_output,
@@ -206,12 +204,10 @@ fn run_decode_loop(
                 Ok(more) => drain_pending = more,
                 Err(()) => { drain_enabled = false; drain_pending = false; }
             }
-            consecutive_inputs = 0;
             // Alternate one output-only call with queued input. Do not hold the
             // texture mutex across calls, or starve input while catching up.
             match access_units.try_recv() {
                 Ok(access_unit) => {
-                    consecutive_inputs = 1;
                     metrics::METRICS.au_queue_depth.store(access_units.len() as u64, Ordering::Relaxed);
                     drain_pending |= decode_queued_access_unit(
                         &mut decoder, config, &generation, &recovery_needed,
@@ -231,7 +227,6 @@ fn run_decode_loop(
             },
             recv(access_units) -> access_unit => {
                 let Ok(access_unit) = access_unit else { break };
-                consecutive_inputs = (consecutive_inputs + 1).min(2);
                 metrics::METRICS.au_queue_depth.store(access_units.len() as u64, Ordering::Relaxed);
                 drain_pending |= decode_queued_access_unit(
                     &mut decoder,
@@ -266,17 +261,11 @@ fn decode_queued_access_unit(
         return false;
     }
 
-    // Never keep playing an old compressed backlog. Losing a reference picture
-    // requires an IDR, not arbitrary P-frame replacement or a decoder reset.
-    if recovery_needed.load(Ordering::Acquire)
-        || expired(access_unit.queued_at, Instant::now())
-    {
-        super::trace::record("age_drop", access_unit.rtp_timestamp,
-            access_unit.queued_at.elapsed().as_micros() as u64);
+    // Only actual damage invalidates a reference chain. Queue age is pressure,
+    // not corruption: throwing out an intact 52ms-old AU caused a 1.95s freeze.
+    if recovery_needed.load(Ordering::Acquire) {
+        super::trace::record("generation_drop", access_unit.rtp_timestamp, 0);
         metrics::METRICS.stale_generation.fetch_add(1, Ordering::Relaxed);
-        generation.fetch_add(1, Ordering::AcqRel);
-        recovery_needed.store(true, Ordering::Release);
-        result_ready.notify_one();
         return false;
     }
 
@@ -306,15 +295,9 @@ fn decode_queued_access_unit(
         return false;
     };
     let age_us = access_unit.queued_at.elapsed().as_micros() as u64;
-    // Acquiring an output surface can itself wait behind the renderer. Recheck
-    // after acquiring it so the queue-age limit also covers that wait.
-    if expired(access_unit.queued_at, Instant::now()) {
-        super::trace::record("output_wait_expired", access_unit.rtp_timestamp, age_us);
-        metrics::METRICS.stale_generation.fetch_add(1, Ordering::Relaxed);
-        generation.fetch_add(1, Ordering::AcqRel);
-        recovery_needed.store(true, Ordering::Release);
-        result_ready.notify_one();
-        return false;
+    super::trace::record("au_queue_wait_us", access_unit.rtp_timestamp, age_us);
+    if access_unit.queued_at.elapsed() > AU_PRESSURE_AGE {
+        super::trace::record("au_queue_pressure_us", access_unit.rtp_timestamp, age_us);
     }
     metrics::METRICS.au_age_sum_us.fetch_add(age_us, Ordering::Relaxed);
     metrics::METRICS.au_age_count.fetch_add(1, Ordering::Relaxed);
@@ -339,6 +322,8 @@ fn decode_queued_access_unit(
     metrics::METRICS.decode_max_us.fetch_max(decode_us, Ordering::Relaxed);
     handle_decode_result(decoder, generation, recovery_needed, latest_result, result_ready,
         Some(&access_unit), access_unit.generation, direct_target, decode_result);
+    super::trace::record("decoder_pending", access_unit.rtp_timestamp,
+        decoder.as_ref().map_or(0, HwVideoDecoder::pending_output_count) as u64);
     decoder.as_ref().is_some_and(HwVideoDecoder::has_pending_output)
 }
 
