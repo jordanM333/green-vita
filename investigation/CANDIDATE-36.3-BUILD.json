@@ -1,0 +1,44 @@
+{
+  "build": "RX Test 36.3",
+  "source_commit": "9936ade4ff12cdeb8ac923f058bfe87d35ceacd4",
+  "workflow_url": "https://github.com/jordanM333/green-vita/actions/runs/35673281958",
+  "workflow_conclusion": "success",
+  "artifact_id": 10672410676,
+  "artifact_expires": "2026-10-22T00:54:44Z",
+  "sdk_image": "ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc",
+  "vpk": {
+    "file_name": "GreenVita-RX-Test-36.3.vpk",
+    "bytes": 14417288,
+    "sha256": "8f14fe6724f47e69e7751f48cec98e504e9168ae4961e5b198f7172ee670d294",
+    "title_id": "GRNVTEST1",
+    "zip_integrity": "pass",
+    "embedded_source_commit_verified": true,
+    "embedded_build_number_verified": true,
+    "package_entries_changed_since_35_2": [
+      "eboot.bin"
+    ]
+  },
+  "ci_test_executions": {
+    "feedback": 6,
+    "receiver_reports": 13,
+    "frame_metadata": 9,
+    "rtc_transport": 11,
+    "frame_signal": 4,
+    "rtp_order": 13,
+    "decoder_pump_and_shared_video_modules": 26,
+    "feature_foundations": 7,
+    "python_analysis": 16,
+    "note": "Shared production tests execute in multiple suites; counts are executions, not unique tests."
+  },
+  "device_acceptance": {
+    "status": "pending",
+    "home_baseline": "RX Test 35.2, user-reported improvement",
+    "cloud_result": "Controlled regression passes; device outcome not yet measured."
+  },
+  "features": {
+    "favorites": "local and persisted",
+    "recently_played": "local and persisted after first decoded video",
+    "recently_added": "provider-order foundation; unavailable until feed is connected",
+    "microphone": "muted capability gate foundation; capture and upstream audio not yet connected"
+  }
+}
