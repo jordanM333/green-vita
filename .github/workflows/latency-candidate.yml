@@ -7,7 +7,8 @@ on:
       - 'vendor/**'
       - 'Cargo.*'
       - 'tests/**'
-      - 'tools/analyze_latency.py'
+      - 'tools/**'
+      - '.cargo/**'
       - '.github/workflows/latency-candidate.yml'
   workflow_dispatch:
 permissions:
@@ -69,6 +70,13 @@ jobs:
           GREENVITA_BUILD_NUMBER: "38.${{ github.run_number }}"
           GREENVITA_BUILD_SHA: ${{ github.sha }}
         run: cargo vita build vpk --release
+      - name: Inspect executable segment layout
+        if: always()
+        run: |
+          elf=target/armv7-sony-vita-newlibeabihf/release/green-vita.elf
+          if [ -f "$elf" ]; then
+            tools/vita-tool arm-vita-eabi-readelf -lW "$elf"
+          fi
       - name: Record binary identity
         run: sha256sum target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk > candidate-sha256.txt
       - uses: actions/upload-artifact@v4

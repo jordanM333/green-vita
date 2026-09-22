@@ -1,6 +1,6 @@
 # RX Test 38: microphone and Xbox collections
 
-Status: implemented locally; host checks pass. No RX38 VPK has been built or tested on a Vita yet.
+Status: published with user approval; host checks and native Vita compilation pass. The first CI attempt failed during VPK conversion; a metadata headroom fix is queued for rebuild. Device testing is still pending.
 
 ## Baseline
 
@@ -60,6 +60,8 @@ Inspected the public [Xbox Cloud Gaming website](https://www.xbox.com/en-US/play
 - `tests/rtc-transport`: 16 tests pass, including a real two-peer ICE/DTLS/SRTP microphone test, one audio media line, RTP timestamps/sequences, stale capture rejection and mute on disconnect/reconnect.
 - The peer test injects encoded packets in place of hardware capture. It does not emulate Xbox chat services or Vita audio hardware.
 
-The CI workflow is prepared to run the existing regression gates plus the codec test and produce an RX38 candidate. A local full app build is blocked by the missing Vita toolchain and an unavailable Git-hosted dependency fetch. UI integration, native bindings/linking, actual Xbox negotiation and audible voice remain pending the CI/device gates.
+After explicit user approval, the feature tree was published to `latency-root-cause` as `90c472f3f7793b1585e999ef528aa749103a1454`. [CI run 35729051338](https://github.com/jordanM333/green-vita/actions/runs/35729051338) passed all regression/feature test steps and the full native Vita release compilation, including UI integration and audio input/Opus linking. VPK conversion then failed because `vita-elf-create` needed 4,596 bytes of SCE metadata space between load segments.
 
-Automatic approval review rejected pushing the branch to `jordanM333/green-vita`, citing export of repository contents to an unverified remote without explicit disclosure authorization. No alternative push path was used. User approval is required before pushing the prepared changes to `latency-root-cause` and running the installer build. RX37.4 installers do not contain this implementation.
+The follow-up linker wrapper defines `__sce_headroom=0x10000`, reserving a virtual-address gap through [VitaSDK's supported linker-script hook](https://github.com/vitasdk/buildscripts/blob/master/patches/binutils/0001-vita.patch). Unlike adding padding inside the executable segment, this leaves space at its end for module metadata. Native dependency compilation and streaming behavior are unchanged. CI also prints the resulting ELF segment layout for verification.
+
+Successful packaging, actual Xbox negotiation, Vita hardware capture and audible voice remain separate build/device gates. RX37.4 installers do not contain this implementation.
