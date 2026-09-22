@@ -1,6 +1,8 @@
 # RX Test 38: microphone and Xbox collections
 
-Status: published with user approval; host checks and native Vita compilation pass. The first CI attempt failed during VPK conversion; a metadata headroom fix is queued for rebuild. Device testing is still pending.
+Status: **RX Test 38.7 is built and verified.** All CI gates, native Vita compilation, VPK creation and the executable metadata-gap check pass. Device testing is still pending.
+
+Install `GreenVita-RX-Test-38.7.vpk` over the GreenVita RX Test app (`GRNVTEST1`). Keep **Use Wi-Fi in Power Save Mode unchecked** for comparison. [Successful CI run](https://github.com/jordanM333/green-vita/actions/runs/35731767695), source `09bfdbb31ed4f9913c657e0bb417eef4ef67a81f`. VPK SHA-256: `591937d1a5ca623c9101990d470fdd6d1bde5eced2ee0f1d0553162395435d58`.
 
 ## Baseline
 
@@ -66,4 +68,6 @@ The first follow-up used the newer [VitaSDK linker-script hook](https://github.c
 
 CI prints the resulting ELF segment layout and verifies the actual virtual gap, with regression tests reproducing the failed 4,248-byte layout. A host GNU linker smoke test using the augmentation script successfully preserved constructor execution and produced the intended gap. The Vita build remains the authoritative packaging check.
 
-Successful packaging, actual Xbox negotiation, Vita hardware capture and audible voice remain separate build/device gates. RX37.4 installers do not contain this implementation.
+RX38.7 passed all CI gates (124 test executions, including shared tests executed in more than one suite). Native compilation, VPK creation and the actual ELF check passed: 69,784 bytes of metadata headroom. The downloaded artifact digest and VPK digest match CI; ZIP integrity, `GRNVTEST1`, the embedded `38.7` build number and full source SHA were verified. Only `eboot.bin` differs from RX37.4 within the package. See `CANDIDATE-38.7-BUILD.json`.
+
+Actual Xbox negotiation, Vita hardware capture, audible voice, account-backed live collections and Home/Cloud playback regression remain device gates. No fix for the separately reported Cloud delays is claimed. RX37.4 installers do not contain this implementation.

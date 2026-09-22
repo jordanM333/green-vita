@@ -1,0 +1,58 @@
+{
+  "build": "RX Test 38.7",
+  "source_commit": "09bfdbb31ed4f9913c657e0bb417eef4ef67a81f",
+  "source_tree": "885f8c92ddfc9f38f05ae2c38fb608fbee99761d",
+  "matching_local_commit": "e8e3f311c975159d0ffc8aa2e828b0774d35a15a",
+  "workflow_url": "https://github.com/jordanM333/green-vita/actions/runs/35731767695",
+  "workflow_conclusion": "success",
+  "artifact_id": 10696525760,
+  "artifact_expires": "2026-10-22T13:20:02Z",
+  "artifact_zip_sha256": "033fb2a4df02b2ffdfd87ce2408130c281181329afa7a858b02b5323c01dbe0f",
+  "sdk_image": "ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc",
+  "vpk": {
+    "file_name": "GreenVita-RX-Test-38.7.vpk",
+    "bytes": 14631030,
+    "sha256": "591937d1a5ca623c9101990d470fdd6d1bde5eced2ee0f1d0553162395435d58",
+    "zip_integrity": "pass",
+    "embedded_source_commit_verified": true,
+    "embedded_build_number_verified": true,
+    "title_id": "GRNVTEST1",
+    "title": "GreenVita RX Test",
+    "package_entries_changed_since_37_4": ["eboot.bin"]
+  },
+  "ci_test_executions": {
+    "feedback": 6,
+    "receiver_reports": 13,
+    "frame_metadata": 9,
+    "rtc_transport": 16,
+    "frame_signal": 4,
+    "rtp_order": 13,
+    "decoder_pump_and_shared_video_modules": 30,
+    "feature_foundations": 10,
+    "voice_codec": 1,
+    "python_analysis": 16,
+    "elf_headroom": 6,
+    "note": "124 executions; shared production tests execute in multiple suites, so this is not a unique test count."
+  },
+  "packaging": {
+    "native_compilation": "pass",
+    "vpk_conversion": "pass",
+    "metadata_virtual_gap_bytes": 69784,
+    "minimum_metadata_gap_bytes": 65536,
+    "previous_attempts": "RX38.5 and RX38.6 compiled successfully but failed conversion with only 4248 bytes for a 4596-byte metadata table. The SDK symbol hook had no effect; the explicit linker augmentation fixed the layout."
+  },
+  "features": {
+    "microphone": "Native capture, Opus uplink, Off/On controls, meter and bounded mute-safe queue; defaults Off and mutes on focus loss/reconnect.",
+    "recently_played": "Fresh signed-in Xbox cloud MRU, server order; no local-history substitute.",
+    "recently_added": "Xbox cloud Recently Added SIGL, provider order.",
+    "most_popular": "Xbox cloud Most Popular SIGL, provider order.",
+    "favorites": "Disabled pending verified account-sync contract; old local preferences retained only for migration."
+  },
+  "device_acceptance": {
+    "status": "pending",
+    "microphone": "Host two-peer transport and native codec tests pass; real Vita capture, Xbox negotiation/routing and friend audibility remain unverified.",
+    "catalog": "Website client contracts and parser/order tests verified; live account responses and cross-device comparison remain unverified.",
+    "playback": "Retains RX37.4 video/recovery/network ordering/rendering policies. Added audio negotiation and capture still require Home and Cloud regression tests. Cloud latency is not claimed fixed.",
+    "baseline": "User reports better Home gameplay with Wi-Fi power saving unchecked; Cloud comparison pending."
+  }
+}
