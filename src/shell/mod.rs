@@ -72,6 +72,14 @@ pub async fn run(mut app: App) -> Result<()> {
         }
 
         for event in event_pump.poll_iter() {
+            if matches!(&event,
+                Event::AppWillEnterBackground { .. } | Event::AppDidEnterBackground { .. }
+                | Event::Window { win_event: sdl2::event::WindowEvent::FocusLost, .. }
+                | Event::Quit { .. })
+                && let Some(streaming) = app.state.streaming()
+            {
+                streaming.microphone.set_on(false);
+            }
             rear_touch_buttons.handle_event(&event);
             let ime_owned_event = vita_ime_active;
             if ime_owned_event {

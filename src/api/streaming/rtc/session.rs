@@ -35,6 +35,7 @@ pub(crate) struct RtcSessionConfig {
 
 /// Provider-specific hooks invoked by the reusable RTC session.
 pub(crate) trait RtcSessionBackend {
+    fn pump_microphone(&mut self, _peer: &mut RTCPeerConnection, _connected: bool) {}
     fn handle_channel_open(
         &mut self,
         peer: &mut RTCPeerConnection,
@@ -142,6 +143,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         self.transport.receive(&mut self.peer);
         let gathered_candidates = self.handle_peer_events();
         let mut keyframe_requested = self.handle_peer_messages();
+        self.backend.pump_microphone(&mut self.peer, self.connection_state == RTCPeerConnectionState::Connected);
         self.video.drain_decoder(&mut keyframe_requested);
 
         // Feedback identifies a matched output that has completed rendering.

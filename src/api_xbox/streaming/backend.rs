@@ -30,8 +30,8 @@ pub(crate) struct XboxStreamingBackend {
 }
 
 impl XboxStreamingBackend {
-    pub(crate) fn start(stream: Stream) -> Result<Self> {
-        let worker = worker::spawn(stream.clone())?;
+    pub(crate) fn start(stream: Stream, microphone: crate::streaming::microphone::Microphone) -> Result<Self> {
+        let worker = worker::spawn(stream.clone(), microphone)?;
         Ok(Self {
             stream,
             worker,

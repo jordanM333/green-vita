@@ -17,10 +17,10 @@ pub enum Command {
     OpenSearch,
     SetSearch(String),
     SetSection(CatalogSection),
-    ToggleFavorite(String),
+    RefreshCollections,
 }
 
-fn filtered_title_indices(app: &App) -> Vec<usize> {
+pub(crate) fn filtered_title_indices(app: &App) -> Vec<usize> {
     let query = app.title_search_query.trim();
     let ids: Vec<_> = app.service.titles.iter().map(|title| title.id.as_str()).collect();
     app.catalog_collections.indices(&ids, app.catalog_section, &app.settings.catalog)
@@ -134,6 +134,17 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                             }
                         }
                     });
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(app.catalog_collections_job.is_none(), egui::Button::new(i18n.text("catalog-refresh"))).clicked() {
+                        commands.push(Command::RefreshCollections.into());
+                    }
+                    if app.catalog_collections_job.is_some() { ui.spinner(); }
+                });
+                if app.catalog_collections.errors.contains(&app.catalog_section) {
+                    ui.colored_label(theme.text, i18n.text("catalog-load-failed"));
+                } else if app.catalog_collections_job.is_some() && app.catalog_section != CatalogSection::All {
+                    ui.label(i18n.text("catalog-loading-account"));
+                }
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     const SEARCH_HEIGHT: f32 = 32.0;
@@ -169,13 +180,14 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 });
                 ui.add_space(4.0);
 
-                if filtered.is_empty() && !app.service.titles.is_empty() {
+                if filtered.is_empty() && !app.service.titles.is_empty() && app.catalog_collections_job.is_none() && !app.catalog_collections.errors.contains(&app.catalog_section) {
                     ui.centered_and_justified(|ui| {
                         ui.colored_label(theme.text, i18n.text(if !app.title_search_query.is_empty() {
                             "title-search-empty"
                         } else { match app.catalog_section {
                             CatalogSection::Favorites => "catalog-favorites-empty",
                             CatalogSection::RecentlyPlayed => "catalog-recent-empty",
+                            CatalogSection::RecentlyAdded | CatalogSection::MostPopular => "catalog-collection-empty",
                             _ => "title-search-empty",
                         }}));
                     });
@@ -328,13 +340,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 });
 
                 ui.add_space(8.0);
-                let favorite = app.settings.catalog.favorites.contains(&title.id);
-                if ui.add_sized(egui::vec2(220.0, 30.0), egui::Button::new(i18n.text(
-                    if favorite { "catalog-remove-favorite" } else { "catalog-add-favorite" }
-                ))).clicked() {
-                    commands.push(Command::ToggleFavorite(title.id.clone()).into());
-                }
-                ui.label(egui::RichText::new(i18n.text("catalog-local-history")).size(11.0).color(theme.text));
+                ui.label(egui::RichText::new(i18n.text("catalog-account-history")).size(11.0).color(theme.text));
                 ui.add_space(6.0);
 
                 egui::ScrollArea::vertical()
@@ -592,7 +598,7 @@ impl App {
                 let Some(current) = current else {
                     return Ok(());
                 };
-                if matches!(self.catalog_section, CatalogSection::RecentlyPlayed | CatalogSection::RecentlyAdded) {
+                if matches!(self.catalog_section, CatalogSection::RecentlyPlayed | CatalogSection::RecentlyAdded | CatalogSection::MostPopular) {
                     let target_position = if command == InputCommand::MoveRight {
                         (current + 8).min(filtered.len().saturating_sub(1))
                     } else { current.saturating_sub(8) };
@@ -655,13 +661,7 @@ impl App {
                     self.normalize_catalog_selection();
                 }
             }
-            Command::ToggleFavorite(id) => {
-                if self.service.titles.iter().any(|title| title.id == id) {
-                    self.settings.catalog.toggle_favorite(&id);
-                    self.settings.save();
-                    self.normalize_catalog_selection();
-                }
-            }
+            Command::RefreshCollections => self.refresh_account_collections(),
         }
         Ok(())
     }

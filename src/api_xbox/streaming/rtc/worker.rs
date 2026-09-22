@@ -14,13 +14,14 @@ use rtc::peer_connection::sdp::RTCSessionDescription;
 
 struct XboxRtcWorkerProvider {
     stream: Stream,
+    microphone: crate::streaming::microphone::Microphone,
 }
 
 impl RtcWorkerProvider for XboxRtcWorkerProvider {
     type Protocol = XboxRtcProtocol;
 
     fn create_peer(&self) -> Result<(RTCPeerConnection, Self::Protocol)> {
-        peer::create()
+        peer::create(self.microphone.clone())
     }
 
     fn session_config(&self) -> RtcSessionConfig {
@@ -44,6 +45,6 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
     }
 }
 
-pub(crate) fn spawn(stream: Stream) -> Result<RtcWorker> {
-    RtcWorker::spawn(XboxRtcWorkerProvider { stream })
+pub(crate) fn spawn(stream: Stream, microphone: crate::streaming::microphone::Microphone) -> Result<RtcWorker> {
+    RtcWorker::spawn(XboxRtcWorkerProvider { stream, microphone })
 }

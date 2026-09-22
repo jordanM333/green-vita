@@ -1,0 +1,8 @@
+[package]
+name = "green-vita-voice-codec-tests"
+version = "0.0.0"
+edition = "2024"
+publish = false
+[workspace]
+[dependencies]
+anyhow = "1"

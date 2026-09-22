@@ -34,7 +34,9 @@ impl Pair {
     }
 
     fn peer(address: SocketAddr) -> RTCPeerConnection {
-        let mut pc = RTCPeerConnectionBuilder::new().build().unwrap();
+        let mut media = rtc::peer_connection::configuration::media_engine::MediaEngine::default();
+        media.register_default_codecs().unwrap();
+        let mut pc = RTCPeerConnectionBuilder::new().with_media_engine(media).build().unwrap();
         let candidate = CandidateHostConfig { base_config: CandidateConfig {
             network: "udp".into(), address: address.ip().to_string(),
             port: address.port(), component: 1, ..Default::default()
@@ -161,4 +163,62 @@ fn writable_admission_counts_unsent_ingress_without_starving_on_ack_wait() {
         received.iter().any(|m| m[0] == 3)
     });
     assert!(!received.iter().any(|m| m[0] == 2));
+}
+
+#[test]
+fn microphone_reuses_audio_mline_and_mute_blocks_rtp_over_real_dtls() {
+    use crate::{mic_state::{Microphone, VoiceClip}, mic_uplink::MicrophoneUplink};
+    use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
+    let a_addr="127.0.0.1:42100".parse().unwrap();
+    let b_addr="127.0.0.1:42101".parse().unwrap();
+    let mut a=Pair::peer(a_addr); let mut b=Pair::peer(b_addr);
+    a.add_transceiver_from_kind(RtpCodecKind::Video,None).unwrap();
+    a.add_transceiver_from_kind(RtpCodecKind::Audio,None).unwrap();
+    b.add_transceiver_from_kind(RtpCodecKind::Video,None).unwrap();
+    b.add_transceiver_from_kind(RtpCodecKind::Audio,None).unwrap();
+    let mic=Microphone::default();
+    let mut uplink=MicrophoneUplink::new(&mut a,mic.clone()).unwrap();
+    let offer=a.create_offer(None).unwrap();
+    assert_eq!(offer.sdp.matches("m=audio").count(),1);
+    assert_eq!(offer.sdp.matches("m=video").count(),1);
+    assert!(offer.sdp.contains("a=sendrecv"));
+    assert!(offer.sdp.contains("opus/48000/2"));
+    a.set_local_description(offer.clone()).unwrap();
+    b.set_remote_description(offer).unwrap();
+    let answer=b.create_answer(None).unwrap();
+    b.set_local_description(answer.clone()).unwrap();
+    a.set_remote_description(answer).unwrap();
+    let mut pair=Pair{a,b,a_addr,b_addr};
+    pair.wait_for(|p|p.a.data_channel(CHANNEL).unwrap().ready_state()==RTCDataChannelState::Open && p.b.data_channel(CHANNEL).unwrap().ready_state()==RTCDataChannelState::Open);
+    uplink.pump(&mut pair.a,true);
+    assert!(mic.available()); assert!(!mic.is_on());
+    let mut received=Vec::new();
+    let drain=|p:&mut Pair, received:&mut Vec<rtc::rtp::Packet>| {
+        while let Some(message)=p.b.poll_read() {
+            if let RTCMessage::RtpPacket(_,packet)=message { received.push(packet); }
+        }
+    };
+    mic.set_on(true);
+    let make_clip=|ticket,ts|VoiceClip{ticket,captured_at:Instant::now(),timestamp:ts,opus:vec![0xf8,0xff,0xfe]};
+    let stale=mic.begin_capture().unwrap();
+    mic.publish(make_clip(stale,1000),0.5);
+    mic.set_on(false);
+    uplink.pump(&mut pair.a,true);
+    for _ in 0..10 {pair.tick(false);}
+    drain(&mut pair,&mut received); assert!(received.is_empty());
+    mic.set_on(true);
+    mic.publish(make_clip(stale,1960),0.5); // Late callback from before mute.
+    mic.publish(make_clip(mic.begin_capture().unwrap(),2920),0.5);
+    uplink.pump(&mut pair.a,true);
+    pair.wait_for(|p| {drain(p,&mut received); !received.is_empty()});
+    assert_eq!(received.len(),1); assert_eq!(received[0].header.timestamp,2920);
+    assert_eq!(received[0].payload.as_ref(),[0xf8,0xff,0xfe]);
+    mic.publish(make_clip(mic.begin_capture().unwrap(),3880),0.5);
+    uplink.pump(&mut pair.a,true);
+    pair.wait_for(|p| {drain(p,&mut received); received.len()==2});
+    assert_eq!(received[1].header.timestamp.wrapping_sub(received[0].header.timestamp),960);
+    assert_eq!(received[1].header.sequence_number,received[0].header.sequence_number.wrapping_add(1));
+    uplink.pump(&mut pair.a,false);
+    assert!(!mic.is_on()); assert!(!mic.available());
+    uplink.pump(&mut pair.a,true); assert!(!mic.is_on());
 }

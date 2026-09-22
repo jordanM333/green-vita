@@ -22,16 +22,18 @@ pub(super) struct XboxRtcProtocol {
     input_channel_ready: bool,
     server_video_size: Option<(u32, u32)>,
     channel_ids: ChannelIds,
+    microphone: super::microphone::MicrophoneUplink,
 }
 
 impl XboxRtcProtocol {
-    pub(super) fn new(channel_ids: ChannelIds) -> Self {
+    pub(super) fn new(channel_ids: ChannelIds, microphone: super::microphone::MicrophoneUplink) -> Self {
         Self {
             handshake_stage: HandshakeStage::WaitingForChannels,
             input_queue: InputQueue::default(),
             input_channel_ready: false,
             server_video_size: None,
             channel_ids,
+            microphone,
         }
     }
 
@@ -140,6 +142,10 @@ impl XboxRtcProtocol {
 }
 
 impl RtcSessionBackend for XboxRtcProtocol {
+    fn pump_microphone(&mut self, peer: &mut RTCPeerConnection, connected: bool) {
+        self.microphone.pump(peer, connected);
+    }
+
     fn send_rendered_frame(&mut self, peer: &mut RTCPeerConnection, frame: crate::streaming::video::timing::PresentedFrame) -> bool {
         if !self.input_channel_ready { return false; }
         let Some(bytes) = self.input_queue.rendered_frame_packet(frame, std::time::Instant::now()) else {

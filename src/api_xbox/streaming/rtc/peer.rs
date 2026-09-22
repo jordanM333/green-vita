@@ -15,11 +15,11 @@ use rtc::rtp_transceiver::rtp_sender::{
     RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RtpCodecKind,
 };
 
-pub(super) fn create() -> Result<(RTCPeerConnection, XboxRtcProtocol)> {
+pub(super) fn create(microphone: crate::streaming::microphone::Microphone) -> Result<(RTCPeerConnection, XboxRtcProtocol)> {
     let mut media_engine = MediaEngine::default();
     register_vita_codecs(&mut media_engine).context("failed to register Vita codecs")?;
 
-    let (peer_connection, ids) = peer::create(
+    let (mut peer_connection, ids) = peer::create(
         media_engine,
         vec![(102, 90_000), (AUDIO_PAYLOAD_TYPE, 48_000)],
         vec![RTCIceServer {
@@ -43,7 +43,8 @@ pub(super) fn create() -> Result<(RTCPeerConnection, XboxRtcProtocol)> {
         message: ids[3],
     };
 
-    Ok((peer_connection, XboxRtcProtocol::new(channel_ids)))
+    let microphone = super::microphone::MicrophoneUplink::new(&mut peer_connection, microphone)?;
+    Ok((peer_connection, XboxRtcProtocol::new(channel_ids, microphone)))
 }
 
 fn register_vita_codecs(media_engine: &mut MediaEngine) -> Result<()> {

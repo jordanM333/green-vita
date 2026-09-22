@@ -276,6 +276,7 @@ impl App {
                 self.open_settings();
             }
             MenuItem::Logout => {
+                self.clear_account_collections();
                 self.service.logout();
                 self.set_state(AppState::InitializeAuthentication);
             }

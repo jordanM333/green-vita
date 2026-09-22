@@ -105,6 +105,23 @@ impl ApiClient {
         self.get_json(StreamKind::Cloud, "/v2/titles").await
     }
 
+    pub(crate) async fn get_recent_titles(&self, continuation: Option<&str>) -> Result<Value> {
+        let mut path = String::from("/v2/titles/mru?mr=50");
+        if let Some(token) = continuation {
+            let mut url = reqwest::Url::parse("https://unused.invalid/v2/titles/mru?mr=50")?;
+            url.query_pairs_mut().append_pair("ct", token);
+            path = format!("{}?{}", url.path(), url.query().unwrap_or_default());
+        }
+        self.get_json(StreamKind::Cloud, &path).await
+    }
+
+    pub(crate) async fn get_gallery(&self, id: &str, market: &str, language: &str) -> Result<Value> {
+        // Public editorial feed: never attach the account's streaming token.
+        Ok(self.client.get("https://catalog.gamepass.com/sigls/v2")
+            .query(&[("id", id), ("market", market), ("language", language)])
+            .send().await?.error_for_status()?.json().await?)
+    }
+
     pub async fn get_wait_time(
         &self,
         kind: StreamKind,

@@ -19,11 +19,6 @@ impl App {
             return Ok(());
         }
 
-        if let Some(id) = self.state.streaming_mut().and_then(|s| s.take_played_title()) {
-            self.settings.catalog.record_played(&id);
-            self.settings.save();
-        }
-
         let Some(streaming) = self.state.streaming_mut() else {
             return Ok(());
         };
@@ -79,6 +74,9 @@ impl App {
             self.set_state(AppState::ModeSelect { selected: 0 });
             return;
         };
+        if matches!(return_target, StreamReturnTarget::Titles(_)) {
+            self.refresh_account_collections();
+        }
         self.set_state(match return_target {
             StreamReturnTarget::Titles(selected) => AppState::TitleList { selected },
             StreamReturnTarget::Consoles(selected) => AppState::ConsoleList { selected },

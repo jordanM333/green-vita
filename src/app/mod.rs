@@ -37,6 +37,7 @@ pub struct App {
     pub(crate) title_search_requested: bool,
     pub(crate) catalog_section: crate::catalog_preferences::CatalogSection,
     pub(crate) catalog_collections: crate::catalog_preferences::CatalogCollections,
+    pub(crate) catalog_collections_job: Option<tokio::task::JoinHandle<crate::catalog_preferences::CatalogCollections>>,
 }
 
 impl App {
@@ -53,6 +54,7 @@ impl App {
             title_search_requested: false,
             catalog_section: Default::default(),
             catalog_collections: Default::default(),
+            catalog_collections_job: None,
             settings,
         })
     }

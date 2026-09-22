@@ -163,3 +163,26 @@ mod tests {
         assert!(tail_age < 50);
     }
 }
+
+// Compile the production mic uplink against the real RTC dependency.
+mod api { pub mod streaming { pub mod rtc { pub mod peer {
+    pub type RTCPeerConnection = ::rtc::peer_connection::RTCPeerConnection;
+} } } }
+#[path = "../../../src/streaming/microphone.rs"]
+mod mic_state;
+#[path = "../../../src/streaming/microphone_capture.rs"]
+mod mic_capture;
+mod streaming {
+    pub(crate) use super::mic_state as microphone;
+    // Hardware input is injected in the peer test. Production capture still
+    // compiles above; the real codec has a separate native Opus roundtrip test.
+    pub mod microphone_capture {
+        pub struct MicrophoneCapture;
+        impl MicrophoneCapture {
+            pub fn spawn(_: super::microphone::Microphone) -> anyhow::Result<Self> { Ok(Self) }
+        }
+    }
+}
+use mic_state as microphone;
+#[path = "../../../src/api_xbox/streaming/rtc/microphone.rs"]
+mod mic_uplink;

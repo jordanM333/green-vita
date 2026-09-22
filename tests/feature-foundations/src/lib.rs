@@ -8,3 +8,6 @@ mod settings;
 mod fs_utils {
     pub fn write_file_truncating(_: &str, _: String) -> anyhow::Result<()> { panic!("host tests must not write Vita settings") }
 }
+
+#[path = "../../../src/api_xbox/collection_order.rs"]
+mod collection_order;

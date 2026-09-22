@@ -27,7 +27,7 @@ pub const MENU_ITEMS: [Command; 5] = [
 fn menu_items(app: &App) -> Vec<Command> {
     let mut items = MENU_ITEMS.to_vec();
     if app.state.streaming().is_some_and(|s| s.can_refresh()) { items.insert(1, Command::RefreshStream); }
-    if app.state.streaming().is_some_and(|s| s.microphone.available()) { items.insert(1, Command::ToggleMicrophone); }
+    items.insert(1, Command::ToggleMicrophone);
     items
 }
 
@@ -98,7 +98,9 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                         }),
                     )
                 } else if item == Command::ToggleMicrophone {
-                    i18n.text(if app.state.streaming().is_some_and(|s|s.microphone.is_on()) {
+                    i18n.text(if app.state.streaming().is_some_and(|s| !s.microphone.available()) {
+                        "paused-mic-not-ready"
+                    } else if app.state.streaming().is_some_and(|s|s.microphone.is_on()) {
                         "paused-mic-on"
                     } else { "paused-mic-off" })
                 } else {
@@ -116,8 +118,11 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 }
             }
             ui.add_space(8.0);
-            if app.state.streaming().is_some_and(|s| !s.microphone.available()) {
-                ui.label(egui::RichText::new(i18n.text("paused-mic-unavailable")).color(theme.text).size(12.0));
+            if let Some(streaming) = app.state.streaming() {
+                ui.label(egui::RichText::new(streaming.microphone.status()).color(theme.text).size(12.0));
+                if streaming.microphone.is_on() {
+                    ui.add(egui::ProgressBar::new(streaming.microphone.level()).desired_width(220.0).text(i18n.text("mic-input-level")));
+                }
             }
             ui.label(egui::RichText::new(i18n.text(if home {
                 "paused-home-refresh-help"

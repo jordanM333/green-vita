@@ -11,6 +11,7 @@ const AVATAR_KEY: &str = "__avatar__";
 
 impl App {
     pub(super) fn load_credentials(&mut self) {
+        self.clear_account_collections();
         let mut auth = self.service.auth.clone();
         self.set_state(AppState::LoadingCredentials(tokio::spawn(async move {
             let credentials = match auth.fetch_streaming_credentials().await {
@@ -51,6 +52,7 @@ impl App {
     fn enter_entrypoint(&mut self, kind: StreamKind) -> Result<()> {
         match kind {
             StreamKind::Cloud => {
+                self.clear_account_collections();
                 let catalog = self.service.catalog_backend.clone();
                 self.set_state(AppState::LoadingTitles(tokio::spawn(async move {
                     catalog.load_games().await
@@ -195,6 +197,7 @@ impl App {
             PollJob::Pending(job) => self.state = AppState::LoadingTitles(job),
             PollJob::Done(Ok(games)) => {
                 self.service.titles = games;
+                self.refresh_account_collections();
                 self.set_state(AppState::TitleList { selected: 0 });
             }
             PollJob::Done(Err(error)) => {

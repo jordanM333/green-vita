@@ -24,7 +24,7 @@ tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
 unic-langid = "0.9"
 uuid = { version = "1", features = ["v4", "serde"] }
 vita-newlib-shims = "0.3"
-vitasdk-sys = { version = "0.3", features = ["SceGxm_stub", "SceAppUtil_stub", "SceKernelDmacMgr_stub", "SceKernelThreadMgr_stub", "SceLibKernel_stub", "SceVideodec_stub", "SceSysmem_stub", "SceSysmodule_stub"] }
+vitasdk-sys = { version = "0.3", features = ["SceGxm_stub", "SceAudioIn_stub", "SceAppUtil_stub", "SceKernelDmacMgr_stub", "SceKernelThreadMgr_stub", "SceLibKernel_stub", "SceVideodec_stub", "SceSysmem_stub", "SceSysmodule_stub"] }
 
 [patch.crates-io]
 rtc-sctp = { path = "vendor/rtc-sctp" }

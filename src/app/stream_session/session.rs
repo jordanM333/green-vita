@@ -17,7 +17,6 @@ pub(super) enum StreamReturnTarget {
 pub(crate) struct StreamingSession {
     pub(crate) paused: bool,
     pub(crate) microphone: crate::streaming::microphone::Microphone,
-    played_recorded: bool,
     pub(crate) status: String,
     pub(crate) hint_started_at: Instant,
     pub(in crate::app) pause_selected: usize,
@@ -41,15 +40,15 @@ impl StreamingSession {
         return_selected: usize,
         restart_target: super::StreamStartTarget,
     ) -> Result<Self> {
-        let backend = PlaybackBackend::start_xbox(stream)?;
+        let microphone = crate::streaming::microphone::Microphone::default();
+        let backend = PlaybackBackend::start_xbox(stream, microphone.clone())?;
         let return_target = match kind {
             StreamKind::Cloud => StreamReturnTarget::Titles(return_selected),
             StreamKind::Home => StreamReturnTarget::Consoles(return_selected),
         };
         Ok(Self {
             paused: false,
-            microphone: Default::default(),
-            played_recorded: false,
+            microphone,
             status: "Starting streaming backend".to_owned(),
             hint_started_at: Instant::now(),
             pause_selected: 0,
@@ -64,12 +63,6 @@ impl StreamingSession {
             pending_audio_packets: Vec::new(),
             ignore_confirm_until_release: true,
         })
-    }
-
-    pub(super) fn take_played_title(&mut self) -> Option<String> {
-        if self.played_recorded || self.current_video_frame.is_none() { return None; }
-        self.played_recorded = true;
-        self.title_id.clone()
     }
 
     pub(crate) fn can_refresh(&self) -> bool { matches!(self.restart_target.kind, StreamKind::Home) }

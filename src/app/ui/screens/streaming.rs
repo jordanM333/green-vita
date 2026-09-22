@@ -86,6 +86,16 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
             });
     }
 
+    if streaming.microphone.is_on() {
+        egui::Area::new(egui::Id::new("microphone_indicator"))
+            .anchor(egui::Align2::LEFT_TOP, egui::vec2(12.0, 8.0))
+            .interactable(false)
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new(i18n.text("mic-live"))
+                    .color(egui::Color32::WHITE).background_color(egui::Color32::from_black_alpha(192)).size(12.0));
+            });
+    }
+
     if let Some(progress) = hold_progress {
         egui::Area::new(egui::Id::new("pause_hold_indicator"))
             .order(egui::Order::Foreground)
