@@ -49,14 +49,51 @@ records successful feedback sends. That is neither acknowledgement that Xbox
 applied the request nor evidence that500kbps can traverse the impaired path.
 Further reducing bitrate or increasing the32-AU cap is not an established fix.
 
+## Follow-up: extender and pause correlation
+
+Jordan reports that the Xbox is connected by Ethernet to a Wi-Fi extender,
+with throughput sometimes reaching approximately 500 Mbps. The extender's uplink
+and the Vita's access point are not yet confirmed. Do not describe this as an
+entirely wired path, or assume that the extender necessarily has a wireless
+uplink. Peak throughput does not locate the observed delivery interruptions.
+
+Jordan also reports that this stretch of issues occurred after putting down
+the device while paused, then picking it back up. The exact pause mechanism,
+duration, and elapsed time in the recording are not known. This is a useful
+correlation, not proof that all 11 stalls had the same cause.
+
+Source review at da620246f9e6a58b765e4867ced9ff7273e897b5:
+
+- `StreamingSession::set_paused` changes the overlay flag and hint timestamp.
+  It does not pause or queue RTC media.
+- The shell still calls `app.tick`, drains audio, and calls
+  `VitaSurface::sync_video_frame` while that overlay is open. Video presentation
+  continues at the menu cadence; the RTC worker is a separate thread and has no
+  pause command.
+- There is no explicit application background/foreground or suspend/resume
+  handling in the shell. An in-game pause, GreenVita's overlay, and actual Vita
+  sleep must therefore be distinguished before selecting a resume change.
+- Upstream SDL2 defaults to disabling the screensaver, and its Vita event pump
+  ticks the idle timers when that flag is set. GreenVita regularly pumps SDL
+  events, including while paused. This source check does not establish the
+  exact linked SDL version or actual device power state, and does not justify
+  presenting another idle-timer call as a demonstrated fix.
+
+SDL references reviewed:
+[video initialization](https://github.com/libsdl-org/SDL/blob/SDL2/src/video/SDL_video.c)
+and [Vita event pump](https://github.com/libsdl-org/SDL/blob/SDL2/src/video/vita/SDL_vitavideo.c).
+
 ## Next decision
 
 The logs narrow the fault to media delivery upstream of AU admission, which
 still includes Vita networking/driver behavior, Wi-Fi/router conditions, Xbox
 sending, and a potentially remote route. They do not isolate one of these.
-Clarify whether Xbox was Ethernet-connected or on Wi-Fi and whether Vita was on
-the same home network. Then use one controlled comparison on that topology
-with the reported-good RX35.2 Home baseline. Do not mix Home and Cloud results.
+First establish whether the screen remained on in the game/GreenVita pause
+menu or the Vita actually slept or left the app. The existing logs have no
+pause/lifecycle markers, so they cannot establish that transition retroactively.
+Then select one controlled comparison with the reported-good RX35.2 Home
+baseline using the same pause behavior and network path. Do not mix Home and
+Cloud results.
 
 No new runtime adjustment or VPK is issued from this evidence alone. Keep the
 RX37 implementation and failed device evidence distinct from a proven remedy.
