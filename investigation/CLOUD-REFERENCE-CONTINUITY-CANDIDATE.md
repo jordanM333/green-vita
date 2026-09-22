@@ -74,8 +74,15 @@ functions. The fake is a controlled FIFO, not a Vita emulator.
   loss and actual H.264/firmware decoding are outside that model.
 
 Local decoder/shared suite: 30 passing tests. Offline analysis: 16 passing tests.
-The local broader RTP build encountered a host Rust proc-macro linker failure;
-the independent GitHub test/build gates must pass before distributing a VPK.
+The local broader RTP build encountered a host Rust proc-macro linker failure.
+The independent GitHub test job passed all gates, including 13 RTP-order and
+30 decoder/shared tests, 109 test executions overall (shared tests run in more
+than one suite). Workflow: https://github.com/jordanM333/green-vita/actions/runs/35678997960.
+Vita release packaging passed as RX Test 37.4. The downloaded artifact and VPK
+checksums match CI, ZIP integrity passes, and the executable embeds runtime
+commit `70ccd93aee1c99bb8550344c264b0b6413ece1d9` and build `37.4`.
+Only `eboot.bin` differs in package contents from RX35.2; title ID remains
+`GRNVTEST1`. Exact provenance is in `CANDIDATE-37.4-BUILD.json`.
 
 ## Device acceptance still required
 

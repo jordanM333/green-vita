@@ -31,9 +31,9 @@
     "note": "Shared production tests execute in multiple suites; counts are executions, not unique tests."
   },
   "device_acceptance": {
-    "status": "pending",
+    "status": "failed_cloud",
     "home_baseline": "RX Test 35.2, user-reported improvement",
-    "cloud_result": "Controlled regression passes; device outcome not yet measured."
+    "cloud_result": "User reported Cloud was an absolute laggy mess. Supplied trace shows ten QueueFull recoveries, a 52ms age drop followed by a 1.946s fresh-picture gap, and separate missing-sequence/FU damage. Not accepted for Cloud."
   },
   "features": {
     "favorites": "local and persisted",

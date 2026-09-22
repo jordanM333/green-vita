@@ -1,0 +1,53 @@
+{
+  "build": "RX Test 37.4",
+  "source_commit": "70ccd93aee1c99bb8550344c264b0b6413ece1d9",
+  "workflow_url": "https://github.com/jordanM333/green-vita/actions/runs/35678997960",
+  "workflow_conclusion": "success",
+  "artifact_id": 10674395378,
+  "artifact_expires": "2026-10-22T02:25:23Z",
+  "artifact_zip_sha256": "1ed17a5a444064620f534045d43a2029997c0375ed8cb444a887dc698daa3ad2",
+  "sdk_image": "ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc",
+  "vpk": {
+    "file_name": "GreenVita-RX-Test-37.4.vpk",
+    "bytes": 14415267,
+    "sha256": "2b25693705ffdb7aaa5287e36fe427c941004ba64fbb3eb365f08a96e8f73168",
+    "zip_integrity": "pass",
+    "embedded_source_commit_verified": true,
+    "embedded_build_number_verified": true,
+    "title_id": "GRNVTEST1",
+    "title": "GreenVita RX Test",
+    "package_entries_changed_since_35_2": [
+      "eboot.bin"
+    ]
+  },
+  "ci_test_executions": {
+    "feedback": 6,
+    "receiver_reports": 13,
+    "frame_metadata": 9,
+    "rtc_transport": 11,
+    "frame_signal": 4,
+    "rtp_order": 13,
+    "decoder_pump_and_shared_video_modules": 30,
+    "feature_foundations": 7,
+    "python_analysis": 16,
+    "note": "109 executions. Shared production tests execute in multiple suites; this is not a unique test count."
+  },
+  "counterfactual_regressions": {
+    "rx36_eight_frame_burst": "fails admission with six-AU queue",
+    "rx36_capacity_only_32": "fails input-priority assertion; first speculative poll after two inputs",
+    "rx36_intact_60ms_queued_reference": "fails: second reference never submitted",
+    "candidate": "all three corrected behavior checks pass"
+  },
+  "device_acceptance": {
+    "status": "pending",
+    "home_baseline": "RX Test 35.2, user-reported improvement",
+    "cloud_result": "Not yet tested on device. Host regressions and successful VPK packaging do not establish playability.",
+    "remaining_risk": "Real missing-sequence/FU damage still requires IDR recovery. Scheduling cannot reconstruct lost packets; sustained overload can still reach bounded resource guards."
+  },
+  "features": {
+    "favorites": "local and persisted, unchanged",
+    "recently_played": "local and persisted after first decoded video, unchanged",
+    "recently_added": "provider-order foundation; unavailable until feed is connected",
+    "microphone": "muted capability gate foundation; capture and upstream audio not yet connected"
+  }
+}
