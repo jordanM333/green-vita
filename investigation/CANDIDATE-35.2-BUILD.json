@@ -1,5 +1,5 @@
 {
-  "status": "candidate fix—on-device verification pending",
+  "status": "Home improvement reported; Cloud recovery hangs remain",
   "build": "RX Test 35.2",
   "source_commit": "1b88867bd76db0690fdd1448e41e1e3ac734297b",
   "runtime_baseline": "d7397bf4ccbcce08b7df9069b083be1f15306471",
@@ -42,8 +42,8 @@
     "note": "Some shared production tests run in more than one suite; these are executions, not unique test counts."
   },
   "device_acceptance": {
-    "status": "not_run",
-    "required": "Focused check in both modes, then two uninterrupted 30-minute runs per mode with absolute response, <=100ms added drift including uncertainty, no recovery/reset cure, and separate idle/interruption/regression checks."
+    "status": "partial_user_observation_not_full_acceptance",
+    "required": "Focused check in both modes, then two uninterrupted 30-minute runs per mode with absolute response, <=100ms added drift including uncertainty, no recovery/reset cure, and separate idle/interruption/regression checks.",
+    "observation": "User reports Home nearly flawless and stable after walking away; explicitly clarifies Cloud still hangs. No formal 2x30-minute acceptance measurements supplied."
   }
 }
-

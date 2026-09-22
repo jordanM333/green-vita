@@ -42,6 +42,9 @@ jobs:
       - name: Verify independent AVC output servicing against the real worker
         working-directory: tests/decoder-pump
         run: cargo test --locked --target x86_64-unknown-linux-gnu -- --test-threads=1 --nocapture
+      - name: Verify catalog persistence and microphone mute gate
+        working-directory: tests/feature-foundations
+        run: cargo test --locked --target x86_64-unknown-linux-gnu
       - name: Verify offline clock and returned-PTS analysis
         run: python3 -m unittest discover -s tests/latency-analysis -v
 
@@ -58,7 +61,7 @@ jobs:
       - name: Build candidate VPK
         env:
           RUSTFLAGS: "-C target-feature=-neon"
-          GREENVITA_BUILD_NUMBER: "35.${{ github.run_number }}"
+          GREENVITA_BUILD_NUMBER: "36.${{ github.run_number }}"
           GREENVITA_BUILD_SHA: ${{ github.sha }}
         run: cargo vita build vpk --release
       - name: Record binary identity

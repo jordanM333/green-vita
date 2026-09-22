@@ -39,8 +39,10 @@ struct Fake {
     next:u32, memory:HashMap<i32,Box<[u8]>>, decoders:HashMap<u32,VecDeque<u64>>,
     inputs:Vec<u64>, outputs:Vec<u64>, polls:usize, deletes:usize, created:usize,
     // A no-output call retains the input. This is the observed trace behavior.
-    suppress_inputs:usize, reject_poll:bool, hold_polls:bool,
+    suppress_inputs:usize, reject_poll:bool, hold_polls:bool, calls:Vec<bool>,
 }
+// Gate a real worker hardware call without holding the fake's state mutex.
+static CALL_GATE: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>> = Mutex::new(None);
 static FAKE: LazyLock<Mutex<Fake>> = LazyLock::new(|| Mutex::new(Fake::default()));
 pub unsafe fn sceSysmoduleIsLoaded(_:u32)->i32 {0}
 pub unsafe fn sceSysmoduleLoadModule(_:u32)->i32 {0}
@@ -58,9 +60,14 @@ pub unsafe fn sceAvcdecDeleteDecoder(c:*mut SceAvcdecCtrl)->i32 {
     let mut f=FAKE.lock().unwrap();f.deletes+=1;f.decoders.remove(&(*c).handle);0
 }
 pub unsafe fn sceAvcdecDecode(c:*const SceAvcdecCtrl,au:*const SceAvcdecAu,ap:*mut SceAvcdecArrayPicture)->i32 {
+    let gate = CALL_GATE.lock().unwrap().take();
+    if let Some((entered, release)) = gate {
+        entered.send(()).unwrap();
+        release.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+    }
     let mut f=FAKE.lock().unwrap();let au=&*au;let ap=&mut *ap;
     assert_eq!(ap.numOfElm,1);ap.numOfOutput=0;
-    let is_poll=au.es.size==0;
+    let is_poll=au.es.size==0; f.calls.push(is_poll);
     if is_poll {
         assert!(au.es.pBuf.is_null());assert_eq!((au.pts.upper,au.pts.lower),(u32::MAX,u32::MAX));
         f.polls+=1;

@@ -103,6 +103,7 @@ pub struct Settings {
     pub show_stream_debug_info: bool,
     /// Globally swaps only the rear L2/L3 and R2/R3 zones; front touch is unchanged.
     pub swap_rear_touch_trigger_stick: bool,
+    pub catalog: crate::catalog_preferences::CatalogPreferences,
     pub game_profiles: HashMap<String, GameProfile>,
 }
 
@@ -134,6 +135,7 @@ impl Default for Settings {
             show_stream_debug_info: false,
             swap_rear_touch_trigger_stick: false,
             game_profiles: HashMap::new(),
+            catalog: Default::default(),
         }
     }
 }
@@ -205,6 +207,8 @@ mod tests {
     fn older_settings_keep_profiles_and_default_to_original_rear_layout() {
         let saved = r#"{"show_stream_debug_info":true,"game_profiles":{"game-id":{"rear_touch_enabled":false}}}"#;
         let settings: Settings = serde_json::from_str(saved).unwrap();
+        assert!(settings.catalog.favorites.is_empty());
+        assert!(settings.catalog.recently_played.is_empty());
         assert!(!settings.swap_rear_touch_trigger_stick);
         assert!(settings.show_stream_debug_info);
         assert!(!settings.game_profile("game-id").unwrap().rear_touch_enabled);

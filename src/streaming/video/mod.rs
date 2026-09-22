@@ -23,7 +23,7 @@ pub use worker::VideoDecodeWorker;
 pub(crate) use worker::SubmitResult;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Condvar, Mutex};
 use std::time::Instant;
 
 #[derive(Clone, Copy)]
@@ -38,12 +38,14 @@ struct DirectVideoOutputState {
     displayed: Option<usize>,
     pending: Option<(usize, u64, Instant, Option<timing::FrameTiming>)>,
     next_generation: u64,
+    decoding: Option<usize>,
 }
 
 /// Synchronizes CDRAM decoder outputs with the SDL/GXM textures owned by the render thread.
 /// Pointers are stored as integers so decoding never retains a temporary SDL texture lock.
 pub(crate) struct DirectVideoOutput {
     state: Mutex<DirectVideoOutputState>,
+    decode_idle: Condvar,
     pub(crate) presentation: Mutex<timing::PresentationState>,
     frame_signal: frame_signal::FrameSignal,
     pub(crate) decoder_ready: AtomicBool,
@@ -59,7 +61,9 @@ impl DirectVideoOutput {
                 displayed: None,
                 pending: None,
                 next_generation: 0,
+                decoding: None,
             }),
+            decode_idle: Condvar::new(),
             presentation: Mutex::new(timing::PresentationState::default()),
             frame_signal: frame_signal::FrameSignal::default(),
             decoder_ready: AtomicBool::new(false),
@@ -69,17 +73,24 @@ impl DirectVideoOutput {
     }
 
     pub(crate) fn set_targets(&self, targets: Vec<VideoTextureTarget>) {
-        if let Ok(mut state) = self.state.lock() {
-            state.targets = Some(targets);
-            state.displayed = None;
-            state.pending = None;
-            self.frame_signal.set_pending(false);
-        }
+        self.replace_targets(Some(targets));
     }
 
     pub(crate) fn clear_targets(&self) {
+        self.replace_targets(None);
+    }
+
+    fn replace_targets(&self, targets: Option<Vec<VideoTextureTarget>>) {
         if let Ok(mut state) = self.state.lock() {
+            // Close admission before waiting: no new lease can race destruction
+            // of the CDRAM owned by StreamingSurface::drop.
             state.targets = None;
+            state.pending = None;
+            self.frame_signal.set_pending(false);
+            while state.decoding.is_some() {
+                state = self.decode_idle.wait(state).unwrap();
+            }
+            state.targets = targets;
             state.displayed = None;
             state.pending = None;
             self.frame_signal.set_pending(false);
@@ -95,7 +106,8 @@ impl DirectVideoOutput {
         self.frame_signal.wait().await;
     }
 
-    /// The UI takes the newest completed buffer under the same lock used by the decoder.
+    /// The UI takes the newest completed buffer under a short ownership lock.
+    /// Hardware calls retain an exclusive surface lease, never this mutex.
     /// Passing decoded-frame handles through the RTC and app mailboxes can make them stale
     /// before the UI reads them, causing it to skip a render even when a newer frame is ready.
     pub(crate) fn take_latest_for_display(&self) -> Option<(usize, VideoTextureTarget, u64, Instant, Option<timing::FrameTiming>)> {
@@ -116,7 +128,8 @@ impl DirectVideoOutput {
     }
 
     pub(super) fn lock_decode_target(&self) -> Option<DirectVideoTargetGuard<'_>> {
-        let state = self.state.lock().ok()?;
+        let mut state = self.state.lock().ok()?;
+        if state.decoding.is_some() { return None; }
         let targets = state.targets.as_ref()?;
         let pending_index = state.pending.map(|(index, ..)| index);
         // Decoder reference state must advance even when the UI cannot show every frame.
@@ -126,9 +139,17 @@ impl DirectVideoOutput {
             .find(|index| Some(*index) != state.displayed && Some(*index) != pending_index)
             .or(pending_index.filter(|index| Some(*index) != state.displayed))?;
         let target = *targets.get(index)?;
+        if pending_index == Some(index) {
+            // With two surfaces, withdraw the pending picture before writing
+            // over it, including calls that eventually return no picture.
+            state.pending = None;
+            self.frame_signal.set_pending(false);
+            metrics::METRICS.texture_superseded.fetch_add(1, Ordering::Relaxed);
+        }
+        state.decoding = Some(index);
+        drop(state);
         Some(DirectVideoTargetGuard {
-            state,
-            frame_signal: &self.frame_signal,
+            output: self,
             target,
             index,
         })
@@ -136,26 +157,35 @@ impl DirectVideoOutput {
 }
 
 pub(super) struct DirectVideoTargetGuard<'a> {
-    state: MutexGuard<'a, DirectVideoOutputState>,
-    frame_signal: &'a frame_signal::FrameSignal,
+    output: &'a DirectVideoOutput,
     target: VideoTextureTarget,
     index: usize,
 }
 
 impl DirectVideoTargetGuard<'_> {
-    pub(super) fn publish(mut self, timing: Option<timing::FrameTiming>) -> (usize, u64) {
-        if self.state.pending.is_some() {
+    pub(super) fn publish(self, timing: Option<timing::FrameTiming>) -> (usize, u64) {
+        let mut state = self.output.state.lock().unwrap();
+        if state.pending.is_some() {
             metrics::METRICS.texture_superseded.fetch_add(1, Ordering::Relaxed);
         }
-        self.state.next_generation = self.state.next_generation.wrapping_add(1);
-        let generation = self.state.next_generation;
-        self.state.pending = Some((self.index, generation, Instant::now(), timing));
-        self.frame_signal.set_pending(true);
+        state.next_generation = state.next_generation.wrapping_add(1);
+        let generation = state.next_generation;
+        if state.targets.is_some() {
+            state.pending = Some((self.index, generation, Instant::now(), timing));
+            self.output.frame_signal.set_pending(true);
+        }
         let result = (self.index, generation);
-        // Wake only after the decoder has released the buffer ownership lock.
-        drop(self.state);
-        self.frame_signal.wake();
+        drop(state);
+        self.output.frame_signal.wake();
         result
+    }
+}
+
+impl Drop for DirectVideoTargetGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self.output.state.lock().unwrap();
+        state.decoding = None;
+        self.output.decode_idle.notify_all();
     }
 }
 

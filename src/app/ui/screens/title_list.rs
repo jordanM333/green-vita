@@ -4,6 +4,7 @@ use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::{draw_title_image, draw_title_image_cover, show_selectable_list};
 use crate::app::{AppState, StreamStartTarget, TitleImage, TitleInitialOverlay};
 use crate::i18n::I18n;
+use crate::catalog_preferences::CatalogSection;
 use crate::{App, AppCommand, InputCommand, StreamKind};
 use anyhow::Result;
 use std::sync::Arc;
@@ -15,19 +16,20 @@ const INITIAL_OVERLAY_DURATION: Duration = Duration::from_millis(800);
 pub enum Command {
     OpenSearch,
     SetSearch(String),
+    SetSection(CatalogSection),
+    ToggleFavorite(String),
 }
 
 fn filtered_title_indices(app: &App) -> Vec<usize> {
     let query = app.title_search_query.trim();
-    app.service
-        .titles
-        .iter()
-        .enumerate()
-        .filter_map(|(index, title)| {
-            (query.is_empty()
+    let ids: Vec<_> = app.service.titles.iter().map(|title| title.id.as_str()).collect();
+    app.catalog_collections.indices(&ids, app.catalog_section, &app.settings.catalog)
+        .into_iter()
+        .filter(|index| {
+            let title = &app.service.titles[*index];
+            query.is_empty()
                 || contains_case_insensitive(title.display_name(), query)
-                || contains_case_insensitive(&title.id, query))
-            .then_some(index)
+                || contains_case_insensitive(&title.id, query)
         })
         .collect()
 }
@@ -117,6 +119,22 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
             .exact_width(list_width)
             .frame(list_frame)
             .show_inside(ui, |ui| {
+                egui::ComboBox::from_id_salt("catalog_section")
+                    .width(ui.available_width())
+                    .selected_text(i18n.text(app.catalog_section.label_key()))
+                    .show_ui(ui, |ui| {
+                        for section in CatalogSection::ALL {
+                            let available = app.catalog_collections.supports(section);
+                            let label = if available { i18n.text(section.label_key()) } else {
+                                format!("{} · {}", i18n.text(section.label_key()), i18n.text("catalog-coming-soon"))
+                            };
+                            if ui.add_enabled(available, egui::Button::new(label)
+                                .selected(app.catalog_section == section)).clicked() {
+                                commands.push(Command::SetSection(section).into());
+                            }
+                        }
+                    });
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     const SEARCH_HEIGHT: f32 = 32.0;
                     const CLEAR_WIDTH: f32 = 32.0;
@@ -153,7 +171,13 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 if filtered.is_empty() && !app.service.titles.is_empty() {
                     ui.centered_and_justified(|ui| {
-                        ui.colored_label(theme.text, i18n.text("title-search-empty"));
+                        ui.colored_label(theme.text, i18n.text(if !app.title_search_query.is_empty() {
+                            "title-search-empty"
+                        } else { match app.catalog_section {
+                            CatalogSection::Favorites => "catalog-favorites-empty",
+                            CatalogSection::RecentlyPlayed => "catalog-recent-empty",
+                            _ => "title-search-empty",
+                        }}));
                     });
                 } else {
                     let rows = title_rows(app, &filtered, &i18n);
@@ -303,7 +327,15 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     );
                 });
 
-                ui.add_space(10.0);
+                ui.add_space(8.0);
+                let favorite = app.settings.catalog.favorites.contains(&title.id);
+                if ui.add_sized(egui::vec2(220.0, 30.0), egui::Button::new(i18n.text(
+                    if favorite { "catalog-remove-favorite" } else { "catalog-add-favorite" }
+                ))).clicked() {
+                    commands.push(Command::ToggleFavorite(title.id.clone()).into());
+                }
+                ui.label(egui::RichText::new(i18n.text("catalog-local-history")).size(11.0).color(theme.text));
+                ui.add_space(6.0);
 
                 egui::ScrollArea::vertical()
                     .id_salt("title_details_description")
@@ -560,6 +592,15 @@ impl App {
                 let Some(current) = current else {
                     return Ok(());
                 };
+                if matches!(self.catalog_section, CatalogSection::RecentlyPlayed | CatalogSection::RecentlyAdded) {
+                    let target_position = if command == InputCommand::MoveRight {
+                        (current + 8).min(filtered.len().saturating_sub(1))
+                    } else { current.saturating_sub(8) };
+                    if let AppState::TitleList { selected } = &mut self.state {
+                        *selected = filtered[target_position];
+                    }
+                    return Ok(());
+                }
                 let groups = initial_groups(self, &filtered);
                 if let Some((target_position, label)) =
                     adjacent_initial_group(&groups, current, command == InputCommand::MoveRight)
@@ -607,12 +648,31 @@ impl App {
         match command {
             Command::OpenSearch => self.title_search_requested = true,
             Command::SetSearch(query) => self.set_title_search_query(query),
+            Command::SetSection(section) => {
+                if self.catalog_collections.supports(section) {
+                    self.catalog_section = section;
+                    self.title_initial_overlay = None;
+                    self.normalize_catalog_selection();
+                }
+            }
+            Command::ToggleFavorite(id) => {
+                if self.service.titles.iter().any(|title| title.id == id) {
+                    self.settings.catalog.toggle_favorite(&id);
+                    self.settings.save();
+                    self.normalize_catalog_selection();
+                }
+            }
         }
         Ok(())
     }
 
     pub(crate) fn set_title_search_query(&mut self, query: String) {
         self.title_search_query = query;
+        self.normalize_catalog_selection();
+    }
+
+    pub(crate) fn normalize_catalog_selection(&mut self) {
+        if !matches!(self.state, AppState::TitleList { .. }) { return; }
         let filtered = filtered_title_indices(self);
         if let Some(first) = filtered.first()
             && let AppState::TitleList { selected } = &mut self.state

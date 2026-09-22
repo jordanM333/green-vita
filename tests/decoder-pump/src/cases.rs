@@ -116,3 +116,118 @@ fn repeated_deferred_outputs_do_not_accumulate_and_displayed_pixels_stay_owned()
     assert_eq!(f.polls,40); // exactly the 40 deferred outputs, no ordinary-case probes
     drop(f);worker.shutdown();
 }
+
+fn gate_next_call() -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    *crate::CALL_GATE.lock().unwrap() = Some((entered_tx, release_rx));
+    (entered_rx, release_tx)
+}
+
+#[test]
+fn renderer_can_take_completed_pixels_during_a_blocked_hardware_call() {
+    reset(); let (output, _pixels) = surfaces();
+    let mut worker = VideoDecodeWorker::spawn(config(), output.clone()).unwrap();
+    worker.submit_access_unit(vec![1], Instant::now(), 100);
+    wait_for(||output.has_pending_frame());
+    let (entered, release) = gate_next_call();
+    worker.submit_access_unit(vec![1], Instant::now(), 200);
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let renderer_output = output.clone();
+    let renderer = std::thread::spawn(move || tx.send(renderer_output.take_latest_for_display()).unwrap());
+    let picture = rx.recv_timeout(Duration::from_millis(100));
+    release.send(()).unwrap(); // release even when asserting the legacy failure
+    renderer.join().unwrap();
+    let (_, target, _, _, timing) = picture.expect("render blocked behind hardware").unwrap();
+    assert_eq!(timing.unwrap().rtp_timestamp, 100);
+    wait_for(||FAKE.lock().unwrap().outputs.len()==2);
+    assert_eq!(unsafe{std::ptr::read_unaligned(target.ptr as *const u64)},100);
+    worker.shutdown();
+}
+
+#[test]
+fn teardown_waits_for_lease_and_closes_admission_before_freeing_pixels() {
+    let (output, _pixels) = surfaces();
+    let lease = output.lock_decode_target().unwrap();
+    let copy = output.clone(); let (tx, rx) = std::sync::mpsc::channel();
+    let teardown = std::thread::spawn(move || { copy.clear_targets(); tx.send(()).unwrap(); });
+    wait_for(||output.state.lock().unwrap().targets.is_none());
+    assert!(rx.try_recv().is_err());
+    assert!(output.lock_decode_target().is_none());
+    lease.publish(None);
+    rx.recv_timeout(Duration::from_secs(2)).unwrap(); teardown.join().unwrap();
+    assert!(!output.has_pending_frame());
+    assert!(output.take_latest_for_display().is_none());
+}
+
+#[test]
+fn two_surface_reuse_withdraws_pending_pixels_even_if_decode_returns_none() {
+    let output = DirectVideoOutput::new(960,544);
+    output.set_targets(vec![VideoTextureTarget{ptr:0,pitch:1920,capacity:960*544*2};2]);
+    output.lock_decode_target().unwrap().publish(None);
+    output.take_latest_for_display().unwrap();
+    output.lock_decode_target().unwrap().publish(None);
+    let lease = output.lock_decode_target().unwrap();
+    assert!(output.take_latest_for_display().is_none());
+    assert!(!output.has_pending_frame());
+    drop(lease);
+    assert!(output.take_latest_for_display().is_none());
+}
+
+#[test]
+fn recovery_keyframe_followed_by_four_frame_burst_does_not_force_second_recovery() {
+    reset(); let (output, _pixels) = surfaces();
+    FAKE.lock().unwrap().suppress_inputs = 5;
+    let (entered, release) = gate_next_call();
+    let mut worker = VideoDecodeWorker::spawn(config(), output.clone()).unwrap();
+    worker.begin_resync();
+    worker.submit_access_unit(vec![1], Instant::now(), 4184301226);
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    // Exact burst shape from Cloud: four complete AUs while hardware is busy.
+    let burst = [4184304286,4184305816,4184307346,4184308786];
+    let accepted: Vec<_> = burst.iter().map(|rtp| matches!(
+        worker.submit_access_unit(vec![1],Instant::now(),*rtp), SubmitResult::Submitted)).collect();
+    release.send(()).unwrap();
+    assert!(accepted.iter().all(|accepted|*accepted),"legacy capacity three rejects fourth AU");
+    wait_for(||FAKE.lock().unwrap().outputs.len()==5);
+    assert!(!worker.take_recovery_request());
+    let f=FAKE.lock().unwrap();
+    assert_eq!(f.inputs,f.outputs);assert_eq!(f.created,1);assert_eq!(f.deletes,0);
+    let mut inputs=0;
+    for poll in &f.calls { if *poll { inputs=0; } else { inputs+=1; assert!(inputs<=2); } }
+    drop(f); worker.shutdown();
+}
+
+#[test]
+fn queue_byte_budget_releases_on_dequeue_rejection_and_shutdown() {
+    use policy::{QueueReservation, AU_QUEUE_BYTES};
+    use std::sync::atomic::AtomicUsize;
+    let bytes = Arc::new(AtomicUsize::new(0));
+    let one=QueueReservation::acquire(&bytes,AU_QUEUE_BYTES).unwrap();
+    assert!(QueueReservation::acquire(&bytes,1).is_none());
+    drop(one); assert_eq!(bytes.load(Ordering::Acquire),0);
+    reset();let (output,_pixels)=surfaces();let (entered,release)=gate_next_call();
+    let mut worker=VideoDecodeWorker::spawn(config(),output).unwrap();
+    worker.submit_access_unit(vec![1],Instant::now(),1);
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(matches!(worker.submit_access_unit(vec![1;AU_QUEUE_BYTES],Instant::now(),2),SubmitResult::Submitted));
+    assert!(matches!(worker.submit_access_unit(vec![1],Instant::now(),3),SubmitResult::QueueFull));
+    release.send(()).unwrap();
+    worker.shutdown();
+}
+
+#[test]
+fn admitted_burst_still_expires_after_fifty_ms_without_decoder_reset() {
+    reset();let(output,_pixels)=surfaces();let(entered,release)=gate_next_call();
+    let mut worker=VideoDecodeWorker::spawn(config(),output.clone()).unwrap();
+    worker.submit_access_unit(vec![1],Instant::now(),1);
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    worker.submit_access_unit(vec![1],Instant::now(),2);
+    std::thread::sleep(Duration::from_millis(60));
+    release.send(()).unwrap();
+    wait_for(||worker.take_recovery_request());
+    assert_eq!(FAKE.lock().unwrap().inputs,vec![1]);
+    assert_eq!(FAKE.lock().unwrap().deletes,0);
+    worker.shutdown();
+}

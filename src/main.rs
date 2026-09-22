@@ -9,6 +9,7 @@ mod input;
 mod jobs;
 mod safe_memory;
 mod settings;
+mod catalog_preferences;
 mod shell;
 mod streaming;
 

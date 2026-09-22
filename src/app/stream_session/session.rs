@@ -16,6 +16,8 @@ pub(super) enum StreamReturnTarget {
 
 pub(crate) struct StreamingSession {
     pub(crate) paused: bool,
+    pub(crate) microphone: crate::streaming::microphone::Microphone,
+    played_recorded: bool,
     pub(crate) status: String,
     pub(crate) hint_started_at: Instant,
     pub(in crate::app) pause_selected: usize,
@@ -46,6 +48,8 @@ impl StreamingSession {
         };
         Ok(Self {
             paused: false,
+            microphone: Default::default(),
+            played_recorded: false,
             status: "Starting streaming backend".to_owned(),
             hint_started_at: Instant::now(),
             pause_selected: 0,
@@ -60,6 +64,12 @@ impl StreamingSession {
             pending_audio_packets: Vec::new(),
             ignore_confirm_until_release: true,
         })
+    }
+
+    pub(super) fn take_played_title(&mut self) -> Option<String> {
+        if self.played_recorded || self.current_video_frame.is_none() { return None; }
+        self.played_recorded = true;
+        self.title_id.clone()
     }
 
     pub(crate) fn can_refresh(&self) -> bool { matches!(self.restart_target.kind, StreamKind::Home) }
@@ -177,6 +187,7 @@ impl StreamingSession {
     }
 
     pub(super) async fn stop(self) -> Result<()> {
+        self.microphone.set_ready(false);
         self.backend.stop().await
     }
 }

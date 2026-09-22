@@ -3,8 +3,26 @@
 //! about network or Xbox capture latency.
 use std::time::{Duration, Instant};
 
-pub(crate) const AU_QUEUE_CAPACITY: usize = 3;
+// Cloud can deliver four complete AUs in 241us after an IDR. Admit that
+// burst plus two slots of headroom without increasing the residence deadline.
+pub(crate) const AU_QUEUE_CAPACITY: usize = 6;
+pub(crate) const AU_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const AU_MAX_AGE: Duration = Duration::from_millis(50);
+
+use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+pub(crate) struct QueueReservation { used: Arc<AtomicUsize>, bytes: usize }
+impl QueueReservation {
+    pub(crate) fn acquire(used: &Arc<AtomicUsize>, bytes: usize) -> Option<Self> {
+        used.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            n.checked_add(bytes).filter(|total| *total <= AU_QUEUE_BYTES)
+        }).ok()?;
+        Some(Self { used: used.clone(), bytes })
+    }
+}
+impl Drop for QueueReservation {
+    fn drop(&mut self) { self.used.fetch_sub(self.bytes, Ordering::AcqRel); }
+}
 
 #[derive(Default)]
 pub(crate) struct Recovery {

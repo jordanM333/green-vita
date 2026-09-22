@@ -19,6 +19,11 @@ impl App {
             return Ok(());
         }
 
+        if let Some(id) = self.state.streaming_mut().and_then(|s| s.take_played_title()) {
+            self.settings.catalog.record_played(&id);
+            self.settings.save();
+        }
+
         let Some(streaming) = self.state.streaming_mut() else {
             return Ok(());
         };

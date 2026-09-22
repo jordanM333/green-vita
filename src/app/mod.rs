@@ -35,6 +35,8 @@ pub struct App {
     pub(crate) title_initial_overlay: Option<TitleInitialOverlay>,
     pub(crate) title_search_query: String,
     pub(crate) title_search_requested: bool,
+    pub(crate) catalog_section: crate::catalog_preferences::CatalogSection,
+    pub(crate) catalog_collections: crate::catalog_preferences::CatalogCollections,
 }
 
 impl App {
@@ -49,6 +51,8 @@ impl App {
             title_initial_overlay: None,
             title_search_query: String::new(),
             title_search_requested: false,
+            catalog_section: Default::default(),
+            catalog_collections: Default::default(),
             settings,
         })
     }

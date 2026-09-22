@@ -186,6 +186,7 @@ impl App {
     }
 
     pub(super) async fn pump_title_details(&mut self) -> anyhow::Result<()> {
+        self.normalize_catalog_selection();
         self.prune_title_images();
         self.ensure_title_details_job();
         self.ensure_icon_prefetch_job();

@@ -10,6 +10,7 @@ pub enum Command {
     Resume,
     RefreshStream,
     ToggleDiagnostics,
+    ToggleMicrophone,
     Settings,
     PressGuideButton,
     ExitGame,
@@ -26,6 +27,7 @@ pub const MENU_ITEMS: [Command; 5] = [
 fn menu_items(app: &App) -> Vec<Command> {
     let mut items = MENU_ITEMS.to_vec();
     if app.state.streaming().is_some_and(|s| s.can_refresh()) { items.insert(1, Command::RefreshStream); }
+    if app.state.streaming().is_some_and(|s| s.microphone.available()) { items.insert(1, Command::ToggleMicrophone); }
     items
 }
 
@@ -35,6 +37,7 @@ impl Command {
             Self::Resume => "\u{25b6}",
             Self::RefreshStream => "\u{21bb}",
             Self::ToggleDiagnostics => "\u{2630}",
+            Self::ToggleMicrophone => "M",
             Self::Settings => "\u{2699}",
             Self::PressGuideButton => "\u{2302}",
             Self::ExitGame => "\u{2715}",
@@ -46,6 +49,7 @@ impl Command {
             Self::Resume => "paused-resume",
             Self::RefreshStream => "paused-refresh-stream",
             Self::ToggleDiagnostics => "paused-diagnostics",
+            Self::ToggleMicrophone => "paused-microphone",
             Self::Settings => "menu-settings",
             Self::PressGuideButton => "paused-xbox-button",
             Self::ExitGame => "paused-exit-game",
@@ -93,6 +97,10 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                             "paused-diagnostics-off"
                         }),
                     )
+                } else if item == Command::ToggleMicrophone {
+                    i18n.text(if app.state.streaming().is_some_and(|s|s.microphone.is_on()) {
+                        "paused-mic-on"
+                    } else { "paused-mic-off" })
                 } else {
                     i18n.text(item.label_key())
                 };
@@ -108,6 +116,9 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 }
             }
             ui.add_space(8.0);
+            if app.state.streaming().is_some_and(|s| !s.microphone.available()) {
+                ui.label(egui::RichText::new(i18n.text("paused-mic-unavailable")).color(theme.text).size(12.0));
+            }
             ui.label(egui::RichText::new(i18n.text(if home {
                 "paused-home-refresh-help"
             } else { "paused-cloud-refresh-help" })).color(theme.text).size(12.0));
@@ -171,6 +182,11 @@ impl App {
                     streaming.set_paused(false);
                 }
                 self.menu.open = false;
+            }
+            Command::ToggleMicrophone => {
+                if let Some(streaming) = self.state.streaming_mut() {
+                    streaming.microphone.set_on(!streaming.microphone.is_on());
+                }
             }
             Command::RefreshStream => self.refresh_home_stream(),
             Command::Settings => {

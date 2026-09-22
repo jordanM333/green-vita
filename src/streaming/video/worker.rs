@@ -4,11 +4,11 @@ use super::{DecodedFrame, DecoderConfig, DirectVideoOutput, DirectVideoTargetGua
 use anyhow::{Context, Result};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select_biased};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use super::policy::{AU_QUEUE_CAPACITY, expired};
+use super::policy::{AU_QUEUE_CAPACITY, QueueReservation, expired};
 
 struct QueuedAccessUnit {
     data: Vec<u8>,
@@ -16,6 +16,7 @@ struct QueuedAccessUnit {
     received_at: Instant,
     rtp_timestamp: u32,
     generation: u64,
+    reservation: Option<QueueReservation>,
 }
 
 enum DecoderCommand {
@@ -33,6 +34,7 @@ pub(crate) enum SubmitResult {
 pub struct VideoDecodeWorker {
     thread: Option<std::thread::JoinHandle<()>>,
     access_units: Sender<QueuedAccessUnit>,
+    queued_bytes: Arc<AtomicUsize>,
     commands: Sender<DecoderCommand>,
     generation: Arc<AtomicU64>,
     recovery_needed: Arc<AtomicBool>,
@@ -81,6 +83,7 @@ impl VideoDecodeWorker {
         Ok(Self {
             thread: Some(thread),
             access_units,
+            queued_bytes: Arc::new(AtomicUsize::new(0)),
             commands,
             generation,
             recovery_needed,
@@ -104,16 +107,23 @@ impl VideoDecodeWorker {
         first_packet_at: Instant,
         rtp_timestamp: u32,
     ) -> SubmitResult {
+        let Some(reservation) = QueueReservation::acquire(&self.queued_bytes, data.len()) else {
+            super::trace::record("queue_byte_limit", rtp_timestamp, data.len() as u64);
+            metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
+            return SubmitResult::QueueFull;
+        };
         let access_unit = QueuedAccessUnit {
             data,
             queued_at: Instant::now(),
             received_at: first_packet_at,
             rtp_timestamp,
             generation: self.generation.load(Ordering::Acquire),
+            reservation: Some(reservation),
         };
         match self.access_units.try_send(access_unit) {
             Ok(()) => {
                 let depth = self.access_units.len() as u64;
+                super::trace::record("au_queue_depth", rtp_timestamp, depth);
                 metrics::METRICS.au_queue_depth.store(depth, Ordering::Relaxed);
                 metrics::METRICS.au_queue_max.fetch_max(depth, Ordering::Relaxed);
                 SubmitResult::Submitted
@@ -170,6 +180,7 @@ fn run_decode_loop(
     let mut decoder = Some(initial_decoder);
     let mut drain_pending = false;
     let mut drain_enabled = true;
+    let mut consecutive_inputs = 0;
 
     loop {
         // Check stop between every hardware call, including a long buffered-output run.
@@ -178,14 +189,29 @@ fn run_decode_loop(
             Err(crossbeam_channel::TryRecvError::Empty) => {}
         }
         if drain_enabled && drain_pending {
+            // A burst needs input service before a possibly empty hardware poll.
+            // Never run more than two inputs between polls; the ordinary
+            // one-input path and independent recovery draining are unchanged.
+            if consecutive_inputs < 2 && access_units.len() >= 2 {
+                if let Ok(access_unit) = access_units.try_recv() {
+                    consecutive_inputs += 1;
+                    drain_pending |= decode_queued_access_unit(
+                        &mut decoder, config, &generation, &recovery_needed,
+                        &latest_result, &result_ready, access_unit, &direct_output,
+                    );
+                    continue;
+                }
+            }
             match poll_decoder(&mut decoder, &generation, &recovery_needed, &latest_result, &result_ready, &direct_output) {
                 Ok(more) => drain_pending = more,
                 Err(()) => { drain_enabled = false; drain_pending = false; }
             }
+            consecutive_inputs = 0;
             // Alternate one output-only call with queued input. Do not hold the
             // texture mutex across calls, or starve input while catching up.
             match access_units.try_recv() {
                 Ok(access_unit) => {
+                    consecutive_inputs = 1;
                     metrics::METRICS.au_queue_depth.store(access_units.len() as u64, Ordering::Relaxed);
                     drain_pending |= decode_queued_access_unit(
                         &mut decoder, config, &generation, &recovery_needed,
@@ -205,6 +231,7 @@ fn run_decode_loop(
             },
             recv(access_units) -> access_unit => {
                 let Ok(access_unit) = access_unit else { break };
+                consecutive_inputs = (consecutive_inputs + 1).min(2);
                 metrics::METRICS.au_queue_depth.store(access_units.len() as u64, Ordering::Relaxed);
                 drain_pending |= decode_queued_access_unit(
                     &mut decoder,
@@ -228,9 +255,11 @@ fn decode_queued_access_unit(
     recovery_needed: &AtomicBool,
     latest_result: &Mutex<Option<DecodeResult>>,
     result_ready: &tokio::sync::Notify,
-    access_unit: QueuedAccessUnit,
+    mut access_unit: QueuedAccessUnit,
     direct_output: &DirectVideoOutput,
 ) -> bool {
+    // Release queue memory credit on dequeue, even for stale generations.
+    drop(access_unit.reservation.take());
     if access_unit.generation != generation.load(Ordering::Acquire) {
         super::trace::record("generation_drop", access_unit.rtp_timestamp, 0);
         metrics::METRICS.stale_generation.fetch_add(1, Ordering::Relaxed);

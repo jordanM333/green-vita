@@ -90,3 +90,19 @@ streaming-open-menu = Hold SELECT for 1.5 seconds to open GreenVita's quick menu
 streaming-menu-hint = Hold SELECT · Quick menu
 paused-home-refresh-help = Refresh reconnects to this Xbox. Your game stays running.
 paused-cloud-refresh-help = Stream refresh is available in Home streaming.
+
+# Local catalog collections; server Recently added is not connected yet.
+catalog-all = All games
+catalog-favorites = Favorites
+catalog-recently-played = Recently played
+catalog-recently-added = Recently added
+catalog-coming-soon = Coming soon
+catalog-favorites-empty = Add games to Favorites from their details.
+catalog-recent-empty = Games you play on this Vita will appear here.
+catalog-add-favorite = Add to Favorites
+catalog-remove-favorite = Remove from Favorites
+catalog-local-history = Favorites and play history are saved on this Vita.
+paused-microphone = Microphone
+paused-mic-on = Microphone: On
+paused-mic-off = Microphone: Off
+paused-mic-unavailable = Microphone: Unavailable in this build
