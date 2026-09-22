@@ -53,6 +53,8 @@ jobs:
         run: cargo test --locked --target x86_64-unknown-linux-gnu
       - name: Verify offline clock and returned-PTS analysis
         run: python3 -m unittest discover -s tests/latency-analysis -v
+      - name: Verify ELF metadata headroom checks
+        run: python3 -m unittest discover -s tests/link-layout -v
 
   build:
     needs: feedback-tests
@@ -76,6 +78,7 @@ jobs:
           elf=target/armv7-sony-vita-newlibeabihf/release/green-vita.elf
           if [ -f "$elf" ]; then
             tools/vita-tool arm-vita-eabi-readelf -lW "$elf"
+            python3 tools/check_vita_elf.py "$elf"
           fi
       - name: Record binary identity
         run: sha256sum target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk > candidate-sha256.txt

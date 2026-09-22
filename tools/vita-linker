@@ -2,9 +2,9 @@
 set -e
 
 # vita-elf-create appends SCE module/import metadata to the executable segment.
-# Reserve an unmapped 64 KiB gap before the data segment using VitaSDK's linker
-# script hook; ordinary alignment alone can leave less than one metadata table.
+# Reserve an unmapped 64 KiB gap before the data segment using an augmentation
+# script; ordinary alignment alone can leave less than one metadata table.
 # Keep this in the linker wrapper (not RUSTFLAGS, which cargo-vita replaces), and
 # separate from vita-gcc so native dependency compilation is unchanged.
 exec "$(dirname "$0")/vita-tool" arm-vita-eabi-gcc \
-  -Wl,--defsym=__sce_headroom=0x10000 "$@"
+  -Wl,-T,"$(dirname "$0")/vita-headroom.ld" "$@"
