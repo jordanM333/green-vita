@@ -1,0 +1,51 @@
+{
+  "build": "RX Test 38.9",
+  "source_commit": "05720eee93134489db44f9809066ebb9822b02b5",
+  "source_tree": "f0fa9a07151eb718ad4d42b6ae18b10ec5da6c2a",
+  "matching_local_commit": "de370fa1fd8aa08c1578b10719ea5500485f3962",
+  "workflow_url": "https://github.com/jordanM333/green-vita/actions/runs/35812410990",
+  "workflow_conclusion": "success",
+  "artifact_id": 10730801585,
+  "artifact_expires": "2026-10-23T03:06:14Z",
+  "artifact_zip_sha256": "4ee6f4e70168167ba361a669be1631683907274229a2af2b246295fb9f202808",
+  "sdk_image": "ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc",
+  "vpk": {
+    "file_name": "GreenVita-RX-Test-38.9.vpk",
+    "bytes": 14648988,
+    "sha256": "65edf071c7a8c145b9828c7a3c5529198d7d71dd8a42668c44632f91ae1549ea",
+    "zip_integrity": "pass",
+    "embedded_source_commit_verified": true,
+    "embedded_build_number_verified": true,
+    "title_id": "GRNVTEST1",
+    "title": "GreenVita RX Test",
+    "package_entries_changed_since_38_7": [
+      "eboot.bin"
+    ]
+  },
+  "ci_test_executions": {
+    "feedback": 6,
+    "receiver_reports": 13,
+    "frame_metadata": 9,
+    "rtc_transport": 18,
+    "frame_signal": 4,
+    "rtp_order": 13,
+    "decoder_pump_and_shared_video_modules": 31,
+    "feature_foundations": 15,
+    "voice_codec": 1,
+    "python_analysis": 16,
+    "elf_headroom": 6,
+    "note": "132 executions; shared production tests execute in multiple suites."
+  },
+  "packaging": {
+    "native_compilation": "pass",
+    "vpk_conversion": "pass",
+    "metadata_virtual_gap_bytes": 113480,
+    "minimum_metadata_gap_bytes": 65536
+  },
+  "device_acceptance": {
+    "status": "pending",
+    "microphone": "Chat exchange configuration and real two-peer RTP verified; Xbox microphone recognition, Vita capture and audible voice need device confirmation.",
+    "playback": "Chat negotiation, timeout rollback and input/audio continuity covered by peer tests. No new bitrate, decoder, keyframe or network-ordering tuning. Home/Cloud delay resolution is not claimed.",
+    "ui": "Touch gesture routing and startup timing tests pass; on-device visual/touch and front-touch auxiliary control checks remain."
+  }
+}

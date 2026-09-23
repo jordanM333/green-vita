@@ -1,6 +1,18 @@
 # RX38 follow-up: Xbox microphone negotiation and startup recovery
 
-Source changes awaiting the candidate workflow and device verification.
+**RX Test 38.9 is built and verified.** Install `GreenVita-RX-Test-38.9.vpk`
+over the RX Test app (`GRNVTEST1`). [CI run](https://github.com/jordanM333/green-vita/actions/runs/35812410990)
+passed all 132 test executions, native Vita compilation, VPK conversion and ELF
+metadata headroom checks. Source: `05720eee93134489db44f9809066ebb9822b02b5`.
+VPK SHA-256: `65edf071c7a8c145b9828c7a3c5529198d7d71dd8a42668c44632f91ae1549ea`.
+Artifact checksum, embedded source/build identity, ZIP integrity and title ID
+were verified. Only `eboot.bin` differs from RX38.7. See
+`CANDIDATE-38.9-BUILD.json`. Device acceptance remains pending.
+
+RX38.8 stopped at a new test assertion that incorrectly inspected the whole SDP,
+including the bidirectional application channel. The assertion now checks the
+audio media section explicitly; the passing RX38.9 run includes the full real
+peer negotiation and failure-recovery checks. No RX38.8 installer was produced.
 
 ## Diagnosis and changes
 

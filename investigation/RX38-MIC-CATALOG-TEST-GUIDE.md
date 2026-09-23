@@ -1,5 +1,9 @@
 # RX Test 38: microphone and Xbox collections
 
+**Historical RX38.7 guide.** The microphone implementation is superseded by
+[RX38.9 chat negotiation and touch controls](RX38-CHAT-NEGOTIATION.md).
+The catalog checks below remain applicable.
+
 Status: **RX Test 38.7 is built and verified.** All CI gates, native Vita compilation, VPK creation and the executable metadata-gap check pass. Device testing is still pending.
 
 Install `GreenVita-RX-Test-38.7.vpk` over the GreenVita RX Test app (`GRNVTEST1`). Keep **Use Wi-Fi in Power Save Mode unchecked** for comparison. [Successful CI run](https://github.com/jordanM333/green-vita/actions/runs/35731767695), source `09bfdbb31ed4f9913c657e0bb417eef4ef67a81f`. VPK SHA-256: `591937d1a5ca623c9101990d470fdd6d1bde5eced2ee0f1d0553162395435d58`.
