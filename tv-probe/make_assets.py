@@ -6,6 +6,7 @@ from pathlib import Path
 import struct
 import subprocess
 import zlib
+from verify_livearea import check_png
 
 ROOT = Path(__file__).resolve().parent
 ASSETS = ROOT / "assets"
@@ -16,25 +17,31 @@ def png(path, width, height):
     def chunk(kind, data):
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
 
+    # LiveArea promotion rejects RGBA icon/background PNGs (0x8010113D).
+    # Generate opaque 8-bit indexed PNGs directly, including a full palette.
+    palette = [(15, 22, 36), (59, 220, 173), (28, 43, 61), (236, 242, 250)]
+    palette += [(0, 0, 0)] * (256 - len(palette))
     rows = bytearray()
     for y in range(height):
         rows.append(0)
         for x in range(width):
             # Television frame and play symbol; no service branding.
             nx, ny = x / width, y / height
-            color = (15, 22, 36, 255)
+            color = 0
             if 0.12 < nx < 0.88 and 0.2 < ny < 0.76:
-                color = (59, 220, 173, 255)
+                color = 1
                 if 0.16 < nx < 0.84 and 0.24 < ny < 0.72:
-                    color = (28, 43, 61, 255)
+                    color = 2
                     if 0.39 < nx < 0.65 and abs(ny - 0.48) < (0.65 - nx) * 0.7:
-                        color = (236, 242, 250, 255)
+                        color = 3
             if 0.39 < nx < 0.61 and 0.79 < ny < 0.83:
-                color = (59, 220, 173, 255)
-            rows.extend(color)
+                color = 1
+            rows.append(color)
     data = b"\x89PNG\r\n\x1a\n"
-    data += chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+    data += chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 3, 0, 0, 0))
+    data += chunk(b"PLTE", bytes(channel for color in palette for channel in color))
     data += chunk(b"IDAT", zlib.compress(rows, 9)) + chunk(b"IEND", b"")
+    check_png(data, (width, height), str(path))
     path.write_bytes(data)
 
 
@@ -58,7 +65,7 @@ subprocess.run([
     str(ASSETS / "control.mp4")
 ], check=True)
 (ASSETS / "build-info.json").write_text(json.dumps({
-    "app": "Vita TV Probe", "version": "0.1", "title_id": "GVTVPRB01",
+    "app": "Vita TV Probe", "version": "0.2", "title_id": "GVTVPRB01",
     "source_commit": os.environ.get("GITHUB_SHA", "local-unpublished"),
     "workflow_run": os.environ.get("GITHUB_RUN_ID", "local"),
     "sdk_image": "ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc",

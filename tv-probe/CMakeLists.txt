@@ -13,8 +13,8 @@ target_link_libraries(vita_tv_probe
   ScePvf_stub SceCommonDialog_stub SceKernelModulemgr_stub
   freetype png jpeg z m c)
 vita_create_self(eboot.bin vita_tv_probe UNSAFE)
-vita_create_vpk(Vita-TV-Probe-0.1.vpk GVTVPRB01 eboot.bin
-  VERSION 00.01 NAME "Vita TV Probe"
+vita_create_vpk(Vita-TV-Probe-0.2.vpk GVTVPRB01 eboot.bin
+  VERSION 00.02 NAME "Vita TV Probe"
   FILE assets/icon0.png sce_sys/icon0.png
        assets/bg.png sce_sys/livearea/contents/bg.png
        assets/startup.png sce_sys/livearea/contents/startup.png

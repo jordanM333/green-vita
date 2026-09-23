@@ -311,7 +311,7 @@ static void launch_service(int index) {
 int main(void) {
     sceIoMkdir(DATA_DIR, 0777);
     logfile = sceIoOpen(LOG_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0666);
-    log_line("SESSION app=GVTVPRB01 version=0.1 protected_playback=NOT_VERIFIED");
+    log_line("SESSION app=GVTVPRB01 version=0.2 protected_playback=NOT_VERIFIED");
     SceKernelSystemSwVersion sw;
     memset(&sw, 0, sizeof(sw)); sw.size = sizeof(sw);
     if (sceKernelGetSystemSwVersion(&sw) >= 0) snprintf(firmware, sizeof(firmware), "%s", sw.versionString);
@@ -372,7 +372,7 @@ int main(void) {
         }
         if (mode == 1) update_video();
         vita2d_start_drawing(); vita2d_clear_screen();
-        label(28, 35, ACCENT, "VITA TV PROBE 0.1   /   diagnostic build");
+        label(28, 35, ACCENT, "VITA TV PROBE 0.2   /   diagnostic build");
         if (mode == 0) {
             label(28, 75, WARN, "No protected streaming service has passed on this device.");
             for (int i = 0; i < 7; i++) {

@@ -1,10 +1,16 @@
-# Vita TV Probe 0.1
+# Vita TV Probe 0.2
 
 An installable **diagnostic**, not a working streaming-service app. The purpose of this first build is to gather evidence on the actual Vita before building service apps or modifying GreenVita. Apple TV, Netflix, Hulu and HBO Max protected playback are all **unverified**. Opening the browser, signing in, decoder counters and the bundled clip cannot pass a service.
 
+## 0.2 installation correction
+
+The 0.1 release used RGBA PNGs for LiveArea artwork. A device install returned **0x8010113D**, matching the incompatible icon/background encoding. Version 0.2 generates opaque 8-bit indexed PNGs and checks image dimensions, encoding, palette, CRCs and LiveArea references before publishing. The original 0.1 VPK fails the new encoding check. See [LiveArea image specifications](https://github.com/hammerill/livearea-specs). This corrects the identified packaging defect; successful installation and runtime playback of 0.2 still require device confirmation.
+
+Install 0.2 through VitaShell in place of the rejected 0.1 VPK. If a Vita TV Probe bubble already exists, accept its update. The app ID and data folder are unchanged. No database rebuild, firmware change, or GreenVita reinstall is needed for this correction.
+
 ## Install and rollback
 
-1. Copy `Vita-TV-Probe-0.1.vpk` to your Vita and install it using VitaShell. Open the new **Vita TV Probe** bubble. It needs the normal homebrew/unsafe-app permission for native system modules; it installs no kernel plugin.
+1. Copy `Vita-TV-Probe-0.2.vpk` to your Vita and install it using VitaShell. Open the new **Vita TV Probe** bubble. It needs the normal homebrew/unsafe-app permission for native system modules; it installs no kernel plugin.
 2. This app uses title ID `GVTVPRB01` and only writes `ux0:data/greenvita-tv-probe/probe.log`. It does not overwrite GreenVita (`GREENVITA`), RX Test (`GRNVTEST1`), their settings, or Xbox authentication.
 3. To roll back, delete the **Vita TV Probe** bubble. After copying the log, optionally delete `ux0:data/greenvita-tv-probe`. Browser sign-in cookies belong to the system browser: use each service's sign-out action if desired. Deleting this diagnostic does not clear those cookies.
 
@@ -46,7 +52,7 @@ Locally, with FFmpeg, Python 3 and VitaSDK including vita2d installed:
 python3 tv-probe/make_assets.py
 cmake -S tv-probe -B tv-probe/build
 cmake --build tv-probe/build --parallel 2
-python3 tv-probe/verify_vpk.py tv-probe/build/Vita-TV-Probe-0.1.vpk
+python3 tv-probe/verify_vpk.py tv-probe/build/Vita-TV-Probe-0.2.vpk
 ```
 
 The source in this folder is MIT licensed. It uses VitaSDK interfaces and libvita2d; no third-party video sample or service artwork is included.

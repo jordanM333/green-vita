@@ -47,7 +47,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: tv-probe-unchecked
-          path: tv-probe/build/Vita-TV-Probe-0.1.vpk
+          path: tv-probe/build/Vita-TV-Probe-0.2.vpk
           if-no-files-found: error
           retention-days: 7
 
@@ -64,13 +64,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Verify package identity, integrity and clip format
         run: |
-          python3 tv-probe/verify_vpk.py release/Vita-TV-Probe-0.1.vpk > release/package-checks.json
+          python3 tv-probe/verify_vpk.py release/Vita-TV-Probe-0.2.vpk > release/package-checks.json
           cat release/package-checks.json
           cp tv-probe/README.md release/README.md
-          sha256sum release/Vita-TV-Probe-0.1.vpk > release/SHA256SUMS
+          sha256sum release/Vita-TV-Probe-0.2.vpk > release/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
-          name: Vita-TV-Probe-0.1
+          name: Vita-TV-Probe-0.2
           path: release/
           if-no-files-found: error
           retention-days: 30
