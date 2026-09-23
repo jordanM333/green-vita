@@ -20,12 +20,13 @@
     "note": "148 executions; shared production tests execute in multiple suites."
   },
   "device_acceptance": {
-    "status": "pending for RX38.14",
+    "status": "failed: user reports playback still becomes laggy and unplayable",
     "baseline_38_10": "User reports Home lag after a few minutes and game restart after Refresh; history shows up to 1888ms added video arrival delay.",
     "microphone": "Capture, mute gate, and existing chat topology preserved; video bandwidth declaration also retained during chat offers.",
     "playback": "SDP bandwidth offer plus bounded negotiated NACK repair. Xbox compliance and actual Home/Cloud latency require device validation.",
     "refresh": "Resyncs video through the existing peer; no session HTTP DELETE, new play request, or microphone restart.",
-    "ui": "Matching bottom-right quick settings; Xbox row removed from menu, bottom-center Xbox retained. Geometry and touch gate tested; device appearance pending."
+    "ui": "Matching bottom-right quick settings; Xbox row removed from menu, bottom-center Xbox retained. Geometry and touch gate tested; device appearance pending.",
+    "returned_recording": "RX38.14 afc20bbd; 427.6s history, maximum observed added video arrival delay 1837ms. See RX38-ARRIVAL-FEEDBACK-REVIEW.md."
   },
   "artifact_id": 10733565497,
   "artifact_expires": "2026-10-23T04:59:20Z",

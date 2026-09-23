@@ -1,0 +1,53 @@
+{
+  "build": "RX Test 38.15",
+  "source_commit": "165f42963e1fe6d1754a6e836fd3ba06c1bc7e5a",
+  "source_tree": "47849e569acf078ad0d86bd26ae1cdc77d1d9ea1",
+  "matching_local_commit": "f29abfdefa64f079caa568dc736dd7f40942c37c",
+  "workflow_url": "https://github.com/jordanM333/green-vita/actions/runs/35825348209",
+  "workflow_conclusion": "success",
+  "ci_test_executions": {
+    "feedback": 9,
+    "receiver_reports": 13,
+    "frame_metadata": 9,
+    "rtc_transport": 28,
+    "frame_signal": 4,
+    "rtp_order": 18,
+    "decoder_pump_and_shared_video_modules": 32,
+    "feature_foundations": 20,
+    "voice_codec": 1,
+    "python_analysis": 16,
+    "elf_headroom": 6,
+    "note": "156 executions; shared production tests execute in multiple suites."
+  },
+  "device_acceptance": {
+    "status": "pending for RX38.15",
+    "baseline_38_14": "User reports playback still becomes laggy and unplayable; returned RX38.14 history shows up to 1837ms added video arrival delay.",
+    "playback": "Negotiated TWCC arrival feedback plus missing first-packet codec binding. Sender support and response require device validation. Traffic counters separate network classes and processing cost.",
+    "microphone": "Existing capture, mute, Opus and renegotiation behavior retained; mic/control/audio tests now use the production feedback chain.",
+    "refresh": "Existing in-session video resync retained; no session restart.",
+    "ui": "Three translucent bottom buttons and audio volume controls retained."
+  },
+  "artifact_id": 10734992923,
+  "artifact_expires": "2026-10-23T06:17:11Z",
+  "artifact_zip_sha256": "12d09d5da2a52e8934becf7c809a057a7d30e4e9b2a6c360ecc766eef1895485",
+  "sdk_image": "ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc",
+  "vpk": {
+    "file_name": "GreenVita-RX-Test-38.15.vpk",
+    "bytes": 14717407,
+    "sha256": "73a96289a433a3d6203ca71bd9ab5e5a7eab5747d0a50fb4b4e83eb8ec8523a7",
+    "zip_integrity": "pass",
+    "embedded_source_commit_verified": true,
+    "embedded_build_number_verified": true,
+    "title_id": "GRNVTEST1",
+    "title": "GreenVita RX Test",
+    "package_entries_changed_since_38_14": [
+      "eboot.bin"
+    ]
+  },
+  "packaging": {
+    "native_compilation": "pass",
+    "vpk_conversion": "pass",
+    "metadata_virtual_gap_bytes": 102976,
+    "minimum_metadata_gap_bytes": 65536
+  }
+}

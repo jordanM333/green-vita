@@ -1,7 +1,7 @@
 # Home delay and session-preserving video repair
 
 Candidate source: RX38.14, `afc20bbd73537d50108ca489a7ab8792cf65bbb3`.
-Device acceptance remains pending; host tests cannot establish Xbox encoder compliance or Vita network performance.
+Device result: the subsequent RX38.14 recording still becomes laggy and unplayable. Bandwidth declaration and bounded NACK repair did not resolve the sustained delay. See RX38-ARRIVAL-FEEDBACK-REVIEW.md. Host tests cannot establish Xbox encoder compliance or Vita network performance.
 
 ## What the new RX38.10 recording establishes
 
