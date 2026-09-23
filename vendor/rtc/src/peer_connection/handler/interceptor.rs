@@ -183,6 +183,12 @@ where
         if self.ctx.is_dtls_handshake_complete
             && let RTCMessageInternal::Rtp(RTPMessage::Packet(packet)) = msg.message
         {
+            // SRTCP has authenticated/decrypted this packet already. Account
+            // for feedback before interceptors consume it; sender feedback
+            // need not be exposed as a remote receive-track message.
+            if let Packet::Rtcp(rtcp_packets) = &packet {
+                self.process_read_rtcp_for_stats(rtcp_packets, msg.now);
+            }
             if let Packet::Rtp(rtp_packet) = &packet {
                 let ssrc = rtp_packet.header.ssrc;
                 let payload_bytes = rtp_packet.payload.len();
