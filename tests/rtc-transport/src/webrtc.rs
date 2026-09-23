@@ -193,7 +193,8 @@ fn voice_pair() -> (Pair, crate::mic_state::Microphone, crate::mic_uplink::Micro
     assert_eq!(offer.sdp.matches("m=audio").count(),1);
     assert_eq!(offer.sdp.matches("m=video").count(),1);
     assert!(!offer.sdp.contains("greenvita-voice"));
-    assert!(!offer.sdp.contains("a=sendrecv"));
+    let audio_section = offer.sdp.split("m=audio").nth(1).unwrap().split("\r\nm=").next().unwrap();
+    assert!(audio_section.contains("a=recvonly"), "initial audio must only receive: {audio_section}");
     assert!(offer.sdp.contains("opus/48000/2"));
     a.set_local_description(offer.clone()).unwrap();
     b.set_remote_description(offer).unwrap();
@@ -244,7 +245,8 @@ fn microphone_reuses_audio_mline_and_mute_blocks_rtp_over_real_dtls() {
     let offer = uplink.begin_negotiation(&mut pair.a).unwrap();
     assert_eq!(offer.sdp.matches("m=audio").count(), 1);
     assert_eq!(offer.sdp.matches("m=video").count(), 1);
-    assert!(offer.sdp.contains("a=sendrecv"));
+    let audio_section = offer.sdp.split("m=audio").nth(1).unwrap().split("\r\nm=").next().unwrap();
+    assert!(audio_section.contains("a=sendrecv"), "chat must enable audio sending: {audio_section}");
     assert!(offer.sdp.contains("greenvita-voice"));
     assert!(mic.begin_capture().is_none(), "no voice before Xbox accepts chat");
     assert!(uplink.begin_negotiation(&mut pair.a).is_none(), "only one exchange at a time");
