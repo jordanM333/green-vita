@@ -1,0 +1,53 @@
+{
+  "build": "RX Test 38.14",
+  "source_commit": "afc20bbd73537d50108ca489a7ab8792cf65bbb3",
+  "source_tree": "ea65f37483d1cab02a16b83169aeeb6a74af1540",
+  "matching_local_commit": "bc23f11d4276e681b8bce5e91e6320afda9f653e",
+  "workflow_url": "https://github.com/jordanM333/green-vita/actions/runs/35819984251",
+  "workflow_conclusion": "success",
+  "ci_test_executions": {
+    "feedback": 9,
+    "receiver_reports": 13,
+    "frame_metadata": 9,
+    "rtc_transport": 20,
+    "frame_signal": 4,
+    "rtp_order": 18,
+    "decoder_pump_and_shared_video_modules": 32,
+    "feature_foundations": 20,
+    "voice_codec": 1,
+    "python_analysis": 16,
+    "elf_headroom": 6,
+    "note": "148 executions; shared production tests execute in multiple suites."
+  },
+  "device_acceptance": {
+    "status": "pending for RX38.14",
+    "baseline_38_10": "User reports Home lag after a few minutes and game restart after Refresh; history shows up to 1888ms added video arrival delay.",
+    "microphone": "Capture, mute gate, and existing chat topology preserved; video bandwidth declaration also retained during chat offers.",
+    "playback": "SDP bandwidth offer plus bounded negotiated NACK repair. Xbox compliance and actual Home/Cloud latency require device validation.",
+    "refresh": "Resyncs video through the existing peer; no session HTTP DELETE, new play request, or microphone restart.",
+    "ui": "Matching bottom-right quick settings; Xbox row removed from menu, bottom-center Xbox retained. Geometry and touch gate tested; device appearance pending."
+  },
+  "artifact_id": 10733565497,
+  "artifact_expires": "2026-10-23T04:59:20Z",
+  "artifact_zip_sha256": "6e07ee58a06e61855403bd83418d7f416bc121c83fb8fc3fbc99d377ba92443e",
+  "sdk_image": "ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc",
+  "vpk": {
+    "file_name": "GreenVita-RX-Test-38.14.vpk",
+    "bytes": 14703632,
+    "sha256": "80fe71145c959261745a0d8807977283ad92873c418aa7e1425dbc1619766cfa",
+    "zip_integrity": "pass",
+    "embedded_source_commit_verified": true,
+    "embedded_build_number_verified": true,
+    "title_id": "GRNVTEST1",
+    "title": "GreenVita RX Test",
+    "package_entries_changed_since_38_10": [
+      "eboot.bin"
+    ]
+  },
+  "packaging": {
+    "native_compilation": "pass",
+    "vpk_conversion": "pass",
+    "metadata_virtual_gap_bytes": 117180,
+    "minimum_metadata_gap_bytes": 65536
+  }
+}
