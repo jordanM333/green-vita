@@ -1,0 +1,53 @@
+{
+  "build": "RX Test 38.10",
+  "source_commit": "0286e874ab1ba5081e1d9b66325f5dbcaaa18bb7",
+  "source_tree": "35c086557b8df52e1615beaaa9c6a1f4b28c7546",
+  "matching_local_commit": "0cc187fcf7ad775e1253e967abf6eb11dd5db1a2",
+  "workflow_url": "https://github.com/jordanM333/green-vita/actions/runs/35816247205",
+  "workflow_conclusion": "success",
+  "ci_test_executions": {
+    "feedback": 8,
+    "receiver_reports": 13,
+    "frame_metadata": 9,
+    "rtc_transport": 18,
+    "frame_signal": 4,
+    "rtp_order": 13,
+    "decoder_pump_and_shared_video_modules": 32,
+    "feature_foundations": 19,
+    "voice_codec": 1,
+    "python_analysis": 16,
+    "elf_headroom": 6,
+    "note": "139 executions; shared production tests execute in multiple suites."
+  },
+  "device_acceptance": {
+    "status": "pending for RX38.10",
+    "baseline_38_9_user_report": "Voice worked well with no echo complaints; initial playback was excellent. Home later developed persistent video lag.",
+    "microphone": "RX38.9 microphone negotiation and capture unchanged; peer/mute regressions passed.",
+    "audio": "One mixed incoming stream; new persisted playback volume does not independently mix game and voice. Hardware level, stereo and persistence checks pending.",
+    "playback": "Stable-path bitrate recovery and sustained-lag hint passed host tests; resolution of Home or Cloud delay is not yet established on device.",
+    "ui": "Bottom control geometry and touch ownership passed host tests; on-device visual, guide and auxiliary touch checks pending."
+  },
+  "artifact_id": 10731202780,
+  "artifact_expires": "2026-10-23T04:03:54Z",
+  "artifact_zip_sha256": "c379867880f9e13dacd34d58af5c97c2202b195214dff1416086a5ff49edd473",
+  "sdk_image": "ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc",
+  "vpk": {
+    "file_name": "GreenVita-RX-Test-38.10.vpk",
+    "bytes": 14716635,
+    "sha256": "d284eda2d23d6db9e309e0f51976316db54349740a68dc3a9768de819c4d9aa6",
+    "zip_integrity": "pass",
+    "embedded_source_commit_verified": true,
+    "embedded_build_number_verified": true,
+    "title_id": "GRNVTEST1",
+    "title": "GreenVita RX Test",
+    "package_entries_changed_since_38_9": [
+      "eboot.bin"
+    ]
+  },
+  "packaging": {
+    "native_compilation": "pass",
+    "vpk_conversion": "pass",
+    "metadata_virtual_gap_bytes": 109004,
+    "minimum_metadata_gap_bytes": 65536
+  }
+}

@@ -1,5 +1,7 @@
 # RX38 follow-up: Xbox microphone negotiation and startup recovery
 
+Follow-up: [RX38.10 bottom controls, stream volume and recovery](RX38-CONTROLS-AUDIO-RECOVERY.md). The user confirmed RX38.9 voice works without echo complaints.
+
 **RX Test 38.9 is built and verified.** Install `GreenVita-RX-Test-38.9.vpk`
 over the RX Test app (`GRNVTEST1`). [CI run](https://github.com/jordanM333/green-vita/actions/runs/35812410990)
 passed all 132 test executions, native Vita compilation, VPK conversion and ELF

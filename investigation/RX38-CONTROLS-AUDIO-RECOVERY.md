@@ -1,5 +1,14 @@
 # Bottom controls, stream volume and recovery follow-up
 
+Verified candidate: **RX Test 38.10**, source
+`0286e874ab1ba5081e1d9b66325f5dbcaaa18bb7`.
+All 139 test executions and native Vita packaging passed. VPK SHA-256:
+`d284eda2d23d6db9e309e0f51976316db54349740a68dc3a9768de819c4d9aa6`.
+The embedded source/build, ZIP integrity, artifact digest and title ID were
+verified. Only `eboot.bin` differs from RX38.9. Full build identity is recorded
+in [CANDIDATE-38.10-BUILD.json](CANDIDATE-38.10-BUILD.json).
+Device acceptance of these new controls and recovery changes remains pending.
+
 Baseline: RX38.9, source 05720eee93134489db44f9809066ebb9822b02b5.
 The user reports working voice transmission with no echo complaints and excellent
 initial playback. Preserve that chat negotiation and microphone capture path.
