@@ -1,0 +1,76 @@
+name: Vita TV Probe
+
+on:
+  push:
+    branches: [vita-tv-probe]
+    paths:
+      - 'tv-probe/**'
+      - '.github/workflows/tv-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install media generator
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Generate original unencrypted control media
+        run: python3 tv-probe/make_assets.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tv-probe-assets
+          path: tv-probe/assets/
+          retention-days: 7
+
+  build:
+    needs: assets
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: tv-probe-assets
+          path: tv-probe/assets/
+      - name: Compile standalone Vita diagnostic
+        shell: bash
+        run: |
+          export VITASDK=/usr/local/vitasdk
+          export PATH="$VITASDK/bin:$PATH"
+          cmake -S tv-probe -B tv-probe/build
+          cmake --build tv-probe/build --parallel 2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tv-probe-unchecked
+          path: tv-probe/build/Vita-TV-Probe-0.1.vpk
+          if-no-files-found: error
+          retention-days: 7
+
+  package-check:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: tv-probe-unchecked
+          path: release/
+      - name: Install media inspector
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Verify package identity, integrity and clip format
+        run: |
+          python3 tv-probe/verify_vpk.py release/Vita-TV-Probe-0.1.vpk > release/package-checks.json
+          cat release/package-checks.json
+          cp tv-probe/README.md release/README.md
+          sha256sum release/Vita-TV-Probe-0.1.vpk > release/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Vita-TV-Probe-0.1
+          path: release/
+          if-no-files-found: error
+          retention-days: 30
