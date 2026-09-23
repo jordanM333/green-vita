@@ -330,23 +330,25 @@ fn nack_feedback_crosses_srtcp_and_reaches_the_sender() {
     assert_game_audio(&mut pair, game_audio, 1);
     let receiver = pair.a.get_receivers().collect::<Vec<_>>().into_iter().find(|id|
         pair.a.rtp_receiver(*id).unwrap().track().kind() == rtc::rtp_transceiver::rtp_sender::RtpCodecKind::Audio).unwrap();
-    pair.a.rtp_receiver(receiver).unwrap().write_rtcp(vec![Box::new(TransportLayerNack {
-        sender_ssrc: 0, media_ssrc: 12345, nacks: vec![NackPair { packet_id: 65535, lost_packets: 1 }],
-    })]).unwrap();
-    pair.wait_for(|p| {
-        while let Some(message) = p.b.poll_read() {
-            if let RTCMessage::RtcpPacket(_, packets) = message {
-                for packet in packets {
-                    if let Some(nack) = packet.as_any().downcast_ref::<TransportLayerNack>() {
-                        assert_eq!(nack.media_ssrc, 12345);
-                        assert_eq!(nack.nacks[0].packet_id, 65535);
-                        assert_eq!(nack.nacks[0].lost_packets, 1);
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    });
+    let received_nacks = |peer: &mut RTCPeerConnection| {
+        peer.get_stats(Instant::now(), rtc::statistics::StatsSelector::Sender(game_audio))
+            .outbound_rtp_streams().map(|stream| stream.nack_count).sum::<u32>()
+    };
+    let send_nack = |peer: &mut RTCPeerConnection| {
+        peer.rtp_receiver(receiver).unwrap().write_rtcp(vec![Box::new(TransportLayerNack {
+            sender_ssrc: 0, media_ssrc: 12345,
+            nacks: vec![NackPair { packet_id: 65535, lost_packets: 1 }],
+        })]).unwrap();
+    };
+    assert_eq!(received_nacks(&mut pair.b), 0);
+    send_nack(&mut pair.a);
+    // A discarded encrypted datagram cannot increment the remote counter.
+    Pair::transfer(&mut pair.a, &mut pair.b, pair.a_addr, pair.b_addr, true);
+    assert_eq!(received_nacks(&mut pair.b), 0);
+    send_nack(&mut pair.a);
+    // Sender feedback is consumed in the transport stats/interceptor path.
+    // poll_read routes remote receiver tracks only, so it is not the API for
+    // observing feedback addressed to a local sender's SSRC.
+    pair.wait_for(|p| received_nacks(&mut p.b) == 1);
     assert_controls(&mut pair); assert_game_audio(&mut pair, game_audio, 2);
 }
