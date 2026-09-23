@@ -9,6 +9,7 @@ const MAX_CLIP_AGE: Duration = Duration::from_millis(80);
 #[derive(Default)]
 struct State {
     ready: bool,
+    negotiated: bool,
     on: bool,
     epoch: u64,
     pending: VecDeque<VoiceClip>,
@@ -32,15 +33,28 @@ pub(crate) struct VoiceClip {
 impl Microphone {
     pub(crate) fn available(&self) -> bool { self.state.lock().unwrap().ready }
     pub(crate) fn is_on(&self) -> bool { self.state.lock().unwrap().on }
+    pub(crate) fn is_active(&self) -> bool {
+        let s = self.state.lock().unwrap();
+        s.ready && s.on && s.negotiated
+    }
     pub(crate) fn set_ready(&self, ready: bool) {
         let mut s = self.state.lock().unwrap();
-        s.ready = ready; s.on = false; s.epoch = s.epoch.wrapping_add(1);
+        s.ready = ready; s.negotiated = false; s.on = false; s.epoch = s.epoch.wrapping_add(1);
         if ready { s.error = None; }
         s.pending.clear(); s.peak = 0.0; s.level_at = None;
     }
     pub(crate) fn fail(&self, error: String) {
         self.set_ready(false);
         self.state.lock().unwrap().error = Some(error);
+    }
+    /// An SDP answer opens capture, but never changes the user's mute choice.
+    pub(crate) fn set_negotiated(&self, accepted: bool) {
+        let mut s = self.state.lock().unwrap();
+        s.negotiated = accepted;
+        if !accepted {
+            s.epoch = s.epoch.wrapping_add(1);
+            s.pending.clear(); s.peak = 0.0; s.level_at = None;
+        }
     }
     pub(crate) fn set_on(&self, on: bool) -> bool {
         let mut s = self.state.lock().unwrap();
@@ -50,11 +64,11 @@ impl Microphone {
     }
     pub(crate) fn begin_capture(&self) -> Option<CaptureTicket> {
         let s = self.state.lock().unwrap();
-        (s.ready && s.on).then_some(CaptureTicket { epoch: s.epoch })
+        (s.ready && s.on && s.negotiated).then_some(CaptureTicket { epoch: s.epoch })
     }
     pub(crate) fn publish(&self, clip: VoiceClip, peak: f32) {
         let mut s = self.state.lock().unwrap();
-        if !s.ready || !s.on || s.epoch != clip.ticket.epoch { return; }
+        if !s.ready || !s.on || !s.negotiated || s.epoch != clip.ticket.epoch { return; }
         if s.pending.len() == MAX_PENDING_CLIPS { s.pending.pop_front(); s.discarded += 1; }
         s.peak = peak; s.level_at = Some(Instant::now()); s.pending.push_back(clip);
     }
@@ -63,7 +77,7 @@ impl Microphone {
     pub(crate) fn send_pending(&self, mut send: impl FnMut(&VoiceClip) -> bool) {
         let mut s = self.state.lock().unwrap();
         while let Some(clip) = s.pending.pop_front() {
-            if !s.ready || !s.on || s.epoch != clip.ticket.epoch || clip.captured_at.elapsed() > MAX_CLIP_AGE {
+            if !s.ready || !s.on || !s.negotiated || s.epoch != clip.ticket.epoch || clip.captured_at.elapsed() > MAX_CLIP_AGE {
                 s.discarded += 1; continue;
             }
             if send(&clip) { s.sent += 1; } else { s.discarded += 1; }
@@ -76,9 +90,11 @@ impl Microphone {
     pub(crate) fn status(&self) -> String {
         let s = self.state.lock().unwrap();
         if let Some(error) = &s.error { return format!("Mic unavailable: {error}"); }
-        if !s.ready { return "Mic: waiting for audio uplink".into(); }
+        if !s.ready { return "Mic: waiting for stream connection".into(); }
         if !s.on { return "Mic off".into(); }
-        format!("Mic on · sent {} · dropped {}", s.sent, s.discarded)
+        if !s.negotiated { return "Mic: connecting to Xbox…".into(); }
+        // Local RTP admission is not a remote voice/chat acknowledgement.
+        format!("Mic on · RTP queued {} · dropped {}", s.sent, s.discarded)
     }
 }
 
@@ -88,7 +104,15 @@ mod tests {
     fn clip(mic: &Microphone) -> VoiceClip {
         VoiceClip { ticket: mic.begin_capture().unwrap(), captured_at: Instant::now(), timestamp: 0, opus: vec![1] }
     }
-    fn enabled() -> Microphone { let m=Microphone::default(); m.set_ready(true); m.set_on(true); m }
+    fn enabled() -> Microphone { let m=Microphone::default(); m.set_ready(true); m.set_negotiated(true); m.set_on(true); m }
+    #[test]
+    fn capture_waits_for_chat_answer_and_late_answer_does_not_unmute() {
+        let mic=Microphone::default(); mic.set_ready(true); mic.set_on(true);
+        assert!(mic.begin_capture().is_none()); assert!(!mic.is_active());
+        mic.set_on(false); mic.set_negotiated(true);
+        assert!(!mic.is_on()); assert!(mic.begin_capture().is_none());
+        mic.set_on(true); assert!(mic.begin_capture().is_some());
+    }
     #[test]
     fn unavailable_capture_cannot_be_unmuted() {
         let mic=Microphone::default(); assert!(!mic.set_on(true)); assert!(mic.begin_capture().is_none());

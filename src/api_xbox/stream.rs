@@ -148,6 +148,16 @@ impl Stream {
         extract_answer_sdp(&response)
     }
 
+    pub async fn send_chat_sdp_offer(&self, sdp: &str) -> Result<String> {
+        let body = super::chat_sdp::offer_body(sdp);
+        let _: Value = self.api_client.request_json(
+            &self.credentials, Method::POST, &self.session_endpoint("sdp"), Some(&body),
+        ).await?;
+        let response = self.wait_for_sdp_response().await?;
+        check_exchange_error(&response)?;
+        extract_answer_sdp(&response)
+    }
+
     pub async fn wait_for_sdp_response(&self) -> Result<Value> {
         loop {
             let value: Value = self

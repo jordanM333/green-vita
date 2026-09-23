@@ -142,6 +142,16 @@ impl XboxRtcProtocol {
 }
 
 impl RtcSessionBackend for XboxRtcProtocol {
+    fn begin_chat_negotiation(&mut self, peer: &mut RTCPeerConnection) -> Option<rtc::peer_connection::sdp::RTCSessionDescription> {
+        self.microphone.begin_negotiation(peer)
+    }
+
+    fn finish_chat_negotiation(&mut self, peer: &mut RTCPeerConnection, answer: anyhow::Result<String>) {
+        self.microphone.finish_negotiation(peer, answer);
+    }
+
+    fn microphone_status(&self) -> String { self.microphone.status() }
+
     fn pump_microphone(&mut self, peer: &mut RTCPeerConnection, connected: bool) {
         self.microphone.pump(peer, connected);
     }

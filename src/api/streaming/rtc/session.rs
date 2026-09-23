@@ -36,6 +36,9 @@ pub(crate) struct RtcSessionConfig {
 /// Provider-specific hooks invoked by the reusable RTC session.
 pub(crate) trait RtcSessionBackend {
     fn pump_microphone(&mut self, _peer: &mut RTCPeerConnection, _connected: bool) {}
+    fn begin_chat_negotiation(&mut self, _peer: &mut RTCPeerConnection) -> Option<RTCSessionDescription> { None }
+    fn finish_chat_negotiation(&mut self, _peer: &mut RTCPeerConnection, _answer: Result<String>) {}
+    fn microphone_status(&self) -> String { String::new() }
     fn handle_channel_open(
         &mut self,
         peer: &mut RTCPeerConnection,
@@ -193,8 +196,9 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                 .server_video_size()
                 .map(|(width, height)| format!("{width}x{height}"))
                 .unwrap_or_else(|| "?".to_owned());
+            let microphone = self.backend.microphone_status();
             self.status = format!(
-                "Build: RX Test {} revision {}\nXbox requested:{requested_width}x{requested_height} server:{server_size}\n{status}\n{link}\n{receive}\n{feedback}",
+                "Build: RX Test {} revision {}\nXbox requested:{requested_width}x{requested_height} server:{server_size}\n{status}\n{link}\n{receive}\n{feedback}\n{microphone}",
                 crate::build_info::NUMBER, crate::build_info::REVISION,
             );
             crate::streaming::video::trace::status_snapshot(&self.status);

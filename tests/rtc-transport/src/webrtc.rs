@@ -165,9 +165,8 @@ fn writable_admission_counts_unsent_ingress_without_starving_on_ack_wait() {
     assert!(!received.iter().any(|m| m[0] == 2));
 }
 
-#[test]
-fn microphone_reuses_audio_mline_and_mute_blocks_rtp_over_real_dtls() {
-    use crate::{mic_state::{Microphone, VoiceClip}, mic_uplink::MicrophoneUplink};
+fn voice_pair() -> (Pair, crate::mic_state::Microphone, crate::mic_uplink::MicrophoneUplink, rtc::rtp_transceiver::RTCRtpSenderId) {
+    use crate::{mic_state::Microphone, mic_uplink::MicrophoneUplink};
     use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
     let a_addr="127.0.0.1:42100".parse().unwrap();
     let b_addr="127.0.0.1:42101".parse().unwrap();
@@ -176,12 +175,25 @@ fn microphone_reuses_audio_mline_and_mute_blocks_rtp_over_real_dtls() {
     a.add_transceiver_from_kind(RtpCodecKind::Audio,None).unwrap();
     b.add_transceiver_from_kind(RtpCodecKind::Video,None).unwrap();
     b.add_transceiver_from_kind(RtpCodecKind::Audio,None).unwrap();
+    let game_audio = b.add_track(rtc::media_stream::MediaStreamTrack::new(
+        "game".into(), "game-audio".into(), "Game audio".into(), RtpCodecKind::Audio,
+        vec![rtc::rtp_transceiver::rtp_sender::RTCRtpEncodingParameters {
+            rtp_coding_parameters: rtc::rtp_transceiver::rtp_sender::RTCRtpCodingParameters {
+                ssrc: Some(12345), ..Default::default()
+            },
+            codec: rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
+                mime_type: "audio/opus".into(), clock_rate: 48_000, channels: 2,
+                sdp_fmtp_line: "minptime=10;useinbandfec=1;stereo=1".into(), rtcp_feedback: vec![],
+            }, ..Default::default()
+        }],
+    )).unwrap();
     let mic=Microphone::default();
     let mut uplink=MicrophoneUplink::new(&mut a,mic.clone()).unwrap();
     let offer=a.create_offer(None).unwrap();
     assert_eq!(offer.sdp.matches("m=audio").count(),1);
     assert_eq!(offer.sdp.matches("m=video").count(),1);
-    assert!(offer.sdp.contains("a=sendrecv"));
+    assert!(!offer.sdp.contains("greenvita-voice"));
+    assert!(!offer.sdp.contains("a=sendrecv"));
     assert!(offer.sdp.contains("opus/48000/2"));
     a.set_local_description(offer.clone()).unwrap();
     b.set_remote_description(offer).unwrap();
@@ -192,6 +204,62 @@ fn microphone_reuses_audio_mline_and_mute_blocks_rtp_over_real_dtls() {
     pair.wait_for(|p|p.a.data_channel(CHANNEL).unwrap().ready_state()==RTCDataChannelState::Open && p.b.data_channel(CHANNEL).unwrap().ready_state()==RTCDataChannelState::Open);
     uplink.pump(&mut pair.a,true);
     assert!(mic.available()); assert!(!mic.is_on());
+    (pair, mic, uplink, game_audio)
+}
+
+fn assert_game_audio(pair: &mut Pair, sender: rtc::rtp_transceiver::RTCRtpSenderId, sequence: u16) {
+    pair.b.rtp_sender(sender).unwrap().write_rtp(rtc::rtp::Packet {
+        header: rtc::rtp::Header { version: 2, payload_type: 111, ssrc: 12345,
+            sequence_number: sequence, timestamp: u32::from(sequence) * 960, ..Default::default() },
+        payload: bytes::Bytes::from_static(&[0xf8,0xff,0xfe]),
+    }).unwrap();
+    pair.wait_for(|p| {
+        while let Some(message) = p.a.poll_read() {
+            if let RTCMessage::RtpPacket(_, packet) = message {
+                if packet.header.ssrc == 12345 && packet.header.sequence_number == sequence { return true; }
+            }
+        }
+        false
+    });
+}
+
+fn assert_controls(pair: &mut Pair) {
+    pair.a.data_channel(CHANNEL).unwrap().send(BytesMut::from(&b"controls"[..])).unwrap();
+    pair.wait_for(|p| {
+        while let Some(message) = p.b.poll_read() {
+            if let RTCMessage::DataChannelMessage(_, message) = message {
+                if message.data.as_ref() == b"controls" { return true; }
+            }
+        }
+        false
+    });
+}
+
+#[test]
+fn microphone_reuses_audio_mline_and_mute_blocks_rtp_over_real_dtls() {
+    use crate::mic_state::VoiceClip;
+    let (mut pair, mic, mut uplink, game_audio) = voice_pair();
+    assert_game_audio(&mut pair, game_audio, 1);
+    mic.set_on(true);
+    let offer = uplink.begin_negotiation(&mut pair.a).unwrap();
+    assert_eq!(offer.sdp.matches("m=audio").count(), 1);
+    assert_eq!(offer.sdp.matches("m=video").count(), 1);
+    assert!(offer.sdp.contains("a=sendrecv"));
+    assert!(offer.sdp.contains("greenvita-voice"));
+    assert!(mic.begin_capture().is_none(), "no voice before Xbox accepts chat");
+    assert!(uplink.begin_negotiation(&mut pair.a).is_none(), "only one exchange at a time");
+    // Existing media and controller traffic must flow while chat is pending.
+    assert_controls(&mut pair);
+    assert_game_audio(&mut pair, game_audio, 2);
+    pair.b.set_remote_description(offer).unwrap();
+    let answer = pair.b.create_answer(None).unwrap();
+    pair.b.set_local_description(answer.clone()).unwrap();
+    // Muting during HTTP negotiation must survive its late answer.
+    mic.set_on(false);
+    uplink.finish_negotiation(&mut pair.a, Ok(answer.sdp));
+    assert!(!mic.is_on()); assert!(mic.begin_capture().is_none());
+    assert_controls(&mut pair);
+    assert_game_audio(&mut pair, game_audio, 3);
     let mut received=Vec::new();
     let drain=|p:&mut Pair, received:&mut Vec<rtc::rtp::Packet>| {
         while let Some(message)=p.b.poll_read() {
@@ -199,6 +267,7 @@ fn microphone_reuses_audio_mline_and_mute_blocks_rtp_over_real_dtls() {
         }
     };
     mic.set_on(true);
+    assert!(uplink.begin_negotiation(&mut pair.a).is_none(), "unmute reuses accepted chat");
     let make_clip=|ticket,ts|VoiceClip{ticket,captured_at:Instant::now(),timestamp:ts,opus:vec![0xf8,0xff,0xfe]};
     let stale=mic.begin_capture().unwrap();
     mic.publish(make_clip(stale,1000),0.5);
@@ -221,4 +290,18 @@ fn microphone_reuses_audio_mline_and_mute_blocks_rtp_over_real_dtls() {
     uplink.pump(&mut pair.a,false);
     assert!(!mic.is_on()); assert!(!mic.available());
     uplink.pump(&mut pair.a,true); assert!(!mic.is_on());
+}
+
+#[test]
+fn failed_chat_exchange_rolls_back_without_stopping_game_media() {
+    let (mut pair, mic, mut uplink, game_audio) = voice_pair();
+    mic.set_on(true);
+    assert!(uplink.begin_negotiation(&mut pair.a).is_some());
+    uplink.finish_negotiation(&mut pair.a, Err(anyhow::anyhow!("chat request timed out")));
+    assert!(pair.a.pending_local_description().is_none());
+    assert!(!mic.is_on()); assert!(!mic.available()); assert!(mic.begin_capture().is_none());
+    assert!(mic.status().contains("timed out"));
+    assert!(uplink.begin_negotiation(&mut pair.a).is_none());
+    assert_controls(&mut pair);
+    assert_game_audio(&mut pair, game_audio, 1);
 }

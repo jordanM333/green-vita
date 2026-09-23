@@ -19,6 +19,7 @@ pub(crate) struct StreamingSession {
     pub(crate) microphone: crate::streaming::microphone::Microphone,
     pub(crate) status: String,
     pub(crate) hint_started_at: Instant,
+    pub(crate) video_startup: crate::streaming::video::startup::VideoStartup,
     pub(in crate::app) pause_selected: usize,
     pub(in crate::app) title_id: Option<String>,
     pub(super) return_target: StreamReturnTarget,
@@ -51,6 +52,7 @@ impl StreamingSession {
             microphone,
             status: "Starting streaming backend".to_owned(),
             hint_started_at: Instant::now(),
+            video_startup: crate::streaming::video::startup::VideoStartup::new(Instant::now()),
             pause_selected: 0,
             title_id,
             return_target,
@@ -152,6 +154,11 @@ impl StreamingSession {
         if let Some((frame_id, frame)) = self.backend.take_latest_frame() {
             self.latest_video_frame = Some(frame_id);
             self.current_video_frame = Some(frame);
+        }
+
+        if !self.video_startup.picture_seen() {
+            self.video_startup.observe_picture(self.latest_video_frame.is_some()
+                || self.backend.direct_video_output().has_produced_frame());
         }
 
         let mut closed = false;

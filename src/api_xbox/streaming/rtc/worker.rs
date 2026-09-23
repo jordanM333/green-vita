@@ -43,6 +43,10 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
     async fn exchange_sdp(&self, offer: &RTCSessionDescription) -> Result<String> {
         self.stream.send_sdp_offer(&offer.sdp).await
     }
+
+    async fn exchange_chat_sdp(&self, offer: &RTCSessionDescription) -> Result<String> {
+        self.stream.send_chat_sdp_offer(&offer.sdp).await
+    }
 }
 
 pub(crate) fn spawn(stream: Stream, microphone: crate::streaming::microphone::Microphone) -> Result<RtcWorker> {

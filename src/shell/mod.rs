@@ -51,6 +51,7 @@ pub async fn run(mut app: App) -> Result<()> {
     crate::app::ui::fonts::configure(&egui_ctx);
     let start_time = Instant::now();
     let mut pointer_pos = egui::Pos2::ZERO;
+    let mut mic_touch = crate::streaming::mic_button::TouchGate::default();
     let mut back_hold_since: Option<Instant> = None;
     let mut rear_touch_buttons = RearTouchButtons::default();
     let mut held_direction: Option<InputCommand> = None;
@@ -79,8 +80,30 @@ pub async fn run(mut app: App) -> Result<()> {
                 && let Some(streaming) = app.state.streaming()
             {
                 streaming.microphone.set_on(false);
+                mic_touch = Default::default();
+                rear_touch_buttons = Default::default();
+                egui_events.push(egui::Event::PointerGone);
             }
-            rear_touch_buttons.handle_event(&event);
+            // SDL can synthesize mouse events for an already handled touch.
+            // Processing both would toggle the mic twice for one tap.
+            if matches!(&event,
+                Event::MouseMotion { which: u32::MAX, .. }
+                | Event::MouseButtonDown { which: u32::MAX, .. }
+                | Event::MouseButtonUp { which: u32::MAX, .. }) { continue; }
+            use crate::streaming::mic_button::{self, Phase, Pointer, Route};
+            let live_overlay = matches!(&app.state, AppState::Streaming(s) if !s.paused);
+            let pointer = match &event {
+                Event::FingerDown { touch_id: 1, finger_id, x, y, .. } => Some((Pointer::Finger(*finger_id), Phase::Down, *x * WIDTH as f32 / UI_SCALE, *y * HEIGHT as f32 / UI_SCALE)),
+                Event::FingerMotion { touch_id: 1, finger_id, x, y, .. } => Some((Pointer::Finger(*finger_id), Phase::Move, *x * WIDTH as f32 / UI_SCALE, *y * HEIGHT as f32 / UI_SCALE)),
+                Event::FingerUp { touch_id: 1, finger_id, x, y, .. } => Some((Pointer::Finger(*finger_id), Phase::Up, *x * WIDTH as f32 / UI_SCALE, *y * HEIGHT as f32 / UI_SCALE)),
+                Event::MouseButtonDown { x, y, .. } => Some((Pointer::Mouse, Phase::Down, *x as f32 / UI_SCALE, *y as f32 / UI_SCALE)),
+                Event::MouseMotion { x, y, .. } => Some((Pointer::Mouse, Phase::Move, *x as f32 / UI_SCALE, *y as f32 / UI_SCALE)),
+                Event::MouseButtonUp { x, y, .. } => Some((Pointer::Mouse, Phase::Up, *x as f32 / UI_SCALE, *y as f32 / UI_SCALE)),
+                _ => None,
+            };
+            let route = pointer.map(|(id, phase, x, y)| mic_touch.route(id, phase,
+                live_overlay && mic_button::contains(x, y))).unwrap_or(Route::Game);
+            if route == Route::Game { rear_touch_buttons.handle_event(&event); }
             let ime_owned_event = vita_ime_active;
             if ime_owned_event {
                 match &event {
@@ -111,7 +134,8 @@ pub async fn run(mut app: App) -> Result<()> {
             {
                 direct_commands.push(command);
             }
-            if let Some(egui_event) = map_pointer_event(
+            if route != Route::Consumed && (!live_overlay || route == Route::Ui)
+                && let Some(egui_event) = map_pointer_event(
                 &event,
                 (WIDTH as f32 / UI_SCALE, HEIGHT as f32 / UI_SCALE),
                 UI_SCALE,
@@ -121,6 +145,7 @@ pub async fn run(mut app: App) -> Result<()> {
             }
             if let AppState::Streaming(streaming) = &app.state
                 && !streaming.paused
+                && route == Route::Game
                 && !streaming.front_touch_auxiliary_buttons(&app.settings)
                 && let Some(pointer_event) = map_stream_pointer_event(
                     &event,
@@ -220,6 +245,8 @@ pub async fn run(mut app: App) -> Result<()> {
         if audio_stream_changed {
             audio_renderer.reset_stream();
             audio_stream = next_audio_stream;
+            mic_touch = Default::default();
+            egui_events.push(egui::Event::PointerGone);
         }
         if let Some(streaming) = app.state.streaming_mut() {
             audio_renderer.submit_packets(streaming.take_audio_packets());

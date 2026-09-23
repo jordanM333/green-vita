@@ -7,6 +7,7 @@ pub(crate) mod metrics;
 mod worker;
 pub(crate) mod policy;
 pub(crate) mod trace;
+pub(crate) mod startup;
 
 pub const STREAM_WIDTH: u32 = 1280;
 pub const STREAM_HEIGHT: u32 = 720;
@@ -100,6 +101,10 @@ impl DirectVideoOutput {
     pub(crate) fn has_pending_frame(&self) -> bool {
         // Input/render scheduling must not wait on the decoder's hardware call.
         self.frame_signal.is_pending()
+    }
+
+    pub(crate) fn has_produced_frame(&self) -> bool {
+        self.state.lock().is_ok_and(|state| state.next_generation != 0)
     }
 
     pub(crate) async fn wait_for_frame(&self) {

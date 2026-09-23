@@ -86,20 +86,67 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
             });
     }
 
-    if streaming.microphone.is_on() {
-        egui::Area::new(egui::Id::new("microphone_indicator"))
-            .anchor(egui::Align2::LEFT_TOP, egui::vec2(12.0, 8.0))
+    {
+        use crate::streaming::mic_button;
+        let mic = &streaming.microphone;
+        let on = mic.is_on();
+        let active = mic.is_active();
+        let available = mic.available();
+        let (key, color) = if active {
+            ("mic-live", egui::Color32::from_rgb(166, 245, 181))
+        } else if on {
+            ("mic-connecting", egui::Color32::from_rgb(255, 219, 135))
+        } else if available {
+            ("mic-off", egui::Color32::WHITE)
+        } else {
+            ("mic-unavailable", egui::Color32::from_gray(180))
+        };
+        egui::Area::new(egui::Id::new("microphone_toggle"))
+            .fixed_pos(egui::pos2(mic_button::X, mic_button::Y))
+            .order(egui::Order::Foreground)
+            .movable(false)
+            .show(ctx, |ui| {
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(mic_button::WIDTH, mic_button::HEIGHT), egui::Sense::click());
+                let painter = ui.painter();
+                painter.rect_filled(rect, 10.0, egui::Color32::from_black_alpha(if on { 144 } else { 104 }));
+                let stroke = egui::Stroke::new(1.6, color);
+                let center = rect.min + egui::vec2(20.0, 17.0);
+                painter.rect_stroke(egui::Rect::from_center_size(center, egui::vec2(7.0, 13.0)),
+                    4.0, stroke, egui::StrokeKind::Inside);
+                painter.line_segment([center + egui::vec2(-7.0, 1.0), center + egui::vec2(-7.0, 8.0)], stroke);
+                painter.line_segment([center + egui::vec2(-7.0, 8.0), center + egui::vec2(7.0, 8.0)], stroke);
+                painter.line_segment([center + egui::vec2(7.0, 8.0), center + egui::vec2(7.0, 1.0)], stroke);
+                painter.line_segment([center + egui::vec2(0.0, 8.0), center + egui::vec2(0.0, 12.0)], stroke);
+                if !on { painter.line_segment([center + egui::vec2(-10.0, -9.0), center + egui::vec2(10.0, 12.0)], stroke); }
+                painter.text(rect.min + egui::vec2(38.0, rect.height()/2.0),
+                    egui::Align2::LEFT_CENTER, i18n.text(key), egui::FontId::proportional(10.5), color);
+                if response.clicked() && (available || on) { mic.set_on(!on); }
+            });
+    }
+
+    if streaming.video_startup.needs_help(std::time::Instant::now()) {
+        egui::Area::new(egui::Id::new("video_startup_help"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .interactable(false)
             .show(ctx, |ui| {
-                ui.label(egui::RichText::new(i18n.text("mic-live"))
-                    .color(egui::Color32::WHITE).background_color(egui::Color32::from_black_alpha(192)).size(12.0));
+                egui::Frame::default().fill(egui::Color32::from_black_alpha(200))
+                    .inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+                        ui.set_max_width(360.0);
+                        ui.label(egui::RichText::new(i18n.text("streaming-video-wait"))
+                            .color(egui::Color32::WHITE).size(16.0));
+                        ui.label(egui::RichText::new(i18n.text(if streaming.can_refresh() {
+                            "streaming-video-retry-home"
+                        } else { "streaming-video-retry-cloud" }))
+                            .color(egui::Color32::WHITE).size(13.0));
+                    });
             });
     }
 
     if let Some(progress) = hold_progress {
         egui::Area::new(egui::Id::new("pause_hold_indicator"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::LEFT_TOP, egui::vec2(16.0, 16.0))
+            .anchor(egui::Align2::LEFT_TOP, egui::vec2(16.0, 56.0))
             .show(ctx, |ui| {
                 draw_hold_progress_ring(ui, progress);
             });

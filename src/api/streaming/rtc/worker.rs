@@ -1,4 +1,4 @@
-use crate::api::streaming::rtc::session::{RtcSession, RtcSessionConfig};
+use crate::api::streaming::rtc::session::{RtcSession, RtcSessionBackend, RtcSessionConfig};
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput, HW_OUTPUT_HEIGHT, HW_OUTPUT_WIDTH};
 use crate::streaming::video::metrics::METRICS;
@@ -33,6 +33,9 @@ pub(crate) trait RtcWorkerProvider: Send + 'static {
     fn create_peer(&self) -> Result<(RTCPeerConnection, Self::Protocol)>;
     fn session_config(&self) -> RtcSessionConfig;
     async fn exchange_sdp(&self, offer: &RTCSessionDescription) -> Result<String>;
+    async fn exchange_chat_sdp(&self, _offer: &RTCSessionDescription) -> Result<String> {
+        anyhow::bail!("chat negotiation is unsupported")
+    }
 }
 
 pub enum RtcWorkerEvent {
@@ -224,6 +227,7 @@ fn run_worker_thread<P: RtcWorkerProvider>(
 
                 run_session(
                     session,
+                    &provider,
                     commands_rx,
                     events_tx,
                     audio_tx,
@@ -260,8 +264,9 @@ fn prioritize_rtc_thread() {
     }
 }
 
-async fn run_session<B: super::session::RtcSessionBackend>(
-    mut session: RtcSession<B>,
+async fn run_session<P: RtcWorkerProvider>(
+    mut session: RtcSession<P::Protocol>,
+    provider: &P,
     commands_rx: Receiver<RtcWorkerCommand>,
     events_tx: SyncSender<RtcWorkerEvent>,
     audio_tx: SyncSender<TimedAudioBatch>,
@@ -276,6 +281,9 @@ async fn run_session<B: super::session::RtcSessionBackend>(
     let mut active_gamepad_pulse: Option<(GamepadFrame, Instant)> = None;
     let mut last_gamepad_sent: Option<(GamepadFrame, Instant)> = None;
     let mut pending_gamepad = latest_input::LatestInput::new();
+    // Keep the HTTP chat exchange alive across pump iterations. Awaiting it
+    // inline would freeze media and controller traffic while Xbox answers.
+    let mut chat_exchange: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + '_>>> = None;
 
     loop {
         if !drain_commands(&mut session, &commands_rx) {
@@ -411,7 +419,25 @@ async fn run_session<B: super::session::RtcSessionBackend>(
             return Ok(());
         }
 
+        if chat_exchange.is_none()
+            && let Some(offer) = session.backend.begin_chat_negotiation(&mut session.peer)
+        {
+            chat_exchange = Some(Box::pin(async move {
+                tokio::time::timeout(Duration::from_secs(15), provider.exchange_chat_sdp(&offer))
+                    .await.context("Xbox microphone negotiation timed out")?
+            }));
+        }
+
         tokio::select! {
+            answer = async {
+                match chat_exchange.as_mut() {
+                    Some(exchange) => exchange.as_mut().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                chat_exchange = None;
+                session.backend.finish_chat_negotiation(&mut session.peer, answer);
+            }
             readable = session.transport.socket.readable() => {
                 readable.context("failed waiting for WebRTC UDP socket")?;
             }

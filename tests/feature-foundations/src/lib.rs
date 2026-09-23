@@ -3,6 +3,10 @@
 mod catalog_preferences;
 #[path = "../../../src/streaming/microphone.rs"]
 mod microphone;
+#[path = "../../../src/streaming/mic_button.rs"]
+mod mic_button;
+#[path = "../../../src/streaming/video/startup.rs"]
+mod video_startup;
 #[path = "../../../src/settings.rs"]
 mod settings;
 mod fs_utils {
@@ -11,3 +15,5 @@ mod fs_utils {
 
 #[path = "../../../src/api_xbox/collection_order.rs"]
 mod collection_order;
+#[path = "../../../src/api_xbox/chat_sdp.rs"]
+mod chat_sdp;
