@@ -70,6 +70,10 @@ impl PlaybackBackend {
         }
     }
 
+    pub(crate) fn refresh_video(&self) {
+        match self { Self::Xbox(backend) => backend.refresh_video() }
+    }
+
     pub(crate) async fn maintain(&mut self) -> Option<String> {
         match self {
             Self::Xbox(backend) => backend.maintain().await,

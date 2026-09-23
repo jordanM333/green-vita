@@ -19,3 +19,6 @@ mod fs_utils {
 mod collection_order;
 #[path = "../../../src/api_xbox/chat_sdp.rs"]
 mod chat_sdp;
+
+#[path = "../../../vendor/rtc/src/peer_connection/receive_bandwidth.rs"]
+mod receive_bandwidth;

@@ -3,6 +3,7 @@
 pub(crate) mod ice;
 mod clock;
 mod feedback;
+pub(crate) mod bandwidth;
 mod reports;
 mod reorder;
 pub(crate) mod media;

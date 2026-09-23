@@ -74,18 +74,6 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>, c
         }
     });
 
-    // Keep the route to recovery visible even after the startup hint fades.
-    // This is a label, so no touch/game controls are intercepted.
-    if !app.settings.show_stream_debug_info && streaming.hint_started_at.elapsed() >= HINT_VISIBLE + HINT_FADE {
-        egui::Area::new(egui::Id::new("stream_quick_menu_hint"))
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 8.0))
-            .interactable(false)
-            .show(ctx, |ui| {
-                ui.label(egui::RichText::new(i18n.text("streaming-menu-hint"))
-                    .color(egui::Color32::WHITE).background_color(egui::Color32::from_black_alpha(128)).size(12.0));
-            });
-    }
-
     {
         use crate::streaming::mic_button;
         let screen = ctx.screen_rect().size();
@@ -151,6 +139,31 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>, c
                     egui::Align2::LEFT_CENTER, "XBOX", egui::FontId::proportional(10.5), color);
                 if response.clicked() {
                     commands.push(super::paused_overlay::Command::PressGuideButton.into());
+                }
+            });
+    }
+
+    {
+        use crate::streaming::mic_button;
+        let screen = ctx.screen_rect().size();
+        let (x, y) = mic_button::position(mic_button::Button::QuickSettings, (screen.x, screen.y));
+        egui::Area::new(egui::Id::new("quick_settings_button"))
+            .fixed_pos(egui::pos2(x, y)).order(egui::Order::Foreground).movable(false)
+            .show(ctx, |ui| {
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(mic_button::WIDTH, mic_button::HEIGHT), egui::Sense::click());
+                let painter = ui.painter();
+                let color = egui::Color32::from_white_alpha(mic_button::FOREGROUND_ALPHA);
+                painter.rect_filled(rect, 10.0, egui::Color32::from_black_alpha(mic_button::BACKGROUND_ALPHA));
+                for offset in [-6.0, 0.0, 6.0] {
+                    let center = rect.min + egui::vec2(25.0, rect.height() / 2.0 + offset);
+                    painter.line_segment([center - egui::vec2(9.0, 0.0), center + egui::vec2(9.0, 0.0)],
+                        egui::Stroke::new(1.8, color));
+                }
+                painter.text(rect.min + egui::vec2(46.0, rect.height() / 2.0),
+                    egui::Align2::LEFT_CENTER, i18n.text("streaming-quick-settings"), egui::FontId::proportional(10.5), color);
+                if response.clicked() {
+                    commands.push(crate::app::command::NavigationCommand::OpenPauseOverlay.into());
                 }
             });
     }

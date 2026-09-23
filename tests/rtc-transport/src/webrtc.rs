@@ -189,7 +189,7 @@ fn voice_pair() -> (Pair, crate::mic_state::Microphone, crate::mic_uplink::Micro
     )).unwrap();
     let mic=Microphone::default();
     let mut uplink=MicrophoneUplink::new(&mut a,mic.clone()).unwrap();
-    let offer=a.create_offer(None).unwrap();
+    let offer=a.create_offer_with_video_bandwidth(None, crate::bandwidth::VIDEO_CEILING_BPS).unwrap();
     assert_eq!(offer.sdp.matches("m=audio").count(),1);
     assert_eq!(offer.sdp.matches("m=video").count(),1);
     assert!(!offer.sdp.contains("greenvita-voice"));
@@ -248,6 +248,7 @@ fn microphone_reuses_audio_mline_and_mute_blocks_rtp_over_real_dtls() {
     let audio_section = offer.sdp.split("m=audio").nth(1).unwrap().split("\r\nm=").next().unwrap();
     assert!(audio_section.contains("a=sendrecv"), "chat must enable audio sending: {audio_section}");
     assert!(offer.sdp.contains("greenvita-voice"));
+    assert!(offer.sdp.contains("b=AS:2000\r\nb=TIAS:2000000"));
     assert!(mic.begin_capture().is_none(), "no voice before Xbox accepts chat");
     assert!(uplink.begin_negotiation(&mut pair.a).is_none(), "only one exchange at a time");
     // Existing media and controller traffic must flow while chat is pending.
@@ -306,4 +307,46 @@ fn failed_chat_exchange_rolls_back_without_stopping_game_media() {
     assert!(uplink.begin_negotiation(&mut pair.a).is_none());
     assert_controls(&mut pair);
     assert_game_audio(&mut pair, game_audio, 1);
+}
+
+#[test]
+fn video_bandwidth_offer_keeps_sdp_validation_and_negotiates_with_real_peer() {
+    let mut a = Pair::peer("127.0.0.1:42200".parse().unwrap());
+    let mut b = Pair::peer("127.0.0.1:42201".parse().unwrap());
+    a.add_transceiver_from_kind(rtc::rtp_transceiver::rtp_sender::RtpCodecKind::Video, None).unwrap();
+    let offer = a.create_offer_with_video_bandwidth(None, 2_000_000).unwrap();
+    assert!(offer.sdp.contains("b=AS:2000\r\nb=TIAS:2000000\r\n"));
+    let mut modified = offer.clone(); modified.sdp = modified.sdp.replace("b=AS:2000", "b=AS:9000");
+    assert!(a.set_local_description(modified).is_err(), "unrelated offer mutation stays rejected");
+    a.set_local_description(offer.clone()).unwrap(); b.set_remote_description(offer).unwrap();
+    let answer = b.create_answer(None).unwrap(); b.set_local_description(answer.clone()).unwrap();
+    a.set_remote_description(answer).unwrap();
+}
+
+#[test]
+fn nack_feedback_crosses_srtcp_and_reaches_the_sender() {
+    use rtc::rtcp::transport_feedbacks::transport_layer_nack::{NackPair, TransportLayerNack};
+    let (mut pair, _mic, _uplink, game_audio) = voice_pair();
+    assert_game_audio(&mut pair, game_audio, 1);
+    let receiver = pair.a.get_receivers().collect::<Vec<_>>().into_iter().find(|id|
+        pair.a.rtp_receiver(*id).unwrap().track().kind() == rtc::rtp_transceiver::rtp_sender::RtpCodecKind::Audio).unwrap();
+    pair.a.rtp_receiver(receiver).unwrap().write_rtcp(vec![Box::new(TransportLayerNack {
+        sender_ssrc: 0, media_ssrc: 12345, nacks: vec![NackPair { packet_id: 65535, lost_packets: 1 }],
+    })]).unwrap();
+    pair.wait_for(|p| {
+        while let Some(message) = p.b.poll_read() {
+            if let RTCMessage::RtcpPacket(_, packets) = message {
+                for packet in packets {
+                    if let Some(nack) = packet.as_any().downcast_ref::<TransportLayerNack>() {
+                        assert_eq!(nack.media_ssrc, 12345);
+                        assert_eq!(nack.nacks[0].packet_id, 65535);
+                        assert_eq!(nack.nacks[0].lost_packets, 1);
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    });
+    assert_controls(&mut pair); assert_game_audio(&mut pair, game_audio, 2);
 }

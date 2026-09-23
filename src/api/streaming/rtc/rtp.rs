@@ -382,6 +382,15 @@ impl VideoRtp {
         }
     }
 
+    pub(super) fn refresh(&mut self, worker: &VideoDecodeWorker) {
+        self.pending = None;
+        self.next_sequence = None;
+        self.last_arrival_sequence = None;
+        self.depacketizer = H264Packet::default();
+        self.suspect_reference = true;
+        self.record_damage(worker);
+    }
+
     pub(super) fn waiting_for_keyframe(&self) -> bool {
         self.recovery.waiting()
     }

@@ -51,6 +51,9 @@ pub(crate) struct VideoReceiver {
     stats: VideoStats,
     decoder_config: DecoderConfig,
     last_packet_at: Option<Instant>,
+    nack_payloads: Vec<u8>,
+    nack_queued: u64,
+    nack_failed: u64,
 }
 
 impl VideoReceiver {
@@ -72,6 +75,7 @@ impl VideoReceiver {
             stats: VideoStats::default(),
             decoder_config: config,
             last_packet_at: None,
+            nack_payloads: Vec::new(), nack_queued: 0, nack_failed: 0,
         })
     }
 
@@ -82,7 +86,7 @@ impl VideoReceiver {
         ssrc: u32,
     ) {
         if self.ssrc != Some(ssrc) {
-            self.order = Default::default();
+            self.order.clear();
             self.last_packet_at = None;
         }
         self.track_id = Some(track_id);
@@ -90,11 +94,36 @@ impl VideoReceiver {
         self.ssrc = Some(ssrc);
     }
 
+    pub(crate) fn set_nack_payloads(&mut self, payloads: Vec<u8>) { self.nack_payloads = payloads; }
+
+    pub(crate) fn request_missing_packets(&mut self, peer: &mut RTCPeerConnection) {
+        let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc) else { return; };
+        let Some(mut receiver) = peer.rtp_receiver(receiver_id) else { return; };
+        let missing = self.order.missing_for_nack(Instant::now());
+        if missing.is_empty() { return; }
+        use rtcp::transport_feedbacks::transport_layer_nack::{NackPair, TransportLayerNack};
+        let count = missing.len() as u64;
+        let nack = TransportLayerNack { sender_ssrc: 0, media_ssrc: ssrc,
+            nacks: missing.into_iter().map(|packet_id| NackPair { packet_id, lost_packets: 0 }).collect() };
+        if receiver.write_rtcp(vec![Box::new(nack)]).is_ok() { self.nack_queued += count; }
+        else { self.nack_failed += 1; }
+    }
+
+    pub(crate) fn repair_summary(&self) -> String {
+        format!("NACK queued:{} fail:{}", self.nack_queued, self.nack_failed)
+    }
+
+    pub(crate) fn refresh(&mut self) {
+        self.order.clear();
+        self.rtp.refresh(&self.decoder);
+    }
+
     pub(crate) fn handles(&self, track_id: &MediaStreamTrackId) -> bool {
         self.track_id.as_ref() == Some(track_id)
     }
 
     pub(crate) fn receive(&mut self, packet: Packet, keyframe_requested: &mut bool) {
+        self.order.enable_repair(self.nack_payloads.contains(&packet.header.payload_type));
         self.received_packet = true;
         self.stats.packets = self.stats.packets.saturating_add(1);
         let now = Instant::now();

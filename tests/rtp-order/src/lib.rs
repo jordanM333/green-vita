@@ -183,3 +183,47 @@ mod tests {
         assert_eq!(next.post_damage_submitted, 0);
     }
 }
+
+#[cfg(test)]
+mod repair_integration {
+    use super::*;
+    use bytes::Bytes;
+    use std::time::{Duration, Instant};
+    fn packet(seq: u16, ts: u32, marker: bool, bytes: &'static [u8]) -> rtp::Packet {
+        rtp::Packet { header: rtp::header::Header { sequence_number: seq, timestamp: ts, marker,
+            ..Default::default() }, payload: Bytes::from_static(bytes), ..Default::default() }
+    }
+    #[test]
+    fn recovered_tail_keeps_the_h264_reference_chain_instead_of_entering_idr_wait() {
+        let t = Instant::now();
+        let mut order = reorder::PacketOrder::default(); order.enable_repair(true);
+        let mut video = video_rtp::VideoRtp::new(1280, 720);
+        let worker = streaming::video::VideoDecodeWorker::default(); let mut keyframe = false;
+        let first = packet(10, 1000, false, &[0x7c, 0x85, 0x88]);
+        let next = packet(12, 2500, true, &[0x61, 0xaa]);
+        video.receive(&worker, order.push(10, first, t).unwrap(), &mut keyframe);
+        assert!(order.push(12, next, t).is_none());
+        assert_eq!(order.missing_for_nack(t + Duration::from_millis(2)), vec![11]);
+        assert!(order.pop(t + Duration::from_millis(30)).is_none());
+        let tail = packet(11, 1000, true, &[0x7c, 0x45, 0x99]);
+        let now = t + Duration::from_millis(46);
+        video.receive(&worker, order.push(11, tail, now).unwrap(), &mut keyframe);
+        video.receive(&worker, order.pop_ready(now).unwrap(), &mut keyframe);
+        assert!(!keyframe);
+        assert_eq!(*worker.submitted.lock().unwrap(), vec![vec![0,0,0,1,0x65,0x88,0x99], vec![0,0,0,1,0x61,0xaa]]);
+    }
+    #[test]
+    fn manual_video_repair_discards_partial_au_and_waits_for_complete_idr() {
+        let mut video = video_rtp::VideoRtp::new(1280,720);
+        let worker = streaming::video::VideoDecodeWorker::default(); let mut keyframe = false;
+        video.receive(&worker, packet(10, 1000, false, &[0x7c,0x85,0x88]), &mut keyframe);
+        video.refresh(&worker);
+        assert!(video.waiting_for_keyframe());
+        video.receive(&worker, packet(20, 2500, true, &[0x61,0xaa]), &mut keyframe);
+        assert!(worker.submitted.lock().unwrap().is_empty());
+        video.receive(&worker, packet(21, 4000, true, &[0x65,0xbb]), &mut keyframe);
+        assert!(!video.waiting_for_keyframe());
+        video.receive(&worker, packet(22, 5500, true, &[0x61,0xcc]), &mut keyframe);
+        assert_eq!(*worker.submitted.lock().unwrap(), vec![vec![0,0,0,1,0x65,0xbb],vec![0,0,0,1,0x61,0xcc]]);
+    }
+}

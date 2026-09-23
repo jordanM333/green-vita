@@ -3,12 +3,18 @@ use std::time::{Duration, Instant};
 #[path = "congestion.rs"]
 mod congestion;
 
-pub(crate) const VIDEO_CEILING_BPS: u32 = 2_000_000;
+#[path = "bandwidth.rs"]
+mod bandwidth;
+pub(crate) use bandwidth::VIDEO_CEILING_BPS;
 const FEEDBACK_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Use feedback only for an accepted video payload in the remote answer. The
 /// Xbox offer already advertises goog-remb; audio and rejected m-lines do not opt in.
 pub(crate) fn remb_payloads(sdp: &str) -> Vec<u8> {
+    feedback_payloads(sdp, "goog-remb")
+}
+
+pub(crate) fn feedback_payloads(sdp: &str, feedback: &str) -> Vec<u8> {
     let mut video = false;
     let mut accepted = Vec::new();
     let mut result = Vec::new();
@@ -23,7 +29,7 @@ pub(crate) fn remb_payloads(sdp: &str) -> Vec<u8> {
             } else { Vec::new() };
         } else if video && let Some(value) = line.strip_prefix("a=rtcp-fb:") {
             let fields: Vec<_> = value.split_whitespace().collect();
-            if fields.get(1) == Some(&"goog-remb") {
+            if fields.get(1) == Some(&feedback) && fields.len() == 2 {
                 if fields.first() == Some(&"*") {
                     result.extend(accepted.iter().copied());
                 } else if let Some(pt) = fields.first().and_then(|s| s.parse::<u8>().ok()) {
@@ -161,6 +167,13 @@ mod tests {
         }
         assert!(remb_payloads("m=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 nack pli").is_empty());
         assert_eq!(remb_payloads("m=video 9 UDP/TLS/RTP/SAVPF 102 103\na=rtcp-fb:* goog-remb"), vec![102, 103]);
+    }
+
+    #[test]
+    fn generic_nack_requires_its_own_negotiated_video_feedback() {
+        let sdp = "m=audio 9 UDP/TLS/RTP/SAVPF 111\na=rtcp-fb:* nack\nm=video 9 UDP/TLS/RTP/SAVPF 102 103\na=rtcp-fb:102 nack pli\na=rtcp-fb:103 nack";
+        assert_eq!(feedback_payloads(sdp, "nack"), vec![103]);
+        assert!(feedback_payloads("m=video 0 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:* nack", "nack").is_empty());
     }
 
     #[test]

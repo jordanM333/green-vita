@@ -69,6 +69,8 @@ impl StreamingSession {
         })
     }
 
+    pub(crate) fn refresh_video(&self) { self.backend.refresh_video(); }
+
     pub(crate) fn can_refresh(&self) -> bool { matches!(self.restart_target.kind, StreamKind::Home) }
 
     pub(crate) fn measured_delay_ms(&self) -> Option<u64> {

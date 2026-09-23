@@ -241,6 +241,7 @@ pub mod configuration;
 pub mod event;
 pub(crate) mod handler;
 mod internal;
+mod receive_bandwidth;
 pub mod message;
 pub mod sdp;
 pub mod state;
@@ -771,6 +772,18 @@ where
 
         self.last_offer.clone_from(&offer.sdp);
 
+        Ok(offer)
+    }
+
+    /// Create a normal offer with a receiver bandwidth limit on live video
+    /// sections. Store the same SDP for signaling-state validation; unrelated
+    /// SDP changes must still be rejected by set_local_description.
+    pub fn create_offer_with_video_bandwidth(
+        &mut self, options: Option<RTCOfferOptions>, maximum_bps: u32,
+    ) -> Result<RTCSessionDescription> {
+        let offer = self.create_offer(options)?;
+        let offer = RTCSessionDescription::offer(receive_bandwidth::limit_video(&offer.sdp, maximum_bps))?;
+        self.last_offer.clone_from(&offer.sdp);
         Ok(offer)
     }
 

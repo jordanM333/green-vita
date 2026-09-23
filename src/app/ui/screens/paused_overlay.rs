@@ -16,11 +16,10 @@ pub enum Command {
     ExitGame,
 }
 
-pub const MENU_ITEMS: [Command; 5] = [
+pub const MENU_ITEMS: [Command; 4] = [
     Command::Resume,
     Command::ToggleDiagnostics,
     Command::Settings,
-    Command::PressGuideButton,
     Command::ExitGame,
 ];
 

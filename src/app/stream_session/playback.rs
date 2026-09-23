@@ -34,21 +34,15 @@ impl App {
 
     pub(crate) fn refresh_home_stream(&mut self) {
         if !self.state.streaming().is_some_and(|s| s.can_refresh()) { return; }
-        let state = std::mem::replace(&mut self.state, AppState::ModeSelect { selected: 0 });
-        let Some(streaming) = state.into_streaming() else { return; };
-        let target = streaming.restart_target.clone();
-        crate::streaming::video::trace::record("manual_refresh", 0,
-            streaming.video_timing.map_or(0, |t| t.added_delay_ms));
-        let api = self.service.api.clone();
-        let kind = target.kind;
-        let target_id = target.target_id.clone();
-        // Stop the old receiver AND decoder before allocating a new decoder.
-        // This ends the remote-play connection; no console power/game command is sent.
-        let job = tokio::spawn(async move {
-            streaming.stop().await?;
-            api.start_stream(kind, &target_id).await
-        });
-        self.set_state(AppState::StartingStream { target, job: Some(job) });
+        if let Some(streaming) = self.state.streaming_mut() {
+            crate::streaming::video::trace::record("manual_refresh", 0,
+                streaming.video_timing.map_or(0, |t| t.added_delay_ms));
+            // Repair media in the existing peer/session. Never DELETE /sessions
+            // or start /play here: either can end the user's running Home game.
+            streaming.refresh_video();
+            streaming.set_paused(false);
+        }
+        self.menu.open = false;
     }
 
     async fn stop_stream_with_error(&mut self, reason_key: &'static str, error: String) {

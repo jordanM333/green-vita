@@ -71,7 +71,7 @@ impl MicrophoneUplink {
         let transceiver = ids.into_iter().find(|id| peer.rtp_transceiver(*id)
             .is_some_and(|t| t.sender() == Some(sender))).context("microphone transceiver")?;
         self.transceiver = Some(transceiver);
-        let offer = peer.create_offer(None).context("create Xbox chat offer")?;
+        let offer = peer.create_offer_with_video_bandwidth(None, crate::api::streaming::rtc::bandwidth::VIDEO_CEILING_BPS).context("create Xbox chat offer")?;
         peer.set_local_description(offer.clone()).context("set Xbox chat offer")?;
         Ok(offer)
     }

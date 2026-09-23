@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const PUMP_SLEEP: Duration = Duration::from_millis(1);
@@ -67,6 +67,7 @@ pub struct RtcWorker {
     thread: Option<std::thread::JoinHandle<()>>,
     stop: Arc<tokio::sync::Notify>,
     commands_tx: SyncSender<RtcWorkerCommand>,
+    refresh_video: Arc<AtomicBool>,
     pub(crate) events_rx: Receiver<RtcWorkerEvent>,
     pub(crate) audio_rx: Receiver<TimedAudioBatch>,
     pub(crate) latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
@@ -92,6 +93,8 @@ impl RtcWorker {
 
         let stop = Arc::new(tokio::sync::Notify::new());
         let worker_stop = Arc::clone(&stop);
+        let refresh_video = Arc::new(AtomicBool::new(false));
+        let worker_refresh = Arc::clone(&refresh_video);
         let thread = std::thread::Builder::new()
             .name("green-vita-rtc".to_owned())
             .spawn(move || {
@@ -106,6 +109,7 @@ impl RtcWorker {
                         worker_gamepad_pulses,
                         worker_direct_video_output,
                         worker_stop,
+                        worker_refresh,
                     )
                 })) {
                     Ok(Ok(())) => {}
@@ -129,6 +133,7 @@ impl RtcWorker {
             thread: Some(thread),
             stop,
             commands_tx,
+            refresh_video,
             events_rx,
             audio_rx,
             latest_frame,
@@ -148,6 +153,11 @@ impl RtcWorker {
                 .await.context("failed to join RTC worker")??;
         }
         Ok(())
+    }
+
+    pub(crate) fn refresh_video(&self) {
+        // Coalesce requests outside the lossy pointer/ICE command queue.
+        self.refresh_video.store(true, Ordering::Release);
     }
 
     pub fn add_remote_candidate(&self, candidate: RTCIceCandidateInit) {
@@ -194,6 +204,7 @@ fn run_worker_thread<P: RtcWorkerProvider>(
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
     direct_video_output: Arc<DirectVideoOutput>,
     stop: Arc<tokio::sync::Notify>,
+    refresh_video: Arc<AtomicBool>,
 ) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -234,6 +245,7 @@ fn run_worker_thread<P: RtcWorkerProvider>(
                     latest_frame,
                     latest_gamepad,
                     gamepad_pulses,
+                    refresh_video,
                 )
                 .await
             } => result,
@@ -273,6 +285,7 @@ async fn run_session<P: RtcWorkerProvider>(
     latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
     latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
     gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
+    refresh_video: Arc<AtomicBool>,
 ) -> Result<()> {
     let mut last_status = session.status.clone();
     let mut last_connection_state = session.connection_state;
@@ -290,6 +303,7 @@ async fn run_session<P: RtcWorkerProvider>(
             let _ = session.close();
             return Ok(());
         }
+        if refresh_video.swap(false, Ordering::AcqRel) { session.refresh_video(); }
         let pulses = gamepad_pulses
             .lock()
             .map(|mut pulses| pulses.drain(..).collect::<Vec<_>>())

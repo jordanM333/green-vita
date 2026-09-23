@@ -95,6 +95,8 @@ impl XboxStreamingBackend {
         self.worker.send_pointer_event(event);
     }
 
+    pub(crate) fn refresh_video(&self) { self.worker.refresh_video(); }
+
     pub(crate) async fn maintain(&mut self) -> Option<String> {
         self.post_local_ice().await;
         self.poll_remote_ice().await;

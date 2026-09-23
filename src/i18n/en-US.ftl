@@ -89,9 +89,9 @@ paused-refresh-stream = Refresh stream
 streaming-open-menu = Hold SELECT for 1.5 seconds to open GreenVita's quick menu
 streaming-menu-hint = Hold SELECT · Quick menu
 streaming-video-wait = Video hasn't started yet. Still waiting for a picture…
-streaming-video-retry-home = Hold SELECT for the Quick menu, then choose Refresh stream to reconnect.
+streaming-video-retry-home = Hold SELECT for the Quick menu, then choose Refresh stream to request a fresh video frame.
 streaming-video-retry-cloud = Hold SELECT for the Quick menu. To retry, choose Exit game and launch it again.
-paused-home-refresh-help = Refresh reconnects to this Xbox. Your game stays running.
+paused-home-refresh-help = Refresh repairs video without ending the Xbox session.
 paused-cloud-refresh-help = Stream refresh is available in Home streaming.
 
 # Local catalog collections; server Recently added is not connected yet.
@@ -125,4 +125,6 @@ paused-mic-not-ready = Microphone unavailable
 settings-audio = Audio
 settings-stream-volume = Stream volume
 settings-stream-volume-help = Game and incoming chat share this volume. Adjust their balance in the game's audio settings or Xbox audio controls. Your mic volume stays unchanged. Use left/right to adjust.
-streaming-lag-home = Video is falling behind. Hold SELECT → Refresh Home stream.
+streaming-lag-home = Video is falling behind. Quick settings → Refresh stream.
+
+streaming-quick-settings = SETTINGS

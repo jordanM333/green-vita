@@ -111,7 +111,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     pub fn create_offer(&mut self) -> Result<RTCSessionDescription> {
         let offer = self
             .peer
-            .create_offer(None)
+            .create_offer_with_video_bandwidth(None, super::bandwidth::VIDEO_CEILING_BPS)
             .context("failed to create rtc offer")?;
         self.peer
             .set_local_description(offer.clone())
@@ -126,6 +126,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             .set_remote_description(answer?)
             .context("failed to set remote rtc answer")?;
         self.video_ceiling.answer(&sdp);
+        self.video.set_nack_payloads(super::feedback::feedback_payloads(&sdp, "nack"));
         Ok(())
     }
 
@@ -141,6 +142,11 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             .context("failed to add remote ICE candidate")
     }
 
+    pub(crate) fn refresh_video(&mut self) {
+        self.video.refresh();
+        self.request_keyframe(true, Instant::now());
+    }
+
     pub async fn pump(&mut self) -> Result<Vec<RTCIceCandidateInit>> {
         self.transport.flush(&mut self.peer).await;
         self.transport.receive(&mut self.peer);
@@ -148,6 +154,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         let mut keyframe_requested = self.handle_peer_messages();
         self.backend.pump_microphone(&mut self.peer, self.connection_state == RTCPeerConnectionState::Connected);
         self.video.drain_decoder(&mut keyframe_requested);
+        self.video.request_missing_packets(&mut self.peer);
 
         // Feedback identifies a matched output that has completed rendering.
         // Decode-only, replaced and unknown-PTS pictures never enter this slot.
@@ -189,7 +196,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             let receive = self.transport.take_receive_summary();
             let rate = self.video_rate.summary(now);
             let ceiling = self.video_ceiling.summary(self.video_rate.latest_kbps);
-            let feedback = format!("Video payload:{rate}\n{ceiling}\n{}", super::reports::summary());
+            let feedback = format!("Video payload:{rate}\n{ceiling}\n{}\n{}\nSDP video ceiling:{}k", super::reports::summary(), self.video.repair_summary(), super::bandwidth::VIDEO_CEILING_BPS / 1000);
             let (requested_width, requested_height) = self.requested_video_size;
             let server_size = self
                 .backend

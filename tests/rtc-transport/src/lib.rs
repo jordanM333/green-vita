@@ -165,7 +165,9 @@ mod tests {
 }
 
 // Compile the production mic uplink against the real RTC dependency.
-mod api { pub mod streaming { pub mod rtc { pub mod peer {
+#[path = "../../../src/api/streaming/rtc/bandwidth.rs"]
+pub(crate) mod bandwidth;
+mod api { pub mod streaming { pub mod rtc { pub(crate) use crate::bandwidth; pub mod peer {
     pub type RTCPeerConnection = ::rtc::peer_connection::RTCPeerConnection;
 } } } }
 #[path = "../../../src/streaming/microphone.rs"]
