@@ -17,7 +17,7 @@ pub fn build_ui(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) -> V
             screens::paused_overlay::show(ctx, app, &mut commands);
         }
         AppState::Streaming(_) => {
-            screens::streaming::show(ctx, app, hold_progress);
+            screens::streaming::show(ctx, app, hold_progress, &mut commands);
         }
         AppState::TitleList { .. } | AppState::LoadingTitles(_) => {
             screens::title_list::show(ctx, app, &mut commands);

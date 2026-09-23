@@ -20,6 +20,7 @@ pub(crate) struct StreamingSession {
     pub(crate) status: String,
     pub(crate) hint_started_at: Instant,
     pub(crate) video_startup: crate::streaming::video::startup::VideoStartup,
+    pub(crate) video_lag: crate::streaming::video::startup::VideoLagHelp,
     pub(in crate::app) pause_selected: usize,
     pub(in crate::app) title_id: Option<String>,
     pub(super) return_target: StreamReturnTarget,
@@ -53,6 +54,7 @@ impl StreamingSession {
             status: "Starting streaming backend".to_owned(),
             hint_started_at: Instant::now(),
             video_startup: crate::streaming::video::startup::VideoStartup::new(Instant::now()),
+            video_lag: Default::default(),
             pause_selected: 0,
             title_id,
             return_target,
@@ -169,7 +171,10 @@ impl StreamingSession {
                 PlaybackBackendEvent::VideoResolution(width, height) => {
                     self.stream_video_size = Some((width, height));
                 }
-                PlaybackBackendEvent::VideoTiming(timing) => self.video_timing = Some(timing),
+                PlaybackBackendEvent::VideoTiming(timing) => {
+                    self.video_lag.observe(timing.received_at, timing.added_delay_ms);
+                    self.video_timing = Some(timing);
+                }
                 PlaybackBackendEvent::Closed => closed = true,
                 PlaybackBackendEvent::Error(message) => error = Some(message),
             }

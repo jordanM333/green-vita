@@ -101,6 +101,8 @@ pub struct Settings {
     pub locale: Locale,
     /// Shows internal stream/session state on the `Streaming` screen. Off by default.
     pub show_stream_debug_info: bool,
+    /// Playback volume of the mixed game/chat feed. Does not affect microphone input.
+    pub stream_volume_percent: u8,
     /// Globally swaps only the rear L2/L3 and R2/R3 zones; front touch is unchanged.
     pub swap_rear_touch_trigger_stick: bool,
     pub catalog: crate::catalog_preferences::CatalogPreferences,
@@ -133,6 +135,7 @@ impl Default for Settings {
         Self {
             locale: Locale::default(),
             show_stream_debug_info: false,
+            stream_volume_percent: 100,
             swap_rear_touch_trigger_stick: false,
             game_profiles: HashMap::new(),
             catalog: Default::default(),
@@ -208,6 +211,7 @@ mod tests {
         let saved = r#"{"show_stream_debug_info":true,"game_profiles":{"game-id":{"rear_touch_enabled":false}}}"#;
         let settings: Settings = serde_json::from_str(saved).unwrap();
         assert!(settings.catalog.favorites.is_empty());
+        assert_eq!(settings.stream_volume_percent, 100);
         assert!(settings.catalog.recently_played.is_empty());
         assert!(!settings.swap_rear_touch_trigger_stick);
         assert!(settings.show_stream_debug_info);

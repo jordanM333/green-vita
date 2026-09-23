@@ -121,3 +121,8 @@ mic-connecting = CONNECTING
 mic-unavailable = MIC N/A
 catalog-collection-empty = No playable games in this Xbox collection.
 paused-mic-not-ready = Microphone unavailable
+
+settings-audio = Audio
+settings-stream-volume = Stream volume
+settings-stream-volume-help = Game and incoming chat share this volume. Adjust their balance in the game's audio settings or Xbox audio controls. Your mic volume stays unchanged. Use left/right to adjust.
+streaming-lag-home = Video is falling behind. Hold SELECT → Refresh Home stream.

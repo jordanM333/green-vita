@@ -1,4 +1,5 @@
 pub mod audio;
+pub(crate) mod audio_gain;
 pub mod input;
 pub mod video;
 pub(crate) mod microphone;

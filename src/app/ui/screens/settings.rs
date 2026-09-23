@@ -17,6 +17,7 @@ pub enum Command {
     SetFrontTouchAuxiliaryButtons { title_id: String, enabled: bool },
     SetSwapRearTouchTriggerStick(bool),
     SetShowStreamDebugInfo(bool),
+    SetStreamVolume(u8),
 }
 
 #[derive(Clone)]
@@ -28,6 +29,7 @@ enum SettingsRow {
     GameRearTouch { title_id: String, enabled: bool },
     GameFrontTouchAuxiliary { title_id: String, enabled: bool },
     StreamDebug(bool),
+    StreamVolume,
     Back,
 }
 
@@ -45,6 +47,7 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     if *locale_expanded {
         rows.extend(Locale::ALL.iter().copied().map(SettingsRow::LocaleOption));
     }
+    rows.push(SettingsRow::StreamVolume);
     rows.push(SettingsRow::RearTouchLayout(
         app.settings.swap_rear_touch_trigger_stick,
     ));
@@ -133,6 +136,18 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     }
                 }
 
+                ui.add_space(14.0);
+                ui.separator();
+                ui.heading(egui::RichText::new(i18n.text("settings-audio")).color(theme.text_bright));
+                let mut volume = app.settings.stream_volume_percent.min(100);
+                let selected = selected_index == row_index;
+                // This label marks the D-pad row; touch adjusts the slider directly.
+                let _ = focus_row(ui, selected, format!("{}: {}%  ◀ / ▶", i18n.text("settings-stream-volume"), volume));
+                if ui.add(egui::Slider::new(&mut volume, 0..=100).suffix("%")).changed() {
+                    commands.push(Command::SetStreamVolume(volume).into());
+                }
+                ui.label(egui::RichText::new(i18n.text("settings-stream-volume-help")).size(12.0));
+                row_index += 1;
                 ui.add_space(14.0);
                 ui.separator();
                 ui.heading(
@@ -374,7 +389,16 @@ impl App {
                     *selected = move_next(*selected, rows.len());
                 }
             }
-            InputCommand::MoveLeft | InputCommand::MoveRight => {}
+            InputCommand::MoveLeft | InputCommand::MoveRight => {
+                if let AppState::Settings { selected, .. } = &self.state
+                    && matches!(rows.get(*selected), Some(SettingsRow::StreamVolume))
+                {
+                    let current = self.settings.stream_volume_percent.min(100);
+                    let next = if command == InputCommand::MoveLeft { current.saturating_sub(5) }
+                        else { current.saturating_add(5).min(100) };
+                    self.handle_settings_command(Command::SetStreamVolume(next))?;
+                }
+            }
             InputCommand::Confirm => self.confirm_settings_row(&rows)?,
             InputCommand::Back => self.leave_settings(),
         }
@@ -422,6 +446,7 @@ impl App {
                     enabled: !enabled,
                 });
             }
+            SettingsRow::StreamVolume => return Ok(()),
             SettingsRow::StreamDebug(enabled) => {
                 return self.handle_settings_command(Command::SetShowStreamDebugInfo(!enabled));
             }
@@ -498,6 +523,10 @@ impl App {
             }
             Command::SetSwapRearTouchTriggerStick(enabled) => {
                 self.settings.swap_rear_touch_trigger_stick = enabled;
+                self.settings.save();
+            }
+            Command::SetStreamVolume(percent) => {
+                self.settings.stream_volume_percent = percent.min(100);
                 self.settings.save();
             }
             Command::SetShowStreamDebugInfo(enabled) => {

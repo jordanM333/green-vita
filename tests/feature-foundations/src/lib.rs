@@ -5,6 +5,8 @@ mod catalog_preferences;
 mod microphone;
 #[path = "../../../src/streaming/mic_button.rs"]
 mod mic_button;
+#[path = "../../../src/streaming/audio_gain.rs"]
+mod audio_gain;
 #[path = "../../../src/streaming/video/startup.rs"]
 mod video_startup;
 #[path = "../../../src/settings.rs"]

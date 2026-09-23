@@ -98,6 +98,7 @@ impl Drop for NativeOpusDecoder {
 }
 
 pub struct AudioRenderer {
+    gain: super::audio_gain::AudioGain,
     queue: AudioQueue<i16>,
     packets_tx: SyncSender<Bytes>,
     samples_rx: Receiver<Vec<i16>>,
@@ -126,6 +127,7 @@ impl AudioRenderer {
         let (packets_tx, samples_rx, thread) = spawn_decode_worker()?;
 
         Ok(Self {
+            gain: Default::default(),
             queue,
             packets_tx,
             samples_rx,
@@ -134,7 +136,8 @@ impl AudioRenderer {
         })
     }
 
-    pub fn submit_packets(&mut self, packets: Vec<Bytes>) {
+    pub fn submit_packets(&mut self, packets: Vec<Bytes>, volume_percent: u8) {
+        self.gain.set_percent(volume_percent);
         if self.started && self.queue.size() == 0 {
             self.queue.pause();
             self.started = false;
@@ -201,7 +204,8 @@ impl AudioRenderer {
             }
         }
 
-        for samples in fresh_pcm {
+        for mut samples in fresh_pcm {
+            self.gain.apply_stereo(&mut samples);
             let sample_bytes = (samples.len() * size_of::<i16>()) as u32;
             if self.queue.size().saturating_add(sample_bytes) > MAX_QUEUED_AUDIO_BYTES {
                 // A safety limit for unusually large frames, independent of

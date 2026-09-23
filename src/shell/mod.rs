@@ -102,7 +102,8 @@ pub async fn run(mut app: App) -> Result<()> {
                 _ => None,
             };
             let route = pointer.map(|(id, phase, x, y)| mic_touch.route(id, phase,
-                live_overlay && mic_button::contains(x, y))).unwrap_or(Route::Game);
+                live_overlay && mic_button::contains(x, y,
+                    (WIDTH as f32 / UI_SCALE, HEIGHT as f32 / UI_SCALE)))).unwrap_or(Route::Game);
             if route == Route::Game { rear_touch_buttons.handle_event(&event); }
             let ime_owned_event = vita_ime_active;
             if ime_owned_event {
@@ -249,7 +250,7 @@ pub async fn run(mut app: App) -> Result<()> {
             egui_events.push(egui::Event::PointerGone);
         }
         if let Some(streaming) = app.state.streaming_mut() {
-            audio_renderer.submit_packets(streaming.take_audio_packets());
+            audio_renderer.submit_packets(streaming.take_audio_packets(), app.settings.stream_volume_percent);
         }
         // Painting an unchanged picture costs about 14 ms in the on-device trace.
         // Keep polling input, audio, and the stream, but save that GPU work
