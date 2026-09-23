@@ -1,7 +1,8 @@
 //! Exercise admission at the public API, across the real ICE/DTLS/SCTP pipeline.
 use bytes::BytesMut;
 use rtc::data_channel::{RTCDataChannelInit, RTCDataChannelState};
-use rtc::peer_connection::{RTCPeerConnection, RTCPeerConnectionBuilder};
+use rtc::peer_connection::RTCPeerConnectionBuilder;
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use rtc::peer_connection::message::RTCMessage;
 use rtc::peer_connection::transport::{CandidateConfig, CandidateHostConfig, RTCIceCandidate};
 use rtc::sansio::Protocol;
@@ -36,7 +37,9 @@ impl Pair {
     fn peer(address: SocketAddr) -> RTCPeerConnection {
         let mut media = rtc::peer_connection::configuration::media_engine::MediaEngine::default();
         media.register_default_codecs().unwrap();
-        let mut pc = RTCPeerConnectionBuilder::new().with_media_engine(media).build().unwrap();
+        let registry = crate::arrival_feedback::configure(&mut media, vec![(102,90_000),(111,48_000)]).unwrap();
+        let mut pc = RTCPeerConnectionBuilder::new().with_media_engine(media)
+            .with_interceptor_registry(registry).build().unwrap();
         let candidate = CandidateHostConfig { base_config: CandidateConfig {
             network: "udp".into(), address: address.ip().to_string(),
             port: address.port(), component: 1, ..Default::default()
@@ -147,7 +150,7 @@ fn writable_admission_counts_unsent_ingress_without_starving_on_ack_wait() {
     while let Some(RTCMessage::DataChannelMessage(_, msg)) = pair.b.poll_read() { received.push(msg.data); }
     assert_eq!(received.len(), 46, "fresh controls and feedback must both keep flowing");
     assert!(!received.iter().any(|m| m[0] == 2), "rejected reports must never be queued");
-    // Exhaust the real congestion window without bypassing it.
+    // Exhaust the real arrival_feedback window without bypassing it.
     let mut blocked = false;
     for _ in 0..300 {
         let accepted = pair.a.data_channel(CHANNEL).unwrap()
@@ -155,7 +158,7 @@ fn writable_admission_counts_unsent_ingress_without_starving_on_ack_wait() {
         if !accepted { blocked = true; break; }
         pair.tick(true);
     }
-    assert!(blocked, "admission must honor SCTP congestion control");
+    assert!(blocked, "admission must honor SCTP arrival_feedback control");
     pair.wait_for(|p| p.a.data_channel(CHANNEL).unwrap()
         .try_send_when_writable(BytesMut::from(&[3; 38][..]), 256).unwrap());
     pair.wait_for(|p| {

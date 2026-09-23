@@ -1,9 +1,17 @@
 //! Exercise the actual SCTP dependency with a virtual clock and two endpoints.
-//! This reproduces transport queueing; it does not emulate Xbox congestion control.
+//! This reproduces transport queueing; it does not emulate Xbox arrival_feedback control.
 #[cfg(test)]
 mod delivery;
 #[cfg(test)]
 mod webrtc;
+#[cfg(test)]
+mod arrival;
+#[path = "../../../src/api/streaming/rtc/reports.rs"]
+mod reports;
+#[path = "../../../src/api/streaming/rtc/arrival_feedback.rs"]
+mod arrival_feedback;
+#[path = "../../../src/api/streaming/rtc/traffic.rs"]
+mod traffic;
 #[path = "../../../src/api_xbox/streaming/control/admission.rs"]
 pub mod admission;
 #[path = "../../../src/api/streaming/rtc/latest_input.rs"]
@@ -168,7 +176,7 @@ mod tests {
 #[path = "../../../src/api/streaming/rtc/bandwidth.rs"]
 pub(crate) mod bandwidth;
 mod api { pub mod streaming { pub mod rtc { pub(crate) use crate::bandwidth; pub mod peer {
-    pub type RTCPeerConnection = ::rtc::peer_connection::RTCPeerConnection;
+    pub type RTCPeerConnection = ::rtc::peer_connection::RTCPeerConnection<crate::arrival_feedback::ReceiveFeedback>;
 } } } }
 #[path = "../../../src/streaming/microphone.rs"]
 mod mic_state;

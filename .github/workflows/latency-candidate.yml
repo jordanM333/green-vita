@@ -33,7 +33,7 @@ jobs:
         run: cargo test --target x86_64-unknown-linux-gnu
       - name: Reproduce SCTP backlog and verify admission across WebRTC
         working-directory: tests/rtc-transport
-        run: cargo test --locked --target x86_64-unknown-linux-gnu -- --nocapture
+        run: cargo test --locked --target x86_64-unknown-linux-gnu -- --test-threads=1 --nocapture
       - name: Verify video wakeups and coalescing
         working-directory: tests/frame-signal
         run: cargo test --target x86_64-unknown-linux-gnu

@@ -342,15 +342,28 @@ where
                         .find(|codec| codec.payload_type == rtp_header.payload_type)
                 //TODO: what about RTX/FEC stream?
                 {
-                    Some(codec.rtp_codec.clone())
+                    Some(codec.clone())
                 } else {
                     None
                 };
 
                 if let Some(codec) = track_codec {
+                    // An SDP-declared SSRC initially has no codec. Notify the
+                    // interceptors when its first RTP packet resolves it, just
+                    // as the RID and undeclared-SSRC paths do. Without this the
+                    // negotiated TWCC extension never reaches the receiver.
+                    let parameters = receiver.get_parameters(self.media_engine);
+                    RTCRtpReceiverInternal::interceptor_remote_stream_op(
+                        self.interceptor,
+                        true,
+                        ssrc,
+                        codec.payload_type,
+                        &codec.rtp_codec,
+                        &parameters.rtp_parameters.header_extensions,
+                    );
                     // Set valid Codec for track when received the first RTP packet for such ssrc stream
                     // assert not inserting new entry
-                    let new_entry = receiver.track_mut().set_codec_by_ssrc(codec, ssrc);
+                    let new_entry = receiver.track_mut().set_codec_by_ssrc(codec.rtp_codec, ssrc);
                     assert!(!new_entry);
 
                     // Get RTX and FEC SSRCs from coding parameters

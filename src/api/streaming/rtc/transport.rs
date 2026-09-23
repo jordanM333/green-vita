@@ -26,6 +26,8 @@ pub(crate) struct RtcTransport {
     rr_sent: u64,
     feedback_sent: u64,
     send_errors: u64,
+    twcc_sent: u64,
+    traffic: super::traffic::Traffic,
 }
 
 impl RtcTransport {
@@ -70,6 +72,8 @@ impl RtcTransport {
             rr_sent: 0,
             feedback_sent: 0,
             send_errors: 0,
+            twcc_sent: 0,
+            traffic: super::traffic::Traffic::new(),
         })
     }
 
@@ -85,13 +89,17 @@ impl RtcTransport {
                     "Failed to send WebRTC UDP packet to {}: {error}",
                     outgoing.transport.peer_addr
                 );
-            } else if outgoing.message.len() >= 8 && outgoing.message[0] >> 6 == 2 {
-                // SRTCP keeps its first RTCP header clear. Count successful UDP sends,
-                // not server acknowledgements; encrypted REMB contents are not inspected.
-                match outgoing.message[1] {
-                    201 => self.rr_sent += 1,
-                    206 => self.feedback_sent += 1,
-                    _ => {}
+            } else {
+                self.traffic.sent(&outgoing.message);
+                if outgoing.message.len() >= 8 && outgoing.message[0] >> 6 == 2 {
+                    // SRTCP keeps its first RTCP header clear. Count successful UDP sends,
+                    // not server acknowledgements; encrypted REMB contents are not inspected.
+                    match outgoing.message[1] {
+                        201 => self.rr_sent += 1,
+                        206 => self.feedback_sent += 1,
+                        205 if outgoing.message[0] & 0x1f == 15 => self.twcc_sent += 1,
+                        _ => {}
+                    }
                 }
             }
         }
@@ -103,10 +111,11 @@ impl RtcTransport {
         loop {
             match self.socket.try_recv_from(&mut self.recv_buf) {
                 Ok((n, peer_addr)) => {
-                    self.receive_rate.receive(n, Instant::now());
+                    let arrived = Instant::now();
+                    self.receive_rate.receive(n, arrived);
                     received += 1;
                     if let Err(error) = peer.handle_read(TaggedBytesMut {
-                        now: Instant::now(),
+                        now: arrived,
                         transport: TransportContext {
                             local_addr: self.local_addr,
                             peer_addr,
@@ -117,6 +126,7 @@ impl RtcTransport {
                     }) {
                         eprintln!("Failed to handle WebRTC UDP packet from {peer_addr}: {error}");
                     }
+                    self.traffic.received(&self.recv_buf[..n], arrived.elapsed());
                     if received >= RECEIVE_PASS_PACKETS || started.elapsed() >= RECEIVE_PASS_TIME {
                         self.receive_budget_hits += 1;
                         break;
@@ -136,10 +146,11 @@ impl RtcTransport {
 
     pub(crate) fn take_receive_summary(&mut self) -> String {
         let summary = format!(
-            "RX passes:{} budget:{} maxPk:{} max:{}us\nUDP:{} RRsent:{} PSFB:{} txErr:{}",
+            "RX passes:{} budget:{} maxPk:{} max:{}us\nUDP:{} RRsent:{} PSFB:{} txErr:{} TWCCsent:{}\n{}",
             self.receive_passes, self.receive_budget_hits,
             self.receive_packets_max, self.receive_pass_max_us,
             self.receive_rate.summary(Instant::now()), self.rr_sent, self.feedback_sent, self.send_errors,
+            self.twcc_sent, self.traffic.take_summary(Instant::now()),
         );
         self.receive_passes = 0;
         self.receive_budget_hits = 0;

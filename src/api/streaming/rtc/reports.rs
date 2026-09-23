@@ -11,6 +11,11 @@ use std::time::{Duration, Instant};
 static BOUND: AtomicU64 = AtomicU64::new(0);
 static GENERATED: AtomicU64 = AtomicU64::new(0);
 static SENDER_REPORTS: AtomicU64 = AtomicU64::new(0);
+static ARRIVAL_TRACKS: AtomicU64 = AtomicU64::new(0);
+static ARRIVAL_PACKETS: AtomicU64 = AtomicU64::new(0);
+static EMPTY_RTP: AtomicU64 = AtomicU64::new(0);
+pub(crate) const TRANSPORT_CC_URI: &str =
+    "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
 // The app owns one active RTC session. Keep only the latest report per SSRC;
 // the inner interceptor consumes RTCP, so observing RTCMessage is too late.
 static CLOCK_REPORTS: Mutex<Vec<(u32, rtc::rtcp::sender_report::SenderReport)>> = Mutex::new(Vec::new());
@@ -20,9 +25,10 @@ pub(crate) fn take_clock_reports() -> Vec<(u32, rtc::rtcp::sender_report::Sender
 }
 
 pub(crate) fn summary() -> String {
-    format!("RR tracks:{} made:{} SRseen:{}",
+    format!("RR tracks:{} made:{} SRseen:{} TWCC tracks:{} pk:{} emptyRTP:{}",
         BOUND.load(Ordering::Relaxed), GENERATED.load(Ordering::Relaxed),
-        SENDER_REPORTS.load(Ordering::Relaxed))
+        SENDER_REPORTS.load(Ordering::Relaxed), ARRIVAL_TRACKS.load(Ordering::Relaxed),
+        ARRIVAL_PACKETS.load(Ordering::Relaxed), EMPTY_RTP.load(Ordering::Relaxed))
 }
 
 pub(crate) struct ReceiveReports {
@@ -30,6 +36,7 @@ pub(crate) struct ReceiveReports {
     // Provider-supplied codec clocks, matching the payload types in its offer.
     clocks: Vec<(u8, u32)>,
     bound: HashMap<u32, u32>,
+    arrival_extensions: HashMap<u32, u8>,
 }
 
 impl ReceiveReports {
@@ -37,11 +44,15 @@ impl ReceiveReports {
         BOUND.store(0, Ordering::Relaxed);
         GENERATED.store(0, Ordering::Relaxed);
         SENDER_REPORTS.store(0, Ordering::Relaxed);
+        ARRIVAL_TRACKS.store(0, Ordering::Relaxed);
+        ARRIVAL_PACKETS.store(0, Ordering::Relaxed);
+        EMPTY_RTP.store(0, Ordering::Relaxed);
         if let Ok(mut reports) = CLOCK_REPORTS.lock() { reports.clear(); }
         Self {
             inner: ReceiverReportBuilder::new().with_interval(Duration::from_secs(1)).build()(inner),
             clocks,
             bound: HashMap::new(),
+            arrival_extensions: HashMap::new(),
         }
     }
 
@@ -65,6 +76,12 @@ impl Protocol<TaggedPacket, TaggedPacket, ()> for ReceiveReports {
     fn handle_read(&mut self, msg: TaggedPacket) -> Result<(), Self::Error> {
         match &msg.message {
             Packet::Rtp(packet) => {
+                if packet.payload.is_empty() { EMPTY_RTP.fetch_add(1, Ordering::Relaxed); }
+                if let Some(id) = self.arrival_extensions.get(&packet.header.ssrc)
+                    && packet.header.get_extension(*id).is_some_and(|ext| ext.len() >= 2)
+                {
+                    ARRIVAL_PACKETS.fetch_add(1, Ordering::Relaxed);
+                }
                 if let Some((_, clock_rate)) = self.clocks.iter()
                     .find(|(pt, _)| *pt == packet.header.payload_type)
                 {
@@ -116,9 +133,19 @@ impl Protocol<TaggedPacket, TaggedPacket, ()> for ReceiveReports {
 impl Interceptor for ReceiveReports {
     fn bind_local_stream(&mut self, info: &StreamInfo) { self.inner.bind_local_stream(info); }
     fn unbind_local_stream(&mut self, info: &StreamInfo) { self.inner.unbind_local_stream(info); }
-    fn bind_remote_stream(&mut self, info: &StreamInfo) { self.bind_once(info); }
+    fn bind_remote_stream(&mut self, info: &StreamInfo) {
+        if let Some(ext) = info.rtp_header_extensions.iter()
+            .find(|ext| ext.uri == TRANSPORT_CC_URI && (1..=255).contains(&ext.id))
+        {
+            self.arrival_extensions.insert(info.ssrc, ext.id as u8);
+            ARRIVAL_TRACKS.store(self.arrival_extensions.len() as u64, Ordering::Relaxed);
+        }
+        self.bind_once(info);
+    }
     fn unbind_remote_stream(&mut self, info: &StreamInfo) {
         self.bound.remove(&info.ssrc);
+        self.arrival_extensions.remove(&info.ssrc);
+        ARRIVAL_TRACKS.store(self.arrival_extensions.len() as u64, Ordering::Relaxed);
         BOUND.store(self.bound.len() as u64, Ordering::Relaxed);
         self.inner.unbind_remote_stream(info);
     }
