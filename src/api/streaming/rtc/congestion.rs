@@ -101,6 +101,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fixed_arrival_offset_reproduces_legacy_floor_collapse() {
+        // A path offset can remain after a pause without further queue growth.
+        // This captures the legacy loop's flaw; TWCC sessions must not run it.
+        let start = Instant::now();
+        let mut budget = ReceiveBudget::new(2_000_000);
+        for tick in 0..=300 {
+            budget.receive(25_000, 200, start + Duration::from_millis(tick * 100));
+        }
+        assert_eq!(budget.target(), MIN_BPS);
+        assert!(budget.reductions >= 4);
+    }
+
+    #[test]
     fn settled_seventy_ms_path_can_recover_but_large_backlog_cannot() {
         let start = Instant::now();
         let mut budget = ReceiveBudget::new(2_000_000);

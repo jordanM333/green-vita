@@ -13,7 +13,7 @@ use std::{net::SocketAddr, sync::{Arc, Mutex}, time::{Duration, Instant}};
 use crate::arrival_feedback::{self, TRANSPORT_CC_URI};
 
 #[derive(Default)]
-struct Seen { twcc: Vec<TransportLayerCc>, rr: usize }
+struct Seen { twcc: Vec<TransportLayerCc>, rr: usize, remb: Vec<u32> }
 struct Observe { inner: NoopInterceptor, seen: Arc<Mutex<Seen>> }
 impl Protocol<TaggedPacket, TaggedPacket, ()> for Observe {
     type Rout = TaggedPacket; type Wout = TaggedPacket; type Eout = ();
@@ -24,6 +24,9 @@ impl Protocol<TaggedPacket, TaggedPacket, ()> for Observe {
             for p in packets {
                 if let Some(tcc) = p.as_any().downcast_ref::<TransportLayerCc>() { seen.twcc.push(tcc.clone()); }
                 if p.as_any().is::<rtc::rtcp::receiver_report::ReceiverReport>() { seen.rr += 1; }
+                if let Some(remb) = p.as_any().downcast_ref::<rtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate>() {
+                    seen.remb.push(remb.bitrate as u32);
+                }
             }
         }
         self.inner.handle_read(msg)
@@ -52,20 +55,25 @@ fn candidate<I: Interceptor>(pc: &mut RTCPeerConnection<I>, address: SocketAddr)
     pc.add_local_candidate(RTCIceCandidate::from(&c).to_json().unwrap()).unwrap();
 }
 fn transfer<I: Interceptor, J: Interceptor>(a: &mut RTCPeerConnection<I>, b: &mut RTCPeerConnection<J>,
-    a_addr: SocketAddr, b_addr: SocketAddr) {
+    a_addr: SocketAddr, b_addr: SocketAddr) -> u64 {
     let now = Instant::now();
+    let mut twcc_sent = 0;
     if a.poll_timeout().is_some_and(|at| at <= now) { a.handle_timeout(now).unwrap(); }
     while let Some(msg) = a.poll_write() {
+        if msg.message.len() >= 8 && msg.message[0] >> 6 == 2
+            && msg.message[1] == 205 && msg.message[0] & 0x1f == 15 { twcc_sent += 1; }
         b.handle_read(TaggedBytesMut { now: Instant::now(), transport: TransportContext {
             local_addr: b_addr, peer_addr: a_addr, ecn: None, transport_protocol: TransportProtocol::UDP
         }, message: msg.message }).unwrap();
     }
     while a.poll_event().is_some() {}
+    twcc_sent
 }
 fn codec() -> RTCRtpCodec {
     RTCRtpCodec { mime_type: "video/H264".into(), clock_rate: 90_000,
         sdp_fmtp_line: "packetization-mode=1;profile-level-id=42001f".into(),
-        rtcp_feedback: vec![RTCPFeedback { typ: "nack".into(), ..Default::default() }],
+        rtcp_feedback: vec![RTCPFeedback { typ: "nack".into(), ..Default::default() },
+            RTCPFeedback { typ: "goog-remb".into(), ..Default::default() }],
         ..Default::default() }
 }
 fn media() -> MediaEngine {
@@ -106,14 +114,18 @@ fn encrypted_feedback(accept: bool) {
     assert_eq!(answer.sdp.contains(TRANSPORT_CC_URI), accept);
     assert_eq!(answer.sdp.contains("transport-cc"), accept);
     assert!(answer.sdp.contains("a=ssrc:12345")); // exercise the formerly missing binding
+    let mut ceiling = crate::feedback::VideoCeiling::default();
+    ceiling.answer(&answer.sdp);
     sender.set_local_description(answer.clone()).unwrap(); receiver.set_remote_description(answer).unwrap();
     let start = Instant::now();
     let mut sequence = 0u16;
     let mut next = start + Duration::from_millis(300);
     let mut delivered = 0;
+    let mut twcc_sent = 0;
     while start.elapsed() < Duration::from_millis(1400) {
-        transfer(&mut receiver, &mut sender, r_addr, s_addr);
+        twcc_sent += transfer(&mut receiver, &mut sender, r_addr, s_addr);
         transfer(&mut sender, &mut receiver, s_addr, r_addr);
+        ceiling.update_arrival_feedback(crate::reports::video_arrival_packets(), twcc_sent, Instant::now());
         if Instant::now() >= next && sequence < 20 {
             let mut header = rtc::rtp::Header { version: 2, ssrc: 12345, payload_type: 102,
                 sequence_number: sequence, timestamp: u32::from(sequence)*1500, ..Default::default() };
@@ -126,7 +138,19 @@ fn encrypted_feedback(accept: bool) {
             sequence += 1; next += Duration::from_millis(10);
         }
         while let Some(msg) = receiver.poll_read() {
-            if let rtc::peer_connection::message::RTCMessage::RtpPacket(_, _) = msg { delivered += 1; }
+            if let rtc::peer_connection::message::RTCMessage::RtpPacket(_, packet) = msg {
+                delivered += 1;
+                ceiling.observe_payload(packet.header.payload_type);
+                ceiling.receive(packet.payload.len(), 1991, Instant::now());
+            }
+        }
+        let now = Instant::now();
+        if ceiling.due(now) {
+            let id = receiver.get_receivers().next().unwrap();
+            receiver.rtp_receiver(id).unwrap().write_rtcp(vec![Box::new(rtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate {
+                sender_ssrc: 0, bitrate: ceiling.target_bps() as f32, ssrcs: vec![12345]
+            })]).unwrap();
+            ceiling.attempted(now, true);
         }
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -137,6 +161,10 @@ fn encrypted_feedback(accept: bool) {
         assert!(!seen.twcc.is_empty(), "negotiated arrival feedback must be decrypted at the remote sender");
         assert!(seen.twcc.iter().all(|p| p.media_ssrc == 12345));
         assert!(seen.twcc.iter().map(|p| p.recv_deltas.len()).sum::<usize>() >= 19);
+        assert_eq!(ceiling.target_bps(), crate::feedback::VIDEO_CEILING_BPS);
+        assert!(seen.remb.len() >= 2);
+        assert!(seen.remb.iter().all(|bps| *bps == crate::feedback::VIDEO_CEILING_BPS),
+            "decrypted receiver ceilings must not overrule active TWCC: {:?}", seen.remb);
     } else { assert!(seen.twcc.is_empty(), "peer declined the extension"); }
 }
 #[test]

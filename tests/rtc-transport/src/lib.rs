@@ -10,6 +10,8 @@ mod arrival;
 mod reports;
 #[path = "../../../src/api/streaming/rtc/arrival_feedback.rs"]
 mod arrival_feedback;
+#[path = "../../../src/api/streaming/rtc/feedback.rs"]
+mod feedback;
 #[path = "../../../src/api/streaming/rtc/traffic.rs"]
 mod traffic;
 #[path = "../../../src/api_xbox/streaming/control/admission.rs"]

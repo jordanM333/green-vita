@@ -20,12 +20,13 @@
     "note": "164 executions; shared production tests execute in multiple suites."
   },
   "device_acceptance": {
-    "status": "pending for RX38.16",
+    "status": "failed latency acceptance: user reports RX38.16 is no different",
     "baseline_38_15": "Returned recording shows up to 1991ms added video arrival delay with active TWCC and no unrepaired video packet loss; catch-up bursts fill the 32-AU queue twice.",
     "playback": "Nonblocking keyframe request on sustained arrival/queue pressure. Queued old AUs are replaced only by a complete capacity-checked IDR with its own SPS/PPS. Upstream delay response still requires device validation.",
     "refresh": "Manual Home Refresh preserves partial AUs and valid playback while awaiting a replacement; no session stop or reconnect.",
     "microphone": "Capture, mute, Opus and negotiation retained; all host regressions pass.",
-    "ui": "Three translucent bottom buttons, audio volume controls and account catalog retained."
+    "ui": "Three translucent bottom buttons, audio volume controls and account catalog retained.",
+    "next_review": "RX38-FEEDBACK-OWNERSHIP.md"
   },
   "artifact_id": 10791050101,
   "artifact_expires": "2026-10-24T04:36:48Z",

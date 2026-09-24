@@ -174,6 +174,8 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         // still applies. A timeout can shrink SCTP's congestion window.
         self.transport.flush(&mut self.peer).await;
         let now = Instant::now();
+        self.video_ceiling.update_arrival_feedback(
+            super::reports::video_arrival_packets(), self.transport.twcc_sent(), now);
         if let Some(sample) = self.video_clock.timing()
             && self.catch_up.observe(sample.timestamp, sample.received_at,
                 sample.added_delay_ms, self.video.decoder.queued_frames(),

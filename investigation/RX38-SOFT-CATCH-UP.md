@@ -87,7 +87,8 @@ native release build passed in workflow 35955793475. Artifact and VPK checksums,
 both ZIP CRC checks, embedded revision/build and GRNVTEST1 identity were verified.
 Native metadata headroom is 90,972 bytes against the 65,536-byte minimum.
 `CANDIDATE-38.16-BUILD.json` records the package identity and complete result.
-Device acceptance remains pending.
+The user subsequently reported RX38.16 was no different; latency acceptance
+failed. See `RX38-FEEDBACK-OWNERSHIP.md` for the next audit and correction.
 The change directly removes an avoidable local recovery stall, but a new
 keyframe may itself remain in an upstream queue. It must not be called a proven
 fix for the one-to-two-second arrival delay.

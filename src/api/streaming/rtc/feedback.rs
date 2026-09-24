@@ -1,4 +1,4 @@
-//! Negotiated REMB feedback with delay-based congestion response and rate measurements.
+//! Negotiated REMB ceiling; legacy delay adaptation runs only without active TWCC.
 use std::time::{Duration, Instant};
 #[path = "congestion.rs"]
 mod congestion;
@@ -51,21 +51,62 @@ pub(crate) struct VideoCeiling {
     queued: u64,
     failed: u64,
     over_windows: u64,
+    arrival: ArrivalFeedback,
+    delay_ms: u64,
+}
+
+/// A negotiated extension alone is insufficient: use sender-side adaptation
+/// only while authenticated video extensions AND successful TWCC sends advance.
+#[derive(Default)]
+struct ArrivalFeedback {
+    packets: u64,
+    reports: u64,
+    packet_at: Option<Instant>,
+    report_at: Option<Instant>,
+    active: bool,
+}
+
+impl ArrivalFeedback {
+    fn update(&mut self, packets: u64, reports: u64, now: Instant) {
+        if packets < self.packets || reports < self.reports { *self = Self::default(); }
+        if packets > self.packets { self.packet_at = Some(now); }
+        if reports > self.reports { self.report_at = Some(now); }
+        self.packets = packets;
+        self.reports = reports;
+        let recent = |at: Option<Instant>| at.is_some_and(|at|
+            now.saturating_duration_since(at) < Duration::from_secs(2));
+        self.active = recent(self.packet_at) && recent(self.report_at);
+    }
 }
 
 impl Default for VideoCeiling {
     fn default() -> Self {
         Self { budget: congestion::ReceiveBudget::new(VIDEO_CEILING_BPS),
             supported_payloads: Vec::new(), active: false, last_attempt: None,
-            queued: 0, failed: 0, over_windows: 0 }
+            queued: 0, failed: 0, over_windows: 0,
+            arrival: Default::default(), delay_ms: 0 }
     }
 }
 
 impl VideoCeiling {
     pub(crate) fn receive(&mut self, bytes: usize, delay_ms: u64, now: Instant) {
-        self.budget.receive(bytes, delay_ms, now);
+        self.delay_ms = delay_ms;
+        if !self.arrival.active { self.budget.receive(bytes, delay_ms, now); }
     }
-    pub(crate) fn target_bps(&self) -> u32 { self.budget.target() }
+    pub(crate) fn target_bps(&self) -> u32 {
+        if self.arrival.active { VIDEO_CEILING_BPS } else { self.budget.target() }
+    }
+
+    pub(crate) fn update_arrival_feedback(&mut self, video_packets: u64, sent: u64, now: Instant) {
+        let previous = self.arrival.active;
+        self.arrival.update(video_packets, sent, now);
+        if previous != self.arrival.active {
+            // Do not revive the poisoned pre-TWCC estimate on fallback, or let
+            // legacy REMB reductions overrule the working sender controller.
+            self.budget = congestion::ReceiveBudget::new(VIDEO_CEILING_BPS);
+            self.last_attempt = None;
+        }
+    }
 
     pub(crate) fn answer(&mut self, sdp: &str) {
         *self = Self { supported_payloads: remb_payloads(sdp), ..Default::default() };
@@ -83,13 +124,14 @@ impl VideoCeiling {
     pub(crate) fn summary(&mut self, measured_kbps: u64) -> String {
         // This is an observation, not a server acknowledgement or hard wire cap.
         // Allow 25% for short-window/keyframe bursts before counting an overshoot.
-        if self.queued >= 4 && measured_kbps > u64::from(self.budget.target()) / 800 {
+        if self.queued >= 4 && measured_kbps > u64::from(self.target_bps()) / 800 {
             self.over_windows += 1;
         }
-        let state = if self.active { "adaptive" }
+        let state = if self.active && self.arrival.active { "twcc-cap" }
+            else if self.active { "adaptive" }
             else if self.supported_payloads.is_empty() { "unsupported" }
             else { "waiting-video" };
-        format!("REMB:{state} target:{}k delay:{}ms cuts:{} queued:{} fail:{} over-windows:{}", self.budget.target() / 1000, self.budget.delay_ms, self.budget.reductions, self.queued, self.failed, self.over_windows)
+        format!("REMB:{state} target:{}k delay:{}ms cuts:{} queued:{} fail:{} over-windows:{}", self.target_bps() / 1000, self.delay_ms, self.budget.reductions, self.queued, self.failed, self.over_windows)
     }
 }
 
@@ -148,6 +190,81 @@ impl ReceiveRate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn working_twcc_keeps_one_controller_through_ten_minutes_of_delay_and_pause() {
+        let start = Instant::now();
+        let mut cap = VideoCeiling::default();
+        cap.answer("m=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 goog-remb");
+        cap.observe_payload(102);
+        for tick in 1..=6000 {
+            let now = start + Duration::from_millis(tick * 100);
+            cap.update_arrival_feedback(tick * 10, tick, now);
+            // Busy video, a low-complexity paused scene, then busy again.
+            // A persistent offset must not introduce a second estimator.
+            let bytes = if (2000..4000).contains(&tick) { 500 } else { 50_000 };
+            cap.receive(bytes, if tick < 100 { 5 } else { 1991 }, now);
+            assert_eq!(cap.target_bps(), VIDEO_CEILING_BPS);
+        }
+        assert_eq!(cap.budget.reductions, 0);
+        assert!(cap.summary(980).starts_with("REMB:twcc-cap target:2000k"));
+        assert!(cap.summary(980).contains("delay:1991ms"), "do not hide latency");
+    }
+
+    #[test]
+    fn confirmed_arrival_feedback_releases_a_previous_legacy_clamp_immediately() {
+        let start = Instant::now();
+        let mut cap = VideoCeiling::default();
+        cap.answer("m=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 goog-remb");
+        cap.observe_payload(102);
+        for tick in 0..=100 {
+            cap.receive(25_000, 200, start + Duration::from_millis(tick * 100));
+        }
+        assert_eq!(cap.target_bps(), 500_000, "reproduce old controller clamp");
+        let now = start + Duration::from_secs(11);
+        cap.attempted(now, true);
+        cap.update_arrival_feedback(10, 1, now);
+        assert_eq!(cap.target_bps(), VIDEO_CEILING_BPS);
+        assert!(cap.due(now), "send the corrected ceiling without another half-second wait");
+    }
+
+    #[test]
+    fn negotiation_or_one_way_feedback_alone_cannot_disable_fallback() {
+        let start = Instant::now();
+        let mut state = ArrivalFeedback::default();
+        state.update(0, 20, start); // audio reports alone
+        assert!(!state.active);
+        state.update(10, 20, start + Duration::from_secs(3)); // TX stalled
+        assert!(!state.active);
+        state.update(11, 21, start + Duration::from_secs(3));
+        assert!(state.active);
+        state.update(11, 40, start + Duration::from_secs(5)); // no recent video
+        assert!(!state.active);
+        state.update(12, 41, start + Duration::from_secs(6));
+        assert!(state.active);
+        state.update(0, 0, start + Duration::from_secs(7)); // new session
+        assert!(!state.active);
+    }
+
+    #[test]
+    fn stalled_arrival_feedback_falls_back_and_new_answer_forgets_old_mode() {
+        let start = Instant::now();
+        let mut cap = VideoCeiling::default();
+        cap.update_arrival_feedback(10, 1, start);
+        assert!(cap.arrival.active);
+        cap.update_arrival_feedback(10, 1, start + Duration::from_secs(2));
+        assert!(!cap.arrival.active);
+        for tick in 20..=100 {
+            cap.receive(25_000, 300, start + Duration::from_millis(tick * 100));
+        }
+        assert!(cap.target_bps() < VIDEO_CEILING_BPS);
+        cap.update_arrival_feedback(20, 2, start + Duration::from_secs(11));
+        assert!(cap.arrival.active);
+        cap.answer("m=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 nack");
+        cap.observe_payload(102);
+        assert!(!cap.arrival.active);
+        assert!(!cap.due(start + Duration::from_secs(12)));
+    }
 
     #[test]
     fn rates_use_elapsed_time_and_report_stalls() {

@@ -2,7 +2,6 @@
 //! This is a recovery request, not proof that the sender cleared its backlog.
 use std::time::{Duration, Instant};
 
-const LATE_MS: u64 = 250;
 const QUEUED_FRAMES: usize = 8;
 const PERSISTENCE: Duration = Duration::from_millis(500);
 const MAX_SAMPLE_GAP: Duration = Duration::from_millis(250);
@@ -28,7 +27,7 @@ impl CatchUp {
     /// Only distinct, advancing frames count. A paused game, repeated status,
     /// brief packet burst, or an existing damage recovery cannot trigger this.
     pub(crate) fn observe(&mut self, timestamp: u32, received_at: Instant,
-        delay_ms: u64, queued: usize, recovering: bool, now: Instant) -> bool
+        _delay_ms: u64, queued: usize, recovering: bool, now: Instant) -> bool
     {
         if recovering || now.saturating_duration_since(received_at) > MAX_SAMPLE_GAP {
             self.pressure_since = None;
@@ -42,7 +41,10 @@ impl CatchUp {
             }
         }
         self.last_sample = Some((timestamp, received_at));
-        if delay_ms < LATE_MS && queued < QUEUED_FRAMES {
+        // A keyframe can replace local queued dependencies; it cannot bypass
+        // a sender/network queue. Arrival delay by itself caused an IDR every
+        // five seconds, adding burst traffic to an already delayed stream.
+        if queued < QUEUED_FRAMES {
             self.pressure_since = None;
             return false;
         }
@@ -60,7 +62,7 @@ impl CatchUp {
 mod tests {
     use super::*;
     #[test]
-    fn sustained_arrival_lag_requests_early_but_does_not_request_every_frame() {
+    fn upstream_delay_alone_must_not_generate_repeated_keyframe_load() {
         let start = Instant::now();
         let mut state = CatchUp::default();
         let mut requests = Vec::new();
@@ -70,7 +72,7 @@ mod tests {
                 requests.push(tick * 100);
             }
         }
-        assert_eq!(requests, [500, 5500, 10500]);
+        assert!(requests.is_empty(), "arrival offset with an empty decode queue is not a local catch-up opportunity: {requests:?}");
     }
     #[test]
     fn still_video_and_stale_or_reordered_samples_cannot_trigger_refresh() {

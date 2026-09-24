@@ -31,6 +31,7 @@ pub(crate) struct RtcTransport {
 }
 
 impl RtcTransport {
+    pub(crate) fn twcc_sent(&self) -> u64 { self.twcc_sent }
     pub(crate) async fn bind(
         peer: &mut RTCPeerConnection,
         stun_server: &str,

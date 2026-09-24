@@ -13,9 +13,12 @@ static GENERATED: AtomicU64 = AtomicU64::new(0);
 static SENDER_REPORTS: AtomicU64 = AtomicU64::new(0);
 static ARRIVAL_TRACKS: AtomicU64 = AtomicU64::new(0);
 static ARRIVAL_PACKETS: AtomicU64 = AtomicU64::new(0);
+static VIDEO_ARRIVAL_PACKETS: AtomicU64 = AtomicU64::new(0);
 static EMPTY_RTP: AtomicU64 = AtomicU64::new(0);
 pub(crate) const TRANSPORT_CC_URI: &str =
     "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
+
+pub(crate) fn video_arrival_packets() -> u64 { VIDEO_ARRIVAL_PACKETS.load(Ordering::Relaxed) }
 // The app owns one active RTC session. Keep only the latest report per SSRC;
 // the inner interceptor consumes RTCP, so observing RTCMessage is too late.
 static CLOCK_REPORTS: Mutex<Vec<(u32, rtc::rtcp::sender_report::SenderReport)>> = Mutex::new(Vec::new());
@@ -46,6 +49,7 @@ impl ReceiveReports {
         SENDER_REPORTS.store(0, Ordering::Relaxed);
         ARRIVAL_TRACKS.store(0, Ordering::Relaxed);
         ARRIVAL_PACKETS.store(0, Ordering::Relaxed);
+        VIDEO_ARRIVAL_PACKETS.store(0, Ordering::Relaxed);
         EMPTY_RTP.store(0, Ordering::Relaxed);
         if let Ok(mut reports) = CLOCK_REPORTS.lock() { reports.clear(); }
         Self {
@@ -81,6 +85,11 @@ impl Protocol<TaggedPacket, TaggedPacket, ()> for ReceiveReports {
                     && packet.header.get_extension(*id).is_some_and(|ext| ext.len() >= 2)
                 {
                     ARRIVAL_PACKETS.fetch_add(1, Ordering::Relaxed);
+                    if self.clocks.iter().any(|(pt, rate)|
+                        *pt == packet.header.payload_type && *rate == 90_000)
+                    {
+                        VIDEO_ARRIVAL_PACKETS.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
                 if let Some((_, clock_rate)) = self.clocks.iter()
                     .find(|(pt, _)| *pt == packet.header.payload_type)
@@ -154,6 +163,34 @@ impl Interceptor for ReceiveReports {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn video_feedback_activity_requires_its_negotiated_extension_and_valid_bytes() {
+        use rtc::interceptor::RTPHeaderExtension;
+        let mut chain = ReceiveReports::new(NoopInterceptor::new(), vec![(102,90_000),(111,48_000)]);
+        let info = |ssrc, rate| StreamInfo { ssrc, clock_rate: rate,
+            rtp_header_extensions: vec![RTPHeaderExtension { uri: TRANSPORT_CC_URI.into(), id: 5 }],
+            ..Default::default() };
+        chain.bind_remote_stream(&info(10,90_000));
+        chain.bind_remote_stream(&info(20,48_000));
+        let now = Instant::now();
+        for (ssrc, pt, id, value, expected) in [
+            (20,111,5,vec![0,1],0), // audio must not enable video adaptation
+            (10,102,4,vec![0,2],0), // wrong extension
+            (10,102,5,vec![0],0), // truncated extension
+            (10,102,5,vec![0,3],1),
+        ] {
+            let mut msg = packet(ssrc,pt,1,now);
+            if let Packet::Rtp(ref mut p) = msg.message { p.header.set_extension(id,value.into()).unwrap(); }
+            chain.handle_read(msg).unwrap(); chain.poll_read();
+            assert_eq!(video_arrival_packets(), expected);
+        }
+        chain.unbind_remote_stream(&info(10,90_000));
+        let mut msg = packet(10,102,2,now);
+        if let Packet::Rtp(ref mut p) = msg.message { p.header.set_extension(5,vec![0,4].into()).unwrap(); }
+        chain.handle_read(msg).unwrap();
+        assert_eq!(video_arrival_packets(), 1);
+    }
 
     fn packet(ssrc: u32, pt: u8, seq: u16, now: Instant) -> TaggedPacket {
         TaggedPacket { now, transport: Default::default(), message: Packet::Rtp(rtc::rtp::Packet {
