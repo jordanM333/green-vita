@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Test player handle lifecycle with host API doubles
+        run: python3 tv-probe/tests/test_player_lifecycle.py
       - name: Install media generator
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Generate original unencrypted control media
@@ -47,7 +49,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: tv-probe-unchecked
-          path: tv-probe/build/Vita-TV-Probe-0.2.vpk
+          path: tv-probe/build/Vita-TV-Probe-0.3.vpk
           if-no-files-found: error
           retention-days: 7
 
@@ -64,13 +66,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Verify package identity, integrity and clip format
         run: |
-          python3 tv-probe/verify_vpk.py release/Vita-TV-Probe-0.2.vpk > release/package-checks.json
+          python3 tv-probe/verify_vpk.py release/Vita-TV-Probe-0.3.vpk > release/package-checks.json
           cat release/package-checks.json
           cp tv-probe/README.md release/README.md
-          sha256sum release/Vita-TV-Probe-0.2.vpk > release/SHA256SUMS
+          sha256sum release/Vita-TV-Probe-0.3.vpk > release/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
-          name: Vita-TV-Probe-0.2
+          name: Vita-TV-Probe-0.3
           path: release/
           if-no-files-found: error
           retention-days: 30

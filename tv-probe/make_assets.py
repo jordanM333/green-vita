@@ -65,7 +65,7 @@ subprocess.run([
     str(ASSETS / "control.mp4")
 ], check=True)
 (ASSETS / "build-info.json").write_text(json.dumps({
-    "app": "Vita TV Probe", "version": "0.2", "title_id": "GVTVPRB01",
+    "app": "Vita TV Probe", "version": "0.3", "title_id": "GVTVPRB01",
     "source_commit": os.environ.get("GITHUB_SHA", "local-unpublished"),
     "workflow_run": os.environ.get("GITHUB_RUN_ID", "local"),
     "sdk_image": "ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc",

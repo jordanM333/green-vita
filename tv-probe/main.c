@@ -46,7 +46,9 @@ static const char *observation_codes[] = {
 static int recorded[4];
 static SceUID logfile = -1;
 static SceUID mutex = -1, audio_thread = -1;
-static SceAvPlayerHandle player = -1;
+/* An opaque pointer-sized handle, not a signed SceUID/status code. Real Vita
+ * handles commonly have bit 31 set. Only zero means no player. */
+static SceAvPlayerHandle player = 0;
 static int audio_running, paused, volume = 40;
 static unsigned video_frames, audio_blocks;
 static int audio_error, audio_port = -1, last_audio_volume = -1;
@@ -182,7 +184,7 @@ static void log_stats(const char *reason) {
 }
 
 static void stop_player(void) {
-    if (player < 0) return;
+    if (player == 0) return;
     vita2d_wait_rendering_done();
     sceKernelLockMutex(mutex, 1, NULL);
     audio_running = 0;
@@ -196,7 +198,7 @@ static void stop_player(void) {
     int stop_result = sceAvPlayerStop(player);
     int close_result = sceAvPlayerClose(player);
     log_line("CONTROL stop_result=0x%08x close_result=0x%08x", (unsigned)stop_result, (unsigned)close_result);
-    player = -1; have_frame = 0; paused = 0;
+    player = 0; have_frame = 0; paused = 0;
 }
 
 static void start_player(void) {
@@ -213,8 +215,8 @@ static void start_player(void) {
     init.autoStart = SCE_TRUE;
     init.defaultLanguage = "eng";
     player = sceAvPlayerInit(&init);
-    log_line("CONTROL init=0x%08x", (unsigned)player);
-    if (player < 0) { snprintf(status, sizeof(status), "Player initialization failed: 0x%08x", (unsigned)player); return; }
+    log_line("CONTROL init_handle=0x%08x present=%d", (unsigned)player, player != 0);
+    if (player == 0) { snprintf(status, sizeof(status), "Player initialization returned a null handle; see probe.log."); return; }
     started_at = last_stats = sceKernelGetProcessTimeWide();
     video_frames = audio_blocks = 0; audio_error = 0; media_time = 0;
     last_audio_volume = -1; paused = 0; have_frame = 0;
@@ -228,12 +230,14 @@ static void start_player(void) {
     }
     audio_thread = sceKernelCreateThread("tv-probe-audio", audio_worker, 0x10000100,
         0x10000, 0, 0, NULL);
+    log_line("CONTROL audio_thread_create=0x%08x", (unsigned)audio_thread);
     if (audio_thread < 0) {
         snprintf(status, sizeof(status), "Audio thread failed: 0x%08x", (unsigned)audio_thread);
         stop_player(); return;
     }
     audio_running = 1;
     result = sceKernelStartThread(audio_thread, 0, NULL);
+    log_line("CONTROL audio_thread_start=0x%08x", (unsigned)result);
     if (result < 0) {
         sceKernelDeleteThread(audio_thread); audio_thread = -1; audio_running = 0;
         snprintf(status, sizeof(status), "Audio start failed: 0x%08x", (unsigned)result);
@@ -244,7 +248,7 @@ static void start_player(void) {
 
 static void control_input(unsigned pressed) {
     if (pressed & SCE_CTRL_CROSS) {
-        if (player < 0) start_player();
+        if (player == 0) start_player();
         else {
             sceKernelLockMutex(mutex, 1, NULL);
             int result = paused ? sceAvPlayerResume(player) : sceAvPlayerPause(player);
@@ -253,7 +257,7 @@ static void control_input(unsigned pressed) {
             log_line("CONTROL pause_toggle result=0x%08x paused=%d", (unsigned)result, paused);
         }
     }
-    if (player >= 0 && (pressed & (SCE_CTRL_LEFT | SCE_CTRL_RIGHT))) {
+    if (player != 0 && (pressed & (SCE_CTRL_LEFT | SCE_CTRL_RIGHT))) {
         vita2d_wait_rendering_done();
         sceKernelLockMutex(mutex, 1, NULL);
         int64_t target = (int64_t)sceAvPlayerCurrentTime(player) + ((pressed & SCE_CTRL_RIGHT) ? 3000 : -3000);
@@ -276,7 +280,7 @@ static void control_input(unsigned pressed) {
 }
 
 static void update_video(void) {
-    if (player < 0) return;
+    if (player == 0) return;
     sceKernelLockMutex(mutex, 1, NULL);
     if (!paused && sceAvPlayerGetVideoData(player, &frame)) {
         memset(&frame_texture, 0, sizeof(frame_texture));
@@ -311,7 +315,7 @@ static void launch_service(int index) {
 int main(void) {
     sceIoMkdir(DATA_DIR, 0777);
     logfile = sceIoOpen(LOG_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0666);
-    log_line("SESSION app=GVTVPRB01 version=0.2 protected_playback=NOT_VERIFIED");
+    log_line("SESSION app=GVTVPRB01 version=0.3 protected_playback=NOT_VERIFIED");
     SceKernelSystemSwVersion sw;
     memset(&sw, 0, sizeof(sw)); sw.size = sizeof(sw);
     if (sceKernelGetSystemSwVersion(&sw) >= 0) snprintf(firmware, sizeof(firmware), "%s", sw.versionString);
@@ -372,7 +376,7 @@ int main(void) {
         }
         if (mode == 1) update_video();
         vita2d_start_drawing(); vita2d_clear_screen();
-        label(28, 35, ACCENT, "VITA TV PROBE 0.2   /   diagnostic build");
+        label(28, 35, ACCENT, "VITA TV PROBE 0.3   /   diagnostic build");
         if (mode == 0) {
             label(28, 75, WARN, "No protected streaming service has passed on this device.");
             for (int i = 0; i < 7; i++) {

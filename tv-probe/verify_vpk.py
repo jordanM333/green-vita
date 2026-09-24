@@ -27,12 +27,12 @@ with zipfile.ZipFile(path) as archive:
         fields[name] = value.rstrip(b"\0").decode() if fmt == 0x204 else value.hex()
     assert fields["TITLE_ID"] == "GVTVPRB01", fields
     assert fields["TITLE"] == "Vita TV Probe", fields
-    assert fields["APP_VER"] == "00.02", fields
+    assert fields["APP_VER"] == "00.03", fields
     info = json.loads(archive.read("build-info.json"))
     assert info["device_tested"] is None and info["firmware_tested"] is None
     assert not any(info["protected_playback_verified"].values())
     assert info["title_id"] == fields["TITLE_ID"]
-    assert info["version"] == "0.2"
+    assert info["version"] == "0.3"
     extracted = path.with_suffix(".control.mp4")
     extracted.write_bytes(archive.read("control.mp4"))
     try:
