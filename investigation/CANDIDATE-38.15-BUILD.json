@@ -20,7 +20,7 @@
     "note": "156 executions; shared production tests execute in multiple suites."
   },
   "device_acceptance": {
-    "status": "pending for RX38.15",
+    "status": "not accepted for latency; returned recording reaches 1991ms added video arrival delay; see RX38-SOFT-CATCH-UP.md",
     "baseline_38_14": "User reports playback still becomes laggy and unplayable; returned RX38.14 history shows up to 1837ms added video arrival delay.",
     "playback": "Negotiated TWCC arrival feedback plus missing first-packet codec binding. Sender support and response require device validation. Traffic counters separate network classes and processing cost.",
     "microphone": "Existing capture, mute, Opus and renegotiation behavior retained; mic/control/audio tests now use the production feedback chain.",

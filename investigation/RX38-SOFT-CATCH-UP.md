@@ -81,8 +81,13 @@ byte-credit reuse, no decoder recreation, and shutdown rejection. Deterministic
 policy tests cover request cadence, RTP wrap, stale/paused/late samples, short
 bursts and existing damage recovery.
 
-Native build/package identity and the complete CI result are recorded in the
-candidate build manifest after verification. Device acceptance remains pending.
+RX38.16 source is 297174d05b0f87c46ea329cd4a99343e7f89c6b0, with the exact tree
+of the user-approved local commit bb2ea04. All 164 host test executions and the
+native release build passed in workflow 35955793475. Artifact and VPK checksums,
+both ZIP CRC checks, embedded revision/build and GRNVTEST1 identity were verified.
+Native metadata headroom is 90,972 bytes against the 65,536-byte minimum.
+`CANDIDATE-38.16-BUILD.json` records the package identity and complete result.
+Device acceptance remains pending.
 The change directly removes an avoidable local recovery stall, but a new
 keyframe may itself remain in an upstream queue. It must not be called a proven
 fix for the one-to-two-second arrival delay.

@@ -1,0 +1,50 @@
+{
+  "build": "RX Test 38.16",
+  "source_commit": "297174d05b0f87c46ea329cd4a99343e7f89c6b0",
+  "source_tree": "6754b7772a6e397f07303e7f75496a9a4b2434ea",
+  "matching_local_commit": "bb2ea04bf9701a44cc174e65bc89c7af2f8579b6",
+  "workflow_url": "https://github.com/jordanM333/green-vita/actions/runs/35955793475",
+  "workflow_conclusion": "success",
+  "ci_test_executions": {
+    "feedback": 9,
+    "receiver_reports": 13,
+    "frame_metadata": 9,
+    "rtc_transport": 28,
+    "frame_signal": 4,
+    "rtp_order": 20,
+    "decoder_pump_and_shared_video_modules": 38,
+    "feature_foundations": 20,
+    "voice_codec": 1,
+    "python_analysis": 16,
+    "elf_headroom": 6,
+    "note": "164 executions; shared production tests execute in multiple suites."
+  },
+  "device_acceptance": {
+    "status": "pending for RX38.16",
+    "baseline_38_15": "Returned recording shows up to 1991ms added video arrival delay with active TWCC and no unrepaired video packet loss; catch-up bursts fill the 32-AU queue twice.",
+    "playback": "Nonblocking keyframe request on sustained arrival/queue pressure. Queued old AUs are replaced only by a complete capacity-checked IDR with its own SPS/PPS. Upstream delay response still requires device validation.",
+    "refresh": "Manual Home Refresh preserves partial AUs and valid playback while awaiting a replacement; no session stop or reconnect.",
+    "microphone": "Capture, mute, Opus and negotiation retained; all host regressions pass.",
+    "ui": "Three translucent bottom buttons, audio volume controls and account catalog retained."
+  },
+  "artifact_id": 10791050101,
+  "artifact_expires": "2026-10-24T04:36:48Z",
+  "artifact_zip_sha256": "31c97bc9214f9b8fd52e655ef182ef25a5233ce3751a40531d02ac5135a306a5",
+  "sdk_image": "ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc",
+  "vpk": {
+    "file_name": "GreenVita-RX-Test-38.16.vpk",
+    "bytes": 14721113,
+    "sha256": "61f0e41fe12b0c989f79db505fc8df08e4d8f33c8216f1e5a8af8f4cd1dc8cf5",
+    "zip_integrity": "pass",
+    "embedded_source_commit_verified": true,
+    "embedded_build_number_verified": true,
+    "title_id": "GRNVTEST1",
+    "title": "GreenVita RX Test"
+  },
+  "packaging": {
+    "native_compilation": "pass",
+    "vpk_conversion": "pass",
+    "metadata_virtual_gap_bytes": 90972,
+    "minimum_metadata_gap_bytes": 65536
+  }
+}
