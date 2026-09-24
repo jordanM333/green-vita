@@ -76,10 +76,19 @@ reports. The complete local transport suite passes 43 tests, including voice
 negotiation/mute and input/backpressure regressions. The keyframe-policy suite
 passes all four tests after the red-to-green empty-queue regression.
 
-The existing CI gates must pass before a package is delivered, including
-decoder/refresh safety, RTP ordering, catalog, native Opus, analysis, and the
-native Vita link/headroom/build checks. A build manifest will record their
-actual result, source and package identity.
+All 185 host test executions passed in workflow 35960606896, including
+decoder/refresh safety, RTP ordering, catalog, native Opus and analysis. The
+native release build, VPK conversion and ELF gate passed; metadata headroom
+is 89,948 bytes against a 65,536-byte minimum. Artifact/VPK SHA-256, both ZIP
+CRC checks, embedded revision/build and GRNVTEST1 identity were verified.
+`CANDIDATE-38.18-BUILD.json` records the complete identity and result.
+
+RX38.18 source is affe3c5e6f694fcb47063ba1454fc75fee53dace. The intermediate
+38.17 was superseded before delivery: final review caught that a new SDP
+answer must retain counter baselines while clearing activity timestamps.
+Otherwise historical counters could briefly reactivate TWCC mode. The
+regression now verifies that unchanged counters and audio-only advancement
+cannot reactivate it, and fresh video plus transmit activity can.
 
 This correction removes two demonstrated feedback defects. It does **not**
 establish that all sustained Home or Cloud delay is fixed on a Vita. Device

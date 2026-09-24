@@ -1,0 +1,57 @@
+{
+  "build": "RX Test 38.18",
+  "source_commit": "affe3c5e6f694fcb47063ba1454fc75fee53dace",
+  "source_tree": "60b419bca0c6bc59e1281a0fb3e7781ae08c8a8e",
+  "matching_local_commit": "aa7febf9c91f60c846e0ffef6ff35a42c90b7c0f",
+  "workflow_url": "https://github.com/jordanM333/green-vita/actions/runs/35960606896",
+  "workflow_conclusion": "success",
+  "ci_test_executions": {
+    "feedback": 14,
+    "receiver_reports": 14,
+    "frame_metadata": 9,
+    "rtc_transport": 43,
+    "frame_signal": 4,
+    "rtp_order": 20,
+    "decoder_pump_and_shared_video_modules": 38,
+    "feature_foundations": 20,
+    "voice_codec": 1,
+    "python_analysis": 16,
+    "elf_headroom": 6,
+    "note": "185 executions; shared production tests execute in multiple suites."
+  },
+  "device_acceptance": {
+    "status": "pending for RX38.18; host and native build validation are not a device playback result",
+    "baseline_38_16": "User reports no difference. No new RX38.16 recording supplied; the last full recording is RX38.15.",
+    "playback": "One active congestion controller: fresh authenticated video extensions plus sent TWCC select a static 2 Mbps REMB ceiling; legacy adaptation remains as fallback. Arrival-only keyframe requests removed.",
+    "refresh": "Manual Home Refresh keeps valid playback and the session; automatic requests require sustained local queue pressure.",
+    "microphone": "Capture, mute, Opus and negotiation retained; host regressions pass.",
+    "ui": "Three translucent bottom buttons, volume controls and account catalog retained.",
+    "review": "RX38-FEEDBACK-OWNERSHIP.md"
+  },
+  "artifact_id": 10792017642,
+  "artifact_expires": "2026-10-24T05:44:38Z",
+  "artifact_zip_sha256": "705a9184e2cc0366f81f301c52249e9cd0a3c22aae79494a686ae9291013f06d",
+  "sdk_image": "ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc",
+  "vpk": {
+    "file_name": "GreenVita-RX-Test-38.18.vpk",
+    "bytes": 14723295,
+    "sha256": "b231093897725264b08124eb25aaa0e5305cc83e8ade49d40e55e7e4459bb79e",
+    "zip_integrity": "pass",
+    "embedded_source_commit_verified": true,
+    "embedded_build_number_verified": true,
+    "title_id": "GRNVTEST1",
+    "title": "GreenVita RX Test"
+  },
+  "packaging": {
+    "native_compilation": "pass",
+    "vpk_conversion": "pass",
+    "metadata_virtual_gap_bytes": 89948,
+    "minimum_metadata_gap_bytes": 65536
+  },
+  "superseded_intermediate": {
+    "build": "38.17",
+    "source": "4a3881d5cab70cc651dfd73f5b0a9e5568cbab8a",
+    "workflow_id": 35960014477,
+    "status": "cancelled before delivery to include the SDP counter-baseline guard"
+  }
+}
