@@ -109,7 +109,11 @@ impl VideoCeiling {
     }
 
     pub(crate) fn answer(&mut self, sdp: &str) {
-        *self = Self { supported_payloads: remb_payloads(sdp), ..Default::default() };
+        // Transport counters are cumulative across renegotiation. Retain their
+        // last observed values, but require fresh RX and TX before reactivation.
+        let arrival = ArrivalFeedback { packets: self.arrival.packets,
+            reports: self.arrival.reports, ..Default::default() };
+        *self = Self { supported_payloads: remb_payloads(sdp), arrival, ..Default::default() };
     }
     pub(crate) fn observe_payload(&mut self, payload: u8) {
         self.active = self.supported_payloads.contains(&payload);
@@ -264,6 +268,12 @@ mod tests {
         cap.observe_payload(102);
         assert!(!cap.arrival.active);
         assert!(!cap.due(start + Duration::from_secs(12)));
+        cap.update_arrival_feedback(20, 2, start + Duration::from_secs(12));
+        assert!(!cap.arrival.active, "old transport counters are not new feedback");
+        cap.update_arrival_feedback(20, 3, start + Duration::from_secs(13));
+        assert!(!cap.arrival.active, "audio-only sends cannot reactivate video");
+        cap.update_arrival_feedback(21, 4, start + Duration::from_secs(13));
+        assert!(cap.arrival.active);
     }
 
     #[test]
