@@ -73,6 +73,7 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     audio_clock: RtpClockProbe,
     video_rate: super::feedback::ReceiveRate,
     video_ceiling: super::feedback::VideoCeiling,
+    catch_up: crate::streaming::video::catch_up::CatchUp,
     direct_output: Arc<DirectVideoOutput>,
 }
 
@@ -104,6 +105,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             audio_clock: RtpClockProbe::new(i64::from(config.audio_sample_rate)),
             video_rate: super::feedback::ReceiveRate::new(),
             video_ceiling: Default::default(),
+            catch_up: Default::default(),
             direct_output,
         })
     }
@@ -144,7 +146,9 @@ impl<B: RtcSessionBackend> RtcSession<B> {
 
     pub(crate) fn refresh_video(&mut self) {
         self.video.refresh();
-        self.request_keyframe(true, Instant::now());
+        let now = Instant::now();
+        self.catch_up.requested(now);
+        self.request_keyframe(true, now);
     }
 
     pub async fn pump(&mut self) -> Result<Vec<RTCIceCandidateInit>> {
@@ -170,6 +174,16 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         // still applies. A timeout can shrink SCTP's congestion window.
         self.transport.flush(&mut self.peer).await;
         let now = Instant::now();
+        if let Some(sample) = self.video_clock.timing()
+            && self.catch_up.observe(sample.timestamp, sample.received_at,
+                sample.added_delay_ms, self.video.decoder.queued_frames(),
+                self.video.recovering(), now)
+        {
+            crate::streaming::video::trace::record("lag_keyframe_request",
+                sample.timestamp, sample.added_delay_ms);
+            self.video.refresh();
+            keyframe_requested = true;
+        }
         // rtc-rs is sans-I/O, so its expired internal timer must be advanced by our pump.
         if let Some(deadline) = self.peer.poll_timeout()
             && now >= deadline
@@ -196,7 +210,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             let receive = self.transport.take_receive_summary();
             let rate = self.video_rate.summary(now);
             let ceiling = self.video_ceiling.summary(self.video_rate.latest_kbps);
-            let feedback = format!("Video payload:{rate}\n{ceiling}\n{}\n{}\nSDP video ceiling:{}k", super::reports::summary(), self.video.repair_summary(), super::bandwidth::VIDEO_CEILING_BPS / 1000);
+            let feedback = format!("Video payload:{rate}\n{ceiling}\n{}\n{}\nCatch-up requests:{}\nSDP video ceiling:{}k", super::reports::summary(), self.video.repair_summary(), self.catch_up.requests(), super::bandwidth::VIDEO_CEILING_BPS / 1000);
             let (requested_width, requested_height) = self.requested_video_size;
             let server_size = self
                 .backend

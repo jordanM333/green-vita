@@ -2,6 +2,7 @@ mod decoder;
 pub(crate) mod timing;
 mod frame_signal;
 pub(crate) mod freshness;
+pub(crate) mod catch_up;
 mod memory;
 pub(crate) mod metrics;
 mod worker;

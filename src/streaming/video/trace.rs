@@ -50,7 +50,8 @@ impl Trace {
             "age_drop" | "output_wait_expired" | "queue_byte_limit" | "queue_frame_limit" |
             "au_queue_pressure_us" |
             "rtp_gap_released_packets" |
-            "decoder_poll_failed" | "keyframe_request" | "manual_refresh")
+            "decoder_poll_failed" | "keyframe_request" | "manual_refresh" |
+            "lag_keyframe_request" | "keyframe_cutover_units")
             || (stage == "au_drop_reason" && value != 5) {
             self.incident(time, stage, timestamp, value);
         }

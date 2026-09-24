@@ -34,6 +34,9 @@ pub(crate) enum SubmitResult {
 pub struct VideoDecodeWorker {
     thread: Option<std::thread::JoinHandle<()>>,
     access_units: Sender<QueuedAccessUnit>,
+    // Used only by the single RTP producer to discard queued work once a
+    // complete replacement IDR is in hand. The hardware thread may hold one AU.
+    queued_access_units: Receiver<QueuedAccessUnit>,
     queued_bytes: Arc<AtomicUsize>,
     commands: Sender<DecoderCommand>,
     generation: Arc<AtomicU64>,
@@ -48,6 +51,7 @@ impl VideoDecodeWorker {
             HwVideoDecoder::new(config).context("failed to create hardware H264 decoder")?;
         direct_output.decoder_ready.store(true, Ordering::Release);
         let (access_units, worker_access_units) = bounded(AU_QUEUE_CAPACITY);
+        let queued_access_units = worker_access_units.clone();
         let (commands, worker_commands) = bounded(1);
         let generation = Arc::new(AtomicU64::new(0));
         let worker_generation = Arc::clone(&generation);
@@ -83,6 +87,7 @@ impl VideoDecodeWorker {
         Ok(Self {
             thread: Some(thread),
             access_units,
+            queued_access_units,
             queued_bytes: Arc::new(AtomicUsize::new(0)),
             commands,
             generation,
@@ -99,6 +104,8 @@ impl VideoDecodeWorker {
             // before any replacement stream can allocate another instance.
             if thread.join().is_err() { eprintln!("Video decode worker panicked during shutdown"); }
         }
+        while let Ok(old) = self.queued_access_units.try_recv() { drop(old); }
+        metrics::METRICS.au_queue_depth.store(0, Ordering::Relaxed);
     }
 
     pub fn submit_access_unit(
@@ -107,6 +114,11 @@ impl VideoDecodeWorker {
         first_packet_at: Instant,
         rtp_timestamp: u32,
     ) -> SubmitResult {
+        // The producer retains a receiver for keyframe cutover, so channel
+        // connectivity alone no longer tells us whether the worker is alive.
+        if self.thread.as_ref().is_none_or(|thread| thread.is_finished()) {
+            return SubmitResult::Disconnected;
+        }
         let Some(reservation) = QueueReservation::acquire(&self.queued_bytes, data.len()) else {
             super::trace::record("queue_byte_limit", rtp_timestamp, data.len() as u64);
             metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
@@ -135,6 +147,31 @@ impl VideoDecodeWorker {
             }
             Err(TrySendError::Disconnected(_)) => SubmitResult::Disconnected,
         }
+    }
+
+    pub(crate) fn queued_frames(&self) -> usize { self.access_units.len() }
+
+    /// Caller must supply an intact, size-checked IDR with its SPS/PPS. Never
+    /// use this for a P picture: the retained suffix must be independently decodable.
+    pub(crate) fn submit_refresh_access_unit(&self, data: Vec<u8>, received_at: Instant,
+        timestamp: u32) -> SubmitResult
+    {
+        if self.thread.as_ref().is_none_or(|thread| thread.is_finished()) {
+            return SubmitResult::Disconnected;
+        }
+        // Reject an impossible allocation before invalidating the current chain.
+        if data.len() > super::policy::AU_QUEUE_BYTES { return SubmitResult::QueueFull; }
+        self.begin_resync();
+        let mut dropped = 0;
+        while let Ok(old) = self.queued_access_units.try_recv() {
+            drop(old); // releases its byte reservation
+            dropped += 1;
+        }
+        metrics::METRICS.au_queue_depth.store(0, Ordering::Relaxed);
+        super::trace::record("keyframe_cutover_units", timestamp, dropped);
+        // Only this producer admits AUs, so a full old queue cannot reject its
+        // own replacement. The in-flight old call is rejected by epoch at output.
+        self.submit_access_unit(data, received_at, timestamp)
     }
 
     pub(crate) fn take_recovery_request(&self) -> bool {

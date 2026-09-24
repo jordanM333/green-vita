@@ -114,9 +114,10 @@ impl VideoReceiver {
     }
 
     pub(crate) fn refresh(&mut self) {
-        self.order.clear();
-        self.rtp.refresh(&self.decoder);
+        self.rtp.refresh();
     }
+
+    pub(crate) fn recovering(&self) -> bool { self.rtp.waiting_for_keyframe() }
 
     pub(crate) fn handles(&self, track_id: &MediaStreamTrackId) -> bool {
         self.track_id.as_ref() == Some(track_id)

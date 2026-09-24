@@ -58,9 +58,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>, c
                         let mode = if streaming.can_refresh() { "Home" } else { "Cloud" };
                         let measured = streaming.measured_delay_ms()
                             .map(|ms| format!("{ms}ms")).unwrap_or_else(|| "n/a".to_owned());
-                        let recovery = if streaming.can_refresh() {
-                            format!("delay:{measured} · refresh:manual")
-                        } else { format!("delay:{measured}") };
+                        let recovery = format!("delay:{measured} · catch-up:auto");
                         ui.label(egui::RichText::new(format!("RX Test {} · {mode} · {recovery}\n{compact}", crate::build_info::NUMBER))
                             .color(theme.text).size(12.0));
                         ui.label(egui::RichText::new(format!(

@@ -298,3 +298,65 @@ fn small_access_units_still_have_a_hard_count_bound() {
     release.send(()).unwrap();
     assert!(rejected);worker.shutdown();
 }
+
+#[test]
+fn replacement_idr_cuts_a_full_queue_without_reset_or_publishing_inflight_old_pixels() {
+    reset(); let (output, _pixels) = surfaces(); let (entered, release) = gate_next_call();
+    let mut worker = VideoDecodeWorker::spawn(config(), output.clone()).unwrap();
+    worker.submit_access_unit(vec![1], Instant::now(), 100);
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    // Fill both limits while one old decode is blocked. No arbitrary P picture
+    // can be removed, but the caller-validated replacement IDR may replace all.
+    for rtp in 101..101 + policy::AU_QUEUE_CAPACITY as u32 {
+        assert!(matches!(worker.submit_access_unit(
+            vec![1; policy::AU_QUEUE_BYTES / policy::AU_QUEUE_CAPACITY],
+            Instant::now(), rtp), SubmitResult::Submitted));
+    }
+    let replacement = worker.submit_refresh_access_unit(
+        vec![1; policy::AU_QUEUE_BYTES / 2], Instant::now(), 1000);
+    let following = worker.submit_access_unit(
+        vec![1; policy::AU_QUEUE_BYTES / 2], Instant::now(), 1001);
+    let over_budget = worker.submit_access_unit(vec![1], Instant::now(), 1002);
+    let depth = worker.queued_frames();
+    release.send(()).unwrap();
+    assert!(matches!(replacement, SubmitResult::Submitted));
+    assert!(matches!(following, SubmitResult::Submitted));
+    assert!(matches!(over_budget, SubmitResult::QueueFull));
+    assert_eq!(depth, 2);
+    wait_for(|| FAKE.lock().unwrap().outputs.len() == 3);
+    wait_for(|| output.state.lock().unwrap().pending.and_then(|entry| entry.3)
+        .is_some_and(|timing| timing.rtp_timestamp == 1001));
+    let (_, target, generation, _, timing) = output.take_latest_for_display().unwrap();
+    assert_eq!((timing.unwrap().rtp_timestamp, timing.unwrap().epoch), (1001, 1));
+    assert_eq!(generation, 2, "only the replacement and following picture may be published");
+    assert_eq!(unsafe { std::ptr::read_unaligned(target.ptr as *const u64) }, 1001);
+    assert_eq!(FAKE.lock().unwrap().inputs, [100, 1000, 1001]);
+    assert_eq!(FAKE.lock().unwrap().created, 1);
+    assert_eq!(FAKE.lock().unwrap().deletes, 0);
+    assert!(!worker.take_recovery_request());
+    worker.shutdown();
+    assert_eq!(worker.queued_frames(), 0);
+    assert!(matches!(worker.submit_access_unit(vec![1], Instant::now(), 2000), SubmitResult::Disconnected));
+    assert!(matches!(worker.submit_refresh_access_unit(vec![1], Instant::now(), 2000), SubmitResult::Disconnected));
+}
+
+#[test]
+fn oversized_replacement_cannot_invalidate_a_playable_reference_chain() {
+    reset(); let (output, _pixels) = surfaces(); let (entered, release) = gate_next_call();
+    let mut worker = VideoDecodeWorker::spawn(config(), output.clone()).unwrap();
+    worker.submit_access_unit(vec![1], Instant::now(), 1);
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    worker.submit_access_unit(vec![1], Instant::now(), 2);
+    let rejected = worker.submit_refresh_access_unit(
+        vec![1; policy::AU_QUEUE_BYTES + 1], Instant::now(), 1000);
+    let depth = worker.queued_frames();
+    release.send(()).unwrap();
+    assert!(matches!(rejected, SubmitResult::QueueFull));
+    assert_eq!(depth, 1);
+    wait_for(|| FAKE.lock().unwrap().outputs.len() == 2);
+    wait_for(|| output.state.lock().unwrap().pending.and_then(|entry| entry.3)
+        .is_some_and(|timing| timing.rtp_timestamp == 2));
+    assert_eq!(output.take_latest_for_display().unwrap().4.unwrap().epoch, 0);
+    assert_eq!(FAKE.lock().unwrap().inputs, [1,2]);
+    worker.shutdown();
+}

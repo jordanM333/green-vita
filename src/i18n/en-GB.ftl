@@ -83,5 +83,5 @@ error-technical-details = Technical details: { $error }
 paused-refresh-stream = Refresh stream
 streaming-open-menu = Hold SELECT for 1.5 seconds to open GreenVita's quick menu
 streaming-menu-hint = Hold SELECT · Quick menu
-paused-home-refresh-help = Refresh reconnects to this Xbox. Your game stays running.
+paused-home-refresh-help = Refresh repairs video without ending the Xbox session.
 paused-cloud-refresh-help = Stream refresh is available in Home streaming.

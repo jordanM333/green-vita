@@ -159,6 +159,8 @@ pub(super) struct VideoRtp {
     last_arrival_sequence: Option<u16>,
     last_idr_at: Option<Instant>,
     suspect_reference: bool,
+    refresh_pending: bool,
+    refresh_completed: u64,
 }
 
 struct PendingVideoFrame {
@@ -379,16 +381,15 @@ impl VideoRtp {
             last_arrival_sequence: None,
             last_idr_at: None,
             suspect_reference: false,
+            refresh_pending: false,
+            refresh_completed: 0,
         }
     }
 
-    pub(super) fn refresh(&mut self, worker: &VideoDecodeWorker) {
-        self.pending = None;
-        self.next_sequence = None;
-        self.last_arrival_sequence = None;
-        self.depacketizer = H264Packet::default();
-        self.suspect_reference = true;
-        self.record_damage(worker);
+    pub(super) fn refresh(&mut self) {
+        // Refresh is not packet loss. Keep the current reference chain and
+        // partially assembled AU until an intact replacement keyframe arrives.
+        self.refresh_pending = true;
     }
 
     pub(super) fn waiting_for_keyframe(&self) -> bool {
@@ -400,7 +401,8 @@ impl VideoRtp {
     }
 
     pub(super) fn recovery_summary(&self, now: Instant) -> String {
-        self.recovery.summary(now)
+        format!("{}\nRefresh pending:{} completed:{}", self.recovery.summary(now),
+            u8::from(self.refresh_pending), self.refresh_completed)
     }
 
     pub(super) fn recover_decoder(&mut self, worker: &VideoDecodeWorker) -> bool {
@@ -643,8 +645,22 @@ impl VideoRtp {
             return stats;
         }
 
-        match worker.submit_access_unit(data.to_vec(), completed.first_packet_at, completed.timestamp) {
+        // A complete random-access AU may replace queued old references. Include
+        // parameter sets so skipping a queued SPS/PPS update cannot break it.
+        // Otherwise continue decoding normally, even while a refresh is pending.
+        let cutover = unit.has_idr && unit.resolution.is_some() && unit.has_pps
+            && (self.refresh_pending || worker.queued_frames() >= 8);
+        let submitted = if cutover {
+            worker.submit_refresh_access_unit(data.to_vec(), completed.first_packet_at, completed.timestamp)
+        } else {
+            worker.submit_access_unit(data.to_vec(), completed.first_packet_at, completed.timestamp)
+        };
+        match submitted {
             SubmitResult::Submitted => {
+                if cutover {
+                    self.refresh_pending = false;
+                    self.refresh_completed += 1;
+                }
                 if unit.has_idr && self.recovery.waiting() {
                     crate::streaming::video::trace::record("recovery_end_ms", completed.timestamp,
                         self.recovery.wait_ms(Instant::now()));
@@ -688,6 +704,7 @@ fn timestamp_is_newer(candidate: u32, reference: u32) -> bool {
 
 struct AccessUnitInfo {
     has_idr: bool,
+    has_pps: bool,
     resolution: Option<(u32, u32)>,
     buffering: Option<String>,
 }
@@ -695,6 +712,7 @@ struct AccessUnitInfo {
 fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
     let mut info = AccessUnitInfo {
         has_idr: false,
+        has_pps: false,
         resolution: None,
         buffering: None,
     };
@@ -706,6 +724,10 @@ fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
             UnitType::SliceLayerWithoutPartitioningIdr => {
                 info.has_idr = true;
                 NalInterest::Ignore
+            }
+            UnitType::PicParameterSet => {
+                info.has_pps |= nal.is_complete();
+                NalInterest::Buffer
             }
             UnitType::SeqParameterSet => {
                 if nal.is_complete() {

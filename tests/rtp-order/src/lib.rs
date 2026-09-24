@@ -14,10 +14,19 @@ mod streaming {
         use std::sync::Mutex;
         pub enum SubmitResult { Submitted, QueueFull, Disconnected }
         #[derive(Default)]
-        pub struct VideoDecodeWorker { pub submitted: Mutex<Vec<Vec<u8>>> }
+        pub struct VideoDecodeWorker {
+            pub submitted: Mutex<Vec<Vec<u8>>>,
+            pub cutovers: std::sync::atomic::AtomicUsize,
+            pub queued: std::sync::atomic::AtomicUsize,
+        }
         impl VideoDecodeWorker {
             pub fn begin_resync(&self) {}
             pub fn take_recovery_request(&self) -> bool { false }
+            pub fn queued_frames(&self) -> usize { self.queued.load(std::sync::atomic::Ordering::Relaxed) }
+            pub fn submit_refresh_access_unit(&self, data: Vec<u8>, at: std::time::Instant, ts: u32) -> SubmitResult {
+                self.cutovers.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.submit_access_unit(data, at, ts)
+            }
             pub fn submit_access_unit(&self, data: Vec<u8>, _: std::time::Instant, _: u32) -> SubmitResult {
                 self.submitted.lock().unwrap().push(data);
                 SubmitResult::Submitted
@@ -213,17 +222,71 @@ mod repair_integration {
         assert_eq!(*worker.submitted.lock().unwrap(), vec![vec![0,0,0,1,0x65,0x88,0x99], vec![0,0,0,1,0x61,0xaa,0xbb]]);
     }
     #[test]
-    fn manual_video_repair_discards_partial_au_and_waits_for_complete_idr() {
+    fn manual_refresh_keeps_partial_au_and_playback_until_self_contained_idr() {
         let mut video = video_rtp::VideoRtp::new(1280,720);
         let worker = streaming::video::VideoDecodeWorker::default(); let mut keyframe = false;
         video.receive(&worker, packet(10, 1000, false, &[0x7c,0x85,0x88]), &mut keyframe);
-        video.refresh(&worker);
-        assert!(video.waiting_for_keyframe());
-        video.receive(&worker, packet(20, 2500, true, &[0x61,0xaa,0xbb]), &mut keyframe);
-        assert!(worker.submitted.lock().unwrap().is_empty());
-        video.receive(&worker, packet(21, 4000, true, &[0x65,0xbb,0xcc]), &mut keyframe);
+        video.refresh();
         assert!(!video.waiting_for_keyframe());
-        video.receive(&worker, packet(22, 5500, true, &[0x61,0xcc,0xdd]), &mut keyframe);
-        assert_eq!(*worker.submitted.lock().unwrap(), vec![vec![0,0,0,1,0x65,0xbb,0xcc],vec![0,0,0,1,0x61,0xcc,0xdd]]);
+        video.receive(&worker, packet(11, 1000, true, &[0x7c,0x45,0x99]), &mut keyframe);
+        video.receive(&worker, packet(12, 2500, true, &[0x61,0xaa,0xbb]), &mut keyframe);
+        // An IDR without its own parameter sets cannot discard queued updates.
+        video.receive(&worker, packet(13, 4000, true, &[0x65,0xbb,0xcc]), &mut keyframe);
+        assert_eq!(worker.cutovers.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(*worker.submitted.lock().unwrap(), vec![
+            vec![0,0,0,1,0x65,0x88,0x99], vec![0,0,0,1,0x61,0xaa,0xbb], vec![0,0,0,1,0x65,0xbb,0xcc]]);
+        // Complete 720p SPS/PPS + IDR at the same RTP timestamp.
+        for (seq, marker, nal) in [(14,false,SPS), (15,false,PPS), (16,true,IDR)] {
+            video.receive(&worker, packet(seq, 5500, marker, nal), &mut keyframe);
+        }
+        assert_eq!(worker.cutovers.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(video.recovery_summary(Instant::now()).contains("Refresh pending:0 completed:1"));
+        video.receive(&worker, packet(17, 7000, true, &[0x61,0xcc,0xdd]), &mut keyframe);
+        assert_eq!(worker.submitted.lock().unwrap().len(), 5);
+        assert!(!keyframe);
+        assert!(!video.waiting_for_keyframe());
+    }
+
+    // libx264 baseline, 1280x720/60; synthesized black frame parameter sets.
+    const SPS: &[u8] = &[0x67,0x42,0xc0,0x20,0xda,0x01,0x40,0x16,0xec,0x04,0x40,
+        0,0,3,0,0x40,0,0,0x1e,0x23,0xc6,0x0c,0xa8];
+    const PPS: &[u8] = &[0x68,0xce,0x0f,0xc8];
+    const IDR: &[u8] = &[0x65,0xbb,0xcc]; // slice bytes are opaque to the submission sink
+
+    #[test]
+    fn backlog_can_cut_over_at_natural_keyframe_but_not_at_parameter_sets_or_pictures() {
+        let mut video = video_rtp::VideoRtp::new(1280,720);
+        let worker = streaming::video::VideoDecodeWorker::default(); let mut keyframe = false;
+        worker.queued.store(32, std::sync::atomic::Ordering::Relaxed);
+        // First AU contains all parameter sets but no IDR. Second is self-contained.
+        for (seq, marker, nal) in [(10,false,SPS), (11,false,PPS), (12,true,&[0x61,0xaa][..])] {
+            video.receive(&worker, packet(seq, 1000, marker, nal), &mut keyframe);
+        }
+        assert_eq!(worker.cutovers.load(std::sync::atomic::Ordering::Relaxed), 0);
+        for (seq, marker, nal) in [(13,false,SPS), (14,false,IDR), (15,true,PPS)] {
+            video.receive(&worker, packet(seq, 2500, marker, nal), &mut keyframe);
+        }
+        // PPS last in the Annex-B reader must be inspected on completion too.
+        assert_eq!(worker.cutovers.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(!video.waiting_for_keyframe());
+    }
+
+    #[test]
+    fn damage_during_soft_refresh_still_blocks_dependent_pictures() {
+        let mut video = video_rtp::VideoRtp::new(1280,720);
+        let worker = streaming::video::VideoDecodeWorker::default(); let mut keyframe = false;
+        video.refresh();
+        video.receive(&worker, packet(10,1000,false,&[0x7c,0x85,0x88]), &mut keyframe);
+        video.receive(&worker, packet(12,1000,true,&[0x7c,0x45,0x99]), &mut keyframe);
+        video.receive(&worker, packet(13,2500,true,&[0x61,0xaa,0xbb]), &mut keyframe);
+        assert!(video.waiting_for_keyframe());
+        assert!(keyframe);
+        assert!(worker.submitted.lock().unwrap().is_empty());
+        for (seq, marker, nal) in [(14,false,SPS), (15,false,PPS), (16,true,IDR)] {
+            video.receive(&worker, packet(seq,4000,marker,nal), &mut keyframe);
+        }
+        assert!(!video.waiting_for_keyframe());
+        assert_eq!(worker.submitted.lock().unwrap().len(), 1);
+        assert_eq!(worker.cutovers.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 }
