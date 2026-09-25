@@ -1,6 +1,8 @@
 """Narrow source wiring guards, not behavioral/device integration tests."""
 import importlib.util
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -12,6 +14,31 @@ spec.loader.exec_module(provenance)
 
 
 class Contracts(unittest.TestCase):
+    def test_scoped_checkout_trust_keeps_revision_and_dirty_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory).resolve()
+            env = {**os.environ, "HOME": directory, "GIT_CONFIG_NOSYSTEM": "1"}
+            def git(*args, checked=True):
+                return subprocess.run(["git", *args], cwd=checkout, env=env,
+                                      capture_output=True, text=True, check=checked)
+            git("init", "-q")
+            (checkout / "tracked").write_text("original\n")
+            git("add", "tracked")
+            git("-c", "user.name=Audit test", "-c", "user.email=audit@example.invalid",
+                "commit", "-qm", "fixture")
+            revision = git("rev-parse", "HEAD").stdout
+            # Git's own test hook models the container checkout ownership mismatch.
+            env["GIT_TEST_ASSUME_DIFFERENT_OWNER"] = "1"
+            self.assertNotEqual(git("rev-parse", "HEAD", checked=False).returncode, 0)
+            env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="safe.directory",
+                       GIT_CONFIG_VALUE_0=str(checkout))
+            self.assertEqual(git("rev-parse", "HEAD").stdout, revision)
+            self.assertEqual(git("diff", "--name-only", "HEAD").stdout, "")
+            (checkout / "tracked").write_text("changed\n")
+            self.assertEqual(git("diff", "--name-only", "HEAD").stdout, "tracked\n")
+            env["GIT_CONFIG_VALUE_0"] = str(checkout / "another-checkout")
+            self.assertNotEqual(git("rev-parse", "HEAD", checked=False).returncode, 0)
+
     def test_no_unowned_session_sweep(self):
         for path in ["src/app/entry.rs", "src/app/stream_session/connection.rs"]:
             text = (ROOT / path).read_text()

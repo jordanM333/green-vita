@@ -201,11 +201,11 @@ An indefinitely stalled consumer can make even one retained item arbitrarily old
 | AVC/driver output → renderer | Three leased CDRAM surfaces; one latest pending picture | Superseded decoded pictures can be dropped safely. Decode target cannot alias displayed/pending surface. In-flight lease must finish before surfaces freed; teardown can wait on a hung firmware call. |
 | Renderer → GPU/display | Per-present GPU-completion synchronization | Measured GPU callback wait, not scanout. Old displayed frame can remain indefinitely with no new video. UI capture can be delayed by a blocking render iteration. |
 | Audio SampleBuilder → RTC batch | max-late32 packets/80ms RTP-time policy; timestamp metadata128 | RTP-time policy does not bound wall age during silence. Original first-admission age now retained even across timestamp wrap and release after a stall. |
-| RTC audio batches → session/UI | 16 bounded batches, normal receive-pass batching; old batch gate | Full mailbox drops new batch. Existing batch age is not sufficient after handoff; per-packet age now continues downstream. |
+| RTC audio batches → session/UI | 16 bounded batches, normal receive-pass batching | Full mailbox drops new batch. Existing batch-age measurement did not enforce per-packet freshness after handoff; per-packet age now continues downstream. |
 | UI → Opus decoder | 32 packets; nonblocking admission drops new on full | Count corresponds to640ms for20ms packets, not a wall bound. Decode advances prediction; PCM from expired packets is withheld. |
 | Opus → UI PCM | 8 decoded buffers | Was a blocking send, permitting backpressure through the audio chain. Now nonblocking; full sink drops PCM, original age retained and rechecked by renderer. |
 | PCM → SDL audio | start40ms; trim160→80ms; hard240ms | Original age + queued duration + new PCM duration must fit240ms at admission. Service stall clears SDL. Cannot retract samples already in hardware/DAC; no physical audio-age claim. |
-| Controller capture → RTC | Latest-value coalescing; pulse FIFO expires100ms | Latest snapshot prevents replay; pulse FIFO has no explicit count bound. UI-generated pulses are rate-limited by interaction, but no arbitrary-producer memory proof.50ms refresh is not sender acknowledgement. |
+| Controller capture → RTC | Latest-value coalescing; pulse FIFO drained to latest Guide pulse | Normal snapshot prevents replay. Pulse FIFO has no explicit count/age bound before service; its100ms hold starts when consumed, not when tapped. Thus a stalled RTC can deliver a late Guide tap.50ms refresh is not sender acknowledgement. |
 | RTC control/frame report → SCTP | Immediate transport-capacity admission; latest feedback, old feedback>250ms rejected | Zero retransmits alone does not prevent unsent queues; existing admission protects this. Remote game receipt/processing still not measured. |
 | UI commands / RTC events | 16 /32 bounded channels | Try-send and coalescing avoid hot-path blocking; progress can still be lost/delayed on full mailboxes. Shutdown waits on worker/transport completion. |
 | Mic capture → RTC voice | Three clips,80ms expiry; mute epoch fence | 16kHz capture/20ms Opus,48kHz RTP clock. Old/muted clips rejected including final-send check. Hardware capture scheduling and acoustic echo are device-dependent. |
@@ -293,7 +293,7 @@ Competing explanations and discriminating evidence:
 exit codes and raw logs. Host Rust1.98.1, native installed libopus; SDL output is
 a controlled recording sink. Full run passes **187 Rust test executions** across
 standalone feedback and ten harnesses (some shared-module tests repeat), plus
-**26 Python tests**. Rust counts:15+14+9+45+4+24+39+22+1+8+6.
+**27 Python tests**. Rust counts:15+14+9+45+4+24+39+22+1+8+6.
 
 - Actual SCTP dependency:30virtual minutes,44 bidirectional2s outages; delivered
   report max age5ms and final-window max5ms, outstanding maximum5418B in this
@@ -317,8 +317,11 @@ standalone feedback and ten harnesses (some shared-module tests repeat), plus
   parsing. No Xbox service contacted; server timeout/lifecycle semantics unproven.
 - Features: server ordering/pagination, mute epoch/clip age and two-peer voice
   negotiation/native codec covered. No acoustic/noecho or physical touch test.
-- Python:16 timing-analysis tests,6 ELF-layout tests,4 source/provenance contract
+- Python:16 timing-analysis tests,6 ELF-layout tests,5 source/provenance contract
   tests. Source-string guards protect wiring but are explicitly not runtime tests.
+  The added Git integration fixture reproduces the container ownership refusal,
+  verifies exact-checkout trust restores revision/dirty-source checks, and proves
+  that trusting a different checkout still fails. It does not weaken those checks.
 - `git diff --check` passes. Review checked dual-channel disconnect before audio
   join, metrics update ordering, surface lease exclusion, matched output epochs,
   captured StreamKind in all credential branches, Cloud owned cleanup, and no
@@ -328,12 +331,27 @@ standalone feedback and ten harnesses (some shared-module tests repeat), plus
   test formatting and audio channel tuple complexity). This is not a warning-free
   or sanitizer result. The combined test/static run took40.988s wall time; it is
   not a40-second device test or a30-minute real-time soak.
+- A release-optimized host microbenchmark of the unchanged production flight
+  recorder recorded100,000 events in4.439ms on one thread, and400,000 events in
+  43.663ms with four contending threads (44.4/109.2ns amortized, retained run). This measures
+  host ring/lock throughput, not Vita per-event tail latency, status formatting,
+  allocation pressure, stderr I/O or overlay rendering. It does not clear the
+  device overhead hypothesis.
 
 No device runtime, real SDL speaker playback, physical scanout, actual Xbox
 feedback compliance, hardware leak/sanitizer run or30-minute physical play has
 been performed. A successful native compile is recorded only as compilation.
 Static-analysis output and final package identity are attached to the release
 record after execution; they must not be inferred from this pre-build document.
+
+Native attempt RX38.19 (workflow36096560537, source
+`b4a1552627075060ce36b04a7f266833bb0efe01`) compiled and packaged in4m00s;
+ELF metadata headroom104416bytes passed. The subsequent provenance step failed
+because actions/checkout's temporary HOME trust configuration did not persist
+into the SDK container's later step. No artifact was uploaded or distributed.
+The replacement workflow grants Git trust only to `github.workspace`, scoped to
+the identity step; embedded SHA/build, clean tracked sources and tree verification
+remain mandatory. Streaming source is unchanged between these native attempts.
 
 ## One consolidated device check (only after the host/native checks)
 
@@ -349,7 +367,9 @@ established guest-network/power-setting experiments.
    pause the game without opening GreenVita menus, resume, then invoke Home
    refresh once. Same game must remain running; do not accept a restarted game.
 3. Exit normally after each run so automatic history/incident/trace files are
-   saved; retain Home files before Cloud can overwrite them. No manual profiling
+   saved. The second exit rotates the first run to `pipeline-previous-*`; collect
+   current and previous files from `ux0:data/green-vita-540-test/` together, before
+   a third stream overwrites the pair. No manual profiling
    setup or repeated competing builds is requested. If severe lag occurs, note
    the elapsed time and exit normally then; do not force30min of unplayable use.
 

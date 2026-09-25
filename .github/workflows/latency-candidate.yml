@@ -91,6 +91,12 @@ jobs:
       - name: Record binary identity
         env:
           GREENVITA_SDK_IMAGE: ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc
+          # checkout configures trust in a temporary HOME; the SDK container's
+          # later steps use another HOME. Trust only this authorized checkout,
+          # only for this step. Do not disable ownership checks globally.
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: safe.directory
+          GIT_CONFIG_VALUE_0: ${{ github.workspace }}
         run: |
           sha256sum target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk > candidate-sha256.txt
           python3 tools/build_provenance.py target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk --revision "$GITHUB_SHA" --number "38.$GITHUB_RUN_NUMBER" --checkout > candidate-provenance.json
