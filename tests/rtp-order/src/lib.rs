@@ -8,6 +8,7 @@ pub use rtp;
 pub mod policy;
 
 mod streaming {
+    pub(crate) use crate::audio_timing;
     pub mod video {
         pub(crate) use crate::policy;
         pub mod trace { pub fn record(_: &'static str, _: u32, _: u64) {} }
@@ -53,6 +54,9 @@ mod streaming {
     }
 }
 
+#[path = "../../../src/streaming/audio_timing.rs"]
+pub(crate) mod audio_timing;
+
 #[path = "../../../src/api/streaming/rtc/reorder.rs"]
 mod reorder;
 #[path = "../../../src/api/streaming/rtc/rtp.rs"]
@@ -71,6 +75,19 @@ mod tests {
                 sequence_number: seq, timestamp: ts, marker, ..Default::default()
             }, payload: Bytes::from_static(payload), ..Default::default()
         }
+    }
+
+    #[test]
+    fn sample_builder_release_preserves_audio_arrival_age_across_wrap_and_stall() {
+        let mut audio = video_rtp::AudioRtp::new(48_000, 0);
+        let old = Instant::now() - Duration::from_secs(6);
+        let mut ready = Vec::new();
+        audio.receive(packet(u16::MAX, u32::MAX - 959, false, &[0xf8, 0xff, 0xfe]), old, &mut ready);
+        audio.receive(packet(0, 0, false, &[0xf8, 0xff, 0xfe]), Instant::now(), &mut ready);
+        audio.receive(packet(1, 960, false, &[0xf8, 0xff, 0xfe]), Instant::now(), &mut ready);
+        assert!(!ready.is_empty());
+        assert_eq!(ready[0].received_at, old);
+        assert!(!ready[0].fits_playback(Instant::now(), Duration::ZERO, Duration::ZERO));
     }
 
     #[derive(Default)]
@@ -94,6 +111,35 @@ mod tests {
             }
             while let Some(p) = self.order.pop_ready(now) { self.consume(assembler, p); }
         }
+    }
+
+    #[test]
+    fn thirty_virtual_minutes_preserve_fragment_bytes_through_bursts_and_wraps() {
+        let mut receiver = OrderedReceiver::default();
+        let mut assembler = video_rtp::VideoRtp::new(1280, 720);
+        let start = Instant::now();
+        let mut seq = u16::MAX - 17;
+        let mut timestamp = u32::MAX - 90_000;
+        for frame in 0..108_000_u64 {
+            // Eight frames delivered in each 133ms burst. Every frame has an
+            // out-of-order end fragment; use actual reorder + H264 assembly.
+            // No hardware decode is claimed for these small assembly fixtures.
+            let now = start + Duration::from_micros((frame / 8) * 133_333);
+            for p in [packet(seq, timestamp, false, &[0x7c, 0x85, 0x88]),
+                      packet(seq.wrapping_add(2), timestamp, true, &[0x7c, 0x45, 0xaa]),
+                      packet(seq.wrapping_add(1), timestamp, false, &[0x7c, 0x05, 0x99])] {
+                receiver.receive(&mut assembler, p, now);
+            }
+            receiver.flush(&mut assembler, now);
+            let mut outputs = receiver.worker.submitted.lock().unwrap();
+            assert_eq!(*outputs, vec![vec![0, 0, 0, 1, 0x65, 0x88, 0x99, 0xaa]]);
+            outputs.clear();
+            seq = seq.wrapping_add(3);
+            timestamp = timestamp.wrapping_add(1500);
+        }
+        assert_eq!(receiver.drops, 0);
+        assert_eq!(receiver.order.stats.missing, 0);
+        assert!(!receiver.keyframe);
     }
 
     #[test]

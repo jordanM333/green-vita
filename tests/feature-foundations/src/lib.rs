@@ -7,6 +7,8 @@ mod microphone;
 mod mic_button;
 #[path = "../../../src/streaming/audio_gain.rs"]
 mod audio_gain;
+#[path = "../../../src/streaming/audio_timing.rs"]
+mod audio_timing;
 #[path = "../../../src/streaming/video/startup.rs"]
 mod video_startup;
 #[path = "../../../src/settings.rs"]

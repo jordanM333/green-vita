@@ -398,9 +398,10 @@ fn handle_decode_result(
                 super::trace::record("picture_output_rtp", timing.rtp_timestamp, age_us);
             } else {
                 metrics::METRICS.output_pts_unmatched.fetch_add(1, Ordering::Relaxed);
-                // An output-only call has no input epoch to fall back to. An
-                // unknown picture must not put pre-recovery pixels on screen.
-                if input.is_none() { return true; }
+                // Decode can return an older queued picture on an input call
+                // too. The submitted AU's epoch never proves output identity.
+                super::trace::record("unknown_picture_pts", 0, 0);
+                return true;
             }
             let output_rtp = picture.timing.map(|t| t.rtp_timestamp).unwrap_or(0);
             let output_age = picture.timing.map(|t| t.received_at.elapsed().as_micros() as u64).unwrap_or(0);

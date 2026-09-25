@@ -1,7 +1,7 @@
 use super::StreamingSession;
 use crate::app::{App, AppState, PollJob, poll_job};
 use crate::i18n::{I18n, arg_string};
-use crate::{ApiClient, MsalAuth, Stream, StreamKind, StreamState};
+use crate::{MsalAuth, Stream, StreamKind, StreamState};
 use anyhow::Result;
 use fluent_bundle::FluentArgs;
 use std::time::{Duration, Instant};
@@ -63,39 +63,12 @@ pub(crate) struct StreamStartTarget {
     pub(crate) return_selected: usize,
 }
 
-pub(in crate::app) async fn cleanup_active_sessions(api: &ApiClient, kind: StreamKind) {
-    eprintln!("Checking for active {kind:?} sessions...");
-    let paths = match api.get_active_session_paths(kind).await {
-        Ok(paths) => paths,
-        Err(error) => {
-            if error.to_string().contains("404") {
-                eprintln!("No active-sessions endpoint for {kind:?} (404) - skipping");
-            } else {
-                eprintln!("Failed to check for active {kind:?} sessions: {error:#}");
-            }
-            return;
-        }
-    };
-
-    if paths.is_empty() {
-        eprintln!("No stale {kind:?} sessions found");
-        return;
-    }
-    eprintln!("Found {} stale {kind:?} session(s), stopping", paths.len());
-    for path in paths {
-        if let Err(error) = api.stop_session(kind, &path).await {
-            eprintln!("Failed to stop stale session {path}: {error:#}");
-        }
-    }
-}
-
 impl App {
     pub(in crate::app) fn start_stream_for_target(&mut self, target: StreamStartTarget) {
         let api = self.service.api.clone();
         let kind = target.kind;
         let target_id = target.target_id.clone();
         let job = Some(tokio::spawn(async move {
-            cleanup_active_sessions(&api, kind).await;
             api.start_stream(kind, &target_id).await
         }));
         self.set_state(AppState::StartingStream { target, job });

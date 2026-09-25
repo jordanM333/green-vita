@@ -4,6 +4,7 @@ use crate::streaming::video::{DecodedFrame, DirectVideoOutput, HW_OUTPUT_HEIGHT,
 use crate::streaming::video::metrics::METRICS;
 use anyhow::{Context, Result};
 use bytes::Bytes;
+use crate::streaming::audio_timing::TimedAudio;
 use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use rtc::peer_connection::sdp::RTCSessionDescription;
 use rtc::peer_connection::state::RTCPeerConnectionState;
@@ -59,7 +60,7 @@ struct SampledGamepadFrame {
 }
 
 pub(crate) struct TimedAudioBatch {
-    pub(crate) packets: Vec<Bytes>,
+    pub(crate) packets: Vec<TimedAudio<Bytes>>,
     pub(crate) queued_at: Instant,
 }
 
@@ -450,7 +451,9 @@ async fn run_session<P: RtcWorkerProvider>(
                 }
             } => {
                 chat_exchange = None;
-                session.backend.finish_chat_negotiation(&mut session.peer, answer);
+                if session.backend.finish_chat_negotiation(&mut session.peer, answer) {
+                    session.refresh_negotiated_feedback();
+                }
             }
             readable = session.transport.socket.readable() => {
                 readable.context("failed waiting for WebRTC UDP socket")?;

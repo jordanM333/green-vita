@@ -146,8 +146,8 @@ impl RtcSessionBackend for XboxRtcProtocol {
         self.microphone.begin_negotiation(peer)
     }
 
-    fn finish_chat_negotiation(&mut self, peer: &mut RTCPeerConnection, answer: anyhow::Result<String>) {
-        self.microphone.finish_negotiation(peer, answer);
+    fn finish_chat_negotiation(&mut self, peer: &mut RTCPeerConnection, answer: anyhow::Result<String>) -> bool {
+        self.microphone.finish_negotiation(peer, answer)
     }
 
     fn microphone_status(&self) -> String { self.microphone.status() }

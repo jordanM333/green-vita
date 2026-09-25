@@ -40,6 +40,7 @@ struct Fake {
     inputs:Vec<u64>, outputs:Vec<u64>, polls:usize, deletes:usize, created:usize,
     // A no-output call retains the input. This is the observed trace behavior.
     suppress_inputs:usize, reject_poll:bool, hold_polls:bool, calls:Vec<bool>,
+    unknown_pts: bool,
 }
 // Gate a real worker hardware call without holding the fake's state mutex.
 static CALL_GATE: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>> = Mutex::new(None);
@@ -82,7 +83,8 @@ pub unsafe fn sceAvcdecDecode(c:*const SceAvcdecCtrl,au:*const SceAvcdecAu,ap:*m
     if let Some(pts)=f.decoders.get_mut(&(*c).handle).unwrap().pop_front() {
         let picture=&mut **ap.pPicture;
         assert_eq!((picture.frame.frameWidth,picture.frame.frameHeight),(960,544));
-        picture.info.pts=SceVideodecTimeStamp{upper:(pts>>32)as u32,lower:pts as u32};
+        let reported = if f.unknown_pts { pts.wrapping_add(123_456_789) } else { pts };
+        picture.info.pts=SceVideodecTimeStamp{upper:(reported>>32)as u32,lower:reported as u32};
         // Put identity in the actual target so publication tests check pixels too.
         std::ptr::write_unaligned(picture.frame.pPicture[0].cast::<u64>(),pts);
         ap.numOfOutput=1;f.outputs.push(pts);

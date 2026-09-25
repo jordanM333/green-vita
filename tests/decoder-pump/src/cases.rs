@@ -5,6 +5,19 @@ use crate::FAKE;
 mod burst_replay;
 fn config()->DecoderConfig { DecoderConfig{decode_width:1280,decode_height:720,output_width:960,output_height:544} }
 fn reset() { *FAKE.lock().unwrap()=Default::default(); }
+
+#[test]
+fn unknown_picture_identity_never_borrows_the_submitted_inputs_epoch() {
+    reset();
+    let (output, _pixels) = surfaces();
+    let mut worker = VideoDecodeWorker::spawn(config(), output.clone()).unwrap();
+    FAKE.lock().unwrap().unknown_pts = true;
+    let before = metrics::METRICS.output_pts_unmatched.load(Ordering::Relaxed);
+    worker.submit_access_unit(vec![1], Instant::now(), 9000);
+    wait_for(|| metrics::METRICS.output_pts_unmatched.load(Ordering::Relaxed) > before);
+    worker.shutdown();
+    assert!(!output.has_pending_frame(), "unknown old pictures must never be displayed as current");
+}
 fn surfaces()->(Arc<DirectVideoOutput>,Vec<Vec<u8>>) {
     let mut pixels=vec![vec![0;960*544*2];3];
     let output=Arc::new(DirectVideoOutput::new(960,544));

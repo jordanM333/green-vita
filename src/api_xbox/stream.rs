@@ -1,4 +1,5 @@
 use crate::api_xbox::api::ApiClient;
+use super::session_kind::StreamKind;
 use crate::api_xbox::auth::{EndpointCredentials, MsalAuth};
 use anyhow::{Context, Result};
 use reqwest::Method;
@@ -38,6 +39,7 @@ impl StreamState {
 
 #[derive(Debug, Clone)]
 pub struct Stream {
+    kind: StreamKind,
     api_client: ApiClient,
     credentials: EndpointCredentials,
     pub session_id: String,
@@ -55,6 +57,7 @@ impl Stream {
         api_client: ApiClient,
         credentials: EndpointCredentials,
         response: StartStreamResponse,
+        kind: StreamKind,
     ) -> Self {
         let session_id = response
             .session_path
@@ -64,6 +67,7 @@ impl Stream {
             .to_owned();
 
         Self {
+            kind,
             api_client,
             credentials,
             session_id,
@@ -236,6 +240,12 @@ impl Stream {
     }
 
     pub async fn stop(&self) -> Result<Value> {
+        // Home owns a remote-play attachment, not the running console game.
+        // This guard also covers startup cancellation and error cleanup; none
+        // may turn a media failure into a REST session-termination request.
+        if self.kind == StreamKind::Home {
+            return Ok(json!({ "detached": true }));
+        }
         self.api_client
             .request_json(
                 &self.credentials,

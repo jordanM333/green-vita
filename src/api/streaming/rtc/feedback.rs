@@ -222,9 +222,9 @@ mod tests {
         cap.answer("m=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 goog-remb");
         cap.observe_payload(102);
         for tick in 0..=100 {
-            cap.receive(25_000, 200, start + Duration::from_millis(tick * 100));
+            cap.receive(25_000, tick * 10, start + Duration::from_millis(tick * 100));
         }
-        assert_eq!(cap.target_bps(), 500_000, "reproduce old controller clamp");
+        assert_eq!(cap.target_bps(), 500_000, "sustained growth exercised fallback");
         let now = start + Duration::from_secs(11);
         cap.attempted(now, true);
         cap.update_arrival_feedback(10, 1, now);
@@ -259,7 +259,7 @@ mod tests {
         cap.update_arrival_feedback(10, 1, start + Duration::from_secs(2));
         assert!(!cap.arrival.active);
         for tick in 20..=100 {
-            cap.receive(25_000, 300, start + Duration::from_millis(tick * 100));
+            cap.receive(25_000, tick * 10, start + Duration::from_millis(tick * 100));
         }
         assert!(cap.target_bps() < VIDEO_CEILING_BPS);
         cap.update_arrival_feedback(20, 2, start + Duration::from_secs(11));

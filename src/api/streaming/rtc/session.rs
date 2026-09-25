@@ -37,7 +37,7 @@ pub(crate) struct RtcSessionConfig {
 pub(crate) trait RtcSessionBackend {
     fn pump_microphone(&mut self, _peer: &mut RTCPeerConnection, _connected: bool) {}
     fn begin_chat_negotiation(&mut self, _peer: &mut RTCPeerConnection) -> Option<RTCSessionDescription> { None }
-    fn finish_chat_negotiation(&mut self, _peer: &mut RTCPeerConnection, _answer: Result<String>) {}
+    fn finish_chat_negotiation(&mut self, _peer: &mut RTCPeerConnection, _answer: Result<String>) -> bool { false }
     fn microphone_status(&self) -> String { String::new() }
     fn handle_channel_open(
         &mut self,
@@ -127,9 +127,15 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         self.peer
             .set_remote_description(answer?)
             .context("failed to set remote rtc answer")?;
-        self.video_ceiling.answer(&sdp);
-        self.video.set_nack_payloads(super::feedback::feedback_payloads(&sdp, "nack"));
+        self.refresh_negotiated_feedback();
         Ok(())
+    }
+
+    pub(crate) fn refresh_negotiated_feedback(&mut self) {
+        if let Some(answer) = self.peer.current_remote_description() {
+            self.video_ceiling.answer(&answer.sdp);
+            self.video.set_nack_payloads(super::feedback::feedback_payloads(&answer.sdp, "nack"));
+        }
     }
 
     pub fn close(&mut self) -> Result<()> {

@@ -1,0 +1,9 @@
+[package]
+name = "green-vita-audio-pipeline-tests"
+version = "0.0.0"
+edition = "2024"
+publish = false
+[workspace]
+[dependencies]
+anyhow = "1"
+bytes = "1"

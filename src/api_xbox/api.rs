@@ -4,7 +4,7 @@ use crate::api_xbox::auth::EndpointCredentials;
 use crate::api_xbox::stream::{StartStreamResponse, Stream};
 use anyhow::{Context, Result};
 use reqwest::{Client, Method};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -37,20 +37,7 @@ impl Default for ApiClientConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum StreamKind {
-    Home,
-    Cloud,
-}
-
-impl StreamKind {
-    pub fn as_path(self) -> &'static str {
-        match self {
-            Self::Home => "home",
-            Self::Cloud => "cloud",
-        }
-    }
-}
+pub use super::session_kind::StreamKind;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -140,11 +127,6 @@ impl ApiClient {
         Ok(paths)
     }
 
-    pub async fn stop_session(&self, kind: StreamKind, session_path: &str) -> Result<Value> {
-        let path = format!("/{}", session_path.trim_start_matches('/'));
-        self.delete_json(kind, &path).await
-    }
-
     /// Creates a streaming session. Cloud titles missing from the primary offering are retried
     /// against the free-to-play endpoint when one is available.
     pub async fn start_stream(&self, kind: StreamKind, title_or_server_id: &str) -> Result<Stream> {
@@ -170,12 +152,12 @@ impl ApiClient {
 
         if kind == StreamKind::Home {
             return self
-                .start_stream_with_credentials(self.config.home.clone(), &path, &body)
+                .start_stream_with_credentials(kind, self.config.home.clone(), &path, &body)
                 .await;
         }
 
         match self
-            .start_stream_with_credentials(self.config.cloud.clone(), &path, &body)
+            .start_stream_with_credentials(kind, self.config.cloud.clone(), &path, &body)
             .await
         {
             Ok(stream) => Ok(stream),
@@ -183,7 +165,7 @@ impl ApiClient {
                 let Some(fallback) = self.config.cloud_f2p.clone() else {
                     return Err(error);
                 };
-                self.start_stream_with_credentials(fallback, &path, &body)
+                self.start_stream_with_credentials(kind, fallback, &path, &body)
                     .await
             }
             Err(error) => Err(error),
@@ -192,6 +174,7 @@ impl ApiClient {
 
     async fn start_stream_with_credentials(
         &self,
+        kind: StreamKind,
         credentials: EndpointCredentials,
         path: &str,
         body: &Value,
@@ -199,7 +182,7 @@ impl ApiClient {
         let response: StartStreamResponse = self
             .request_json(&credentials, Method::POST, path, Some(body))
             .await?;
-        Ok(Stream::new(self.clone(), credentials, response))
+        Ok(Stream::new(self.clone(), credentials, response, kind))
     }
 
     pub async fn get_json<T>(&self, kind: StreamKind, path: &str) -> Result<T>

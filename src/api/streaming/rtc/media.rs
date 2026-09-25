@@ -2,6 +2,7 @@ use crate::api::streaming::rtc::rtp;
 use crate::streaming::video::{DecodedFrame, DecoderConfig, DirectVideoOutput, VideoDecodeWorker};
 use anyhow::Result;
 use bytes::Bytes;
+use crate::streaming::audio_timing::TimedAudio;
 use rtc::media_stream::MediaStreamTrackId;
 use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use rtc::rtp::Packet;
@@ -325,7 +326,7 @@ impl VideoReceiver {
 pub(crate) struct AudioReceiver {
     track_id: Option<MediaStreamTrackId>,
     rtp: rtp::AudioRtp,
-    pub(crate) packets: Vec<Bytes>,
+    pub(crate) packets: Vec<TimedAudio<Bytes>>,
 }
 
 impl AudioReceiver {
@@ -346,6 +347,6 @@ impl AudioReceiver {
     }
 
     pub(crate) fn receive(&mut self, packet: Packet) {
-        self.rtp.receive(packet, &mut self.packets);
+        self.rtp.receive(packet, Instant::now(), &mut self.packets);
     }
 }

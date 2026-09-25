@@ -83,6 +83,10 @@ mod tests {
     enum Admission { Unbounded, Test33AckCap, Test34Capacity }
 
     fn simulate(stall: bool, admission: Admission, drop_forward: bool) -> (u64, u64, usize) {
+        simulate_for(stall, admission, drop_forward, 120_000)
+    }
+
+    fn simulate_for(stall: bool, admission: Admission, drop_forward: bool, duration_ms: u64) -> (u64, u64, usize) {
         let mut client = Side::new(41000, false);
         let mut server = Side::new(41001, true);
         client.association = Some(client.endpoint.connect(ClientConfig::new(TransportConfig::default()), server.address).unwrap());
@@ -90,7 +94,7 @@ mod tests {
         let mut max_buffer = 0;
         // 120 reports/s approximates separate controller and presentation reports.
         // Stop acknowledgements for two seconds, then allow normal delivery.
-        for ms in 0..120_000_u64 {
+        for ms in 0..duration_ms {
             let now = start + Duration::from_millis(ms);
             if ms == 1000 {
                 let conn = &mut client.association.as_mut().unwrap().1;
@@ -98,7 +102,7 @@ mod tests {
                 conn.open_stream(2, PayloadProtocolIdentifier::Binary).unwrap()
                     .set_reliability_params(true, ReliabilityType::Rexmit, 0).unwrap();
             }
-            if (1000..119_000).contains(&ms) && ms % 8 == 0 {
+            if (1000..duration_ms - 1000).contains(&ms) && ms % 8 == 0 {
                 let capacity = client.association.as_ref().unwrap().1.immediate_send_capacity();
                 let mut stream = client.association.as_mut().unwrap().1.stream(2).unwrap();
                 let mut bytes = vec![0; 43];
@@ -113,14 +117,22 @@ mod tests {
                 }
                 max_buffer = max_buffer.max(stream.buffered_amount().unwrap());
             }
-            let outage = stall && ((40_000..42_000).contains(&ms) || (80_000..82_000).contains(&ms));
+            let outage = stall && ms >= 40_000 && ms % 40_000 < 2000;
             client.drive(&mut server, now, start, outage && drop_forward);
             server.drive(&mut client, now, start, outage);
         }
         let max_age = server.received.iter().map(|(sent, received)| received - sent).max().unwrap();
-        let tail_age = server.received.iter().filter(|(sent, _)| *sent >= 110_000)
+        let tail_age = server.received.iter().filter(|(sent, _)| *sent >= duration_ms - 10_000)
             .map(|(sent, received)| received - sent).max().unwrap();
         (max_age, tail_age, max_buffer)
+    }
+
+    #[test]
+    fn thirty_virtual_minutes_of_repeated_outages_do_not_accumulate_input_age() {
+        let (age, tail, outstanding) = simulate_for(true, Admission::Test34Capacity, true, 1_800_000);
+        eprintln!("1800s virtual SCTP, 44 two-second outages: max={age}ms tail={tail}ms outstanding={outstanding}B");
+        assert!(age < 50);
+        assert!(tail < 50);
     }
 
     #[test]

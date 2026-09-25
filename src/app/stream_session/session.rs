@@ -5,6 +5,7 @@ use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
 use crate::{Stream, StreamKind};
 use anyhow::Result;
 use bytes::Bytes;
+use crate::streaming::audio_timing::TimedAudio;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -30,7 +31,7 @@ pub(crate) struct StreamingSession {
     latest_video_frame: Option<u64>,
     current_video_frame: Option<DecodedFrame>,
     stream_video_size: Option<(u32, u32)>,
-    pending_audio_packets: Vec<Bytes>,
+    pending_audio_packets: Vec<TimedAudio<Bytes>>,
     ignore_confirm_until_release: bool,
 }
 
@@ -84,7 +85,7 @@ impl StreamingSession {
         self.hint_started_at = Instant::now();
     }
 
-    pub(crate) fn take_audio_packets(&mut self) -> Vec<Bytes> {
+    pub(crate) fn take_audio_packets(&mut self) -> Vec<TimedAudio<Bytes>> {
         std::mem::take(&mut self.pending_audio_packets)
     }
 

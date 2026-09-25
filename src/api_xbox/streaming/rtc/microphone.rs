@@ -76,11 +76,13 @@ impl MicrophoneUplink {
         Ok(offer)
     }
 
-    pub(super) fn finish_negotiation(&mut self, peer: &mut RTCPeerConnection, answer: Result<String>) {
+    pub(super) fn finish_negotiation(&mut self, peer: &mut RTCPeerConnection, answer: Result<String>) -> bool {
         self.pending = false;
+        let mut applied = false;
         let result = answer.and_then(|sdp| {
             peer.set_remote_description(RTCSessionDescription::answer(sdp)?)
                 .context("apply Xbox chat answer")?;
+            applied = true;
             ensure!(self.transceiver.and_then(|id| peer.rtp_transceiver(id))
                 .is_some_and(|t| t.current_direction().has_send()), "Xbox declined microphone audio");
             Ok(())
@@ -104,6 +106,7 @@ impl MicrophoneUplink {
                 self.microphone.fail(format!("chat connection failed: {error}"));
             }
         }
+        applied
     }
 
     pub(super) fn pump(&mut self, peer: &mut RTCPeerConnection, connected: bool) {

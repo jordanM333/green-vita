@@ -1,11 +1,10 @@
-//! Delay-based receive budget for the negotiated REMB feedback path.
-//! Arrival delay is relative to the fastest RTP arrival, not unsynchronized
-//! Xbox/Vita wall clocks. This changes sender demand; it never resets playback.
+//! Growth-based REMB fallback (only when TWCC is not active).
+//! Absolute arrival offset is not evidence of continuing queue growth. A step
+//! after a pause must not be repeatedly spent as new congestion evidence.
 use std::time::{Duration, Instant};
 
 const SAMPLE: Duration = Duration::from_millis(200);
 const DECREASE_INTERVAL: Duration = Duration::from_secs(1);
-const RECOVERY_INTERVAL: Duration = Duration::from_secs(5);
 const SETTLED_RECOVERY_INTERVAL: Duration = Duration::from_secs(10);
 const MIN_BPS: u32 = 500_000;
 
@@ -16,9 +15,9 @@ pub(super) struct ReceiveBudget {
     bytes: u64,
     last_change: Option<Instant>,
     healthy_since: Option<Instant>,
-    healthy_floor_ms: u64,
     sample_min_ms: u64,
     delayed_windows: u32,
+    trend: Option<(Instant, u64)>,
     pub(super) reductions: u64,
     pub(super) delay_ms: u64,
 }
@@ -27,7 +26,7 @@ impl ReceiveBudget {
     pub(super) fn new(maximum: u32) -> Self {
         Self { maximum, target: maximum, start: None, bytes: 0,
             last_change: None, healthy_since: None, delayed_windows: 0,
-            healthy_floor_ms: 0, sample_min_ms: u64::MAX,
+            trend: None, sample_min_ms: u64::MAX,
             reductions: 0, delay_ms: 0 }
     }
 
@@ -46,6 +45,7 @@ impl ReceiveBudget {
             // Time with no video is not evidence of spare bandwidth.
             self.healthy_since = None;
             self.delayed_windows = 0;
+            self.trend = None;
         }
         let received_bps = (self.bytes * 8_000 / elapsed.as_millis().max(1) as u64)
             .min(u64::from(u32::MAX)) as u32;
@@ -53,7 +53,17 @@ impl ReceiveBudget {
         self.bytes = 0;
         self.delay_ms = delay_ms;
 
-        if delay_ms >= 100 {
+        let Some((trend_at, previous_delay)) = self.trend else {
+            self.trend = Some((now, delay_ms));
+            return;
+        };
+        if now.saturating_duration_since(trend_at) < DECREASE_INTERVAL { return; }
+        self.trend = Some((now, delay_ms));
+
+        // Two successive one-second lower-envelope increases are required.
+        // Reuse the existing 20ms jitter tolerance, now against a moving
+        // reference rather than the session's fastest-ever arrival.
+        if delay_ms > previous_delay.saturating_add(20) {
             self.healthy_since = None;
             self.delayed_windows = self.delayed_windows.saturating_add(1);
             if self.delayed_windows >= 2 && self.last_change.is_none_or(|at|
@@ -61,7 +71,7 @@ impl ReceiveBudget {
             {
                 // Leave capacity for audio, transport headers and clearing the
                 // upstream backlog. Never treat requested bitrate as delivered.
-                let next = (self.target * 7 / 10).min((u64::from(received_bps) * 8 / 10) as u32)
+                let next = ((u64::from(self.target) * 7 / 10) as u32).min((u64::from(received_bps) * 8 / 10) as u32)
                     .max(MIN_BPS.min(self.maximum));
                 if next < self.target {
                     self.target = next;
@@ -71,26 +81,16 @@ impl ReceiveBudget {
             }
         } else {
             self.delayed_windows = 0;
-            if delay_ms > 80 {
+            if previous_delay > delay_ms.saturating_add(20) {
+                // Queue is draining. Do not immediately undo the reduction.
                 self.healthy_since = None;
                 return;
             }
-            // RX38.9 settled at 59-80ms after a disturbance. Requiring <40ms
-            // forever locks quality at the minimum on that now-stable path.
-            // Probe slowly only while delay is bounded and not trending up;
-            // retain the original baseline and all congestion cut thresholds.
-            if self.healthy_since.is_none() || delay_ms > self.healthy_floor_ms + 20 {
-                self.healthy_floor_ms = delay_ms;
-                self.healthy_since = Some(now);
-            }
-            self.healthy_floor_ms = self.healthy_floor_ms.min(delay_ms);
             let healthy = *self.healthy_since.get_or_insert(now);
-            let interval = if delay_ms <= 40 { RECOVERY_INTERVAL } else { SETTLED_RECOVERY_INTERVAL };
-            if now.saturating_duration_since(healthy) >= interval {
-                self.target = (self.target + 100_000).min(self.maximum);
+            if now.saturating_duration_since(healthy) >= SETTLED_RECOVERY_INTERVAL {
+                self.target = self.target.saturating_add(100_000).min(self.maximum);
                 self.last_change = Some(now);
                 self.healthy_since = Some(now);
-                self.healthy_floor_ms = delay_ms;
             }
         }
     }
@@ -101,32 +101,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fixed_arrival_offset_reproduces_legacy_floor_collapse() {
+    fn audit_regression_fixed_offset_does_not_collapse_receive_budget() {
+        let start = Instant::now();
+        let mut budget = ReceiveBudget::new(2_000_000);
+        for tick in 0..=18_000 {
+            // Thirty virtual minutes, with an idle-scene/path offset and a
+            // small clock skew. Neither is sustained queue growth.
+            let delay = if tick < 100 { 5 } else { 200 + tick / 1000 };
+            budget.receive(25_000, delay, start + Duration::from_millis(tick * 100));
+        }
+        assert_eq!(budget.target(), 2_000_000);
+        assert_eq!(budget.reductions, 0);
+    }
+
+    #[test]
+    fn fixed_arrival_offset_does_not_repeat_legacy_floor_collapse() {
         // A path offset can remain after a pause without further queue growth.
-        // This captures the legacy loop's flaw; TWCC sessions must not run it.
+        // Applies to fallback too, not just sessions with working TWCC.
         let start = Instant::now();
         let mut budget = ReceiveBudget::new(2_000_000);
         for tick in 0..=300 {
             budget.receive(25_000, 200, start + Duration::from_millis(tick * 100));
         }
-        assert_eq!(budget.target(), MIN_BPS);
-        assert!(budget.reductions >= 4);
+        assert_eq!(budget.target(), 2_000_000);
+        assert_eq!(budget.reductions, 0);
     }
 
     #[test]
-    fn settled_seventy_ms_path_can_recover_but_large_backlog_cannot() {
+    fn growing_delay_reduces_but_settled_offset_and_idle_do_not_pin_quality() {
         let start = Instant::now();
         let mut budget = ReceiveBudget::new(2_000_000);
         for tick in 0..=150 {
-            budget.receive(25_000, 1500, start + Duration::from_millis(tick * 200));
+            budget.receive(25_000, tick * 10, start + Duration::from_millis(tick * 200));
         }
         assert_eq!(budget.target(), MIN_BPS);
-        for tick in 151..=201 {
-            budget.receive(25_000, 70, start + Duration::from_millis(tick * 200));
-        }
-        assert_eq!(budget.target(), MIN_BPS + 100_000);
-        for tick in 202..=302 {
-            budget.receive(25_000, 95, start + Duration::from_millis(tick * 200));
+        for tick in 151..=211 {
+            budget.receive(25_000, 1500, start + Duration::from_millis(tick * 200));
         }
         assert_eq!(budget.target(), MIN_BPS + 100_000);
         budget.receive(25_000, 70, start + Duration::from_secs(80));
@@ -147,11 +157,11 @@ mod tests {
     }
 
     #[test]
-    fn backlog_reduces_sender_demand_without_waiting_for_seconds_of_delay() {
+    fn sustained_growth_reduces_demand_not_a_single_path_step() {
         let now = Instant::now();
         let mut budget = ReceiveBudget::new(2_000_000);
-        for tick in 0..=10 {
-            budget.receive(10_000, if tick < 2 { 0 } else { 150 },
+        for tick in 0..=30 {
+            budget.receive(10_000, tick * 4,
                 now + Duration::from_millis(tick * 100));
         }
         assert!(budget.target() < 1_000_000);
@@ -167,15 +177,15 @@ mod tests {
                 now + Duration::from_millis(tick * 100));
         }
         assert_eq!(budget.target(), 2_000_000);
-        for tick in 31..=60 {
-            budget.receive(1_000, 600, now + Duration::from_millis(tick * 100));
+        for tick in 31..=100 {
+            budget.receive(1_000, (tick - 30) * 10, now + Duration::from_millis(tick * 100));
         }
         assert_eq!(budget.target(), MIN_BPS);
-        for tick in 61..=100 {
+        for tick in 101..=150 {
             budget.receive(10_000, 5, now + Duration::from_millis(tick * 100));
         }
         assert_eq!(budget.target(), MIN_BPS);
-        for tick in 101..=125 {
+        for tick in 151..=220 {
             budget.receive(10_000, 5, now + Duration::from_millis(tick * 100));
         }
         assert_eq!(budget.target(), MIN_BPS + 100_000);

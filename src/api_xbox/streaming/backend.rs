@@ -8,6 +8,7 @@ use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
 use crate::streaming::video::metrics::METRICS;
 use anyhow::Result;
 use bytes::Bytes;
+use crate::streaming::audio_timing::TimedAudio;
 use rtc::peer_connection::transport::RTCIceCandidateInit;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -66,7 +67,7 @@ impl XboxStreamingBackend {
         }
     }
 
-    pub(crate) fn try_recv_audio_packets(&self) -> Option<Vec<Bytes>> {
+    pub(crate) fn try_recv_audio_packets(&self) -> Option<Vec<TimedAudio<Bytes>>> {
         let batch = self.worker.audio_rx.try_recv().ok()?;
         let age_us = batch.queued_at.elapsed().as_micros() as u64;
         METRICS.audio_batch_age_sum_us.fetch_add(age_us, Ordering::Relaxed);

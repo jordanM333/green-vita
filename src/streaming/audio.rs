@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
+use super::audio_timing::{TimedAudio, MAX_LOCAL_AUDIO_AGE};
+use std::time::{Duration, Instant};
 use sdl2::audio::{AudioQueue, AudioSpecDesired};
 use crate::streaming::video::metrics::METRICS;
 use std::ptr::NonNull;
@@ -29,7 +31,8 @@ struct OpusDecoderState {
     _private: [u8; 0],
 }
 
-#[link(name = "opus", kind = "static")]
+#[cfg_attr(target_os = "vita", link(name = "opus", kind = "static"))]
+#[cfg_attr(not(target_os = "vita"), link(name = "opus"))]
 unsafe extern "C" {
     fn opus_decoder_create(
         sample_rate: i32,
@@ -100,9 +103,10 @@ impl Drop for NativeOpusDecoder {
 pub struct AudioRenderer {
     gain: super::audio_gain::AudioGain,
     queue: AudioQueue<i16>,
-    packets_tx: SyncSender<Bytes>,
-    samples_rx: Receiver<Vec<i16>>,
+    packets_tx: SyncSender<TimedAudio<Bytes>>,
+    samples_rx: Receiver<TimedAudio<Vec<i16>>>,
     started: bool,
+    last_service: Instant,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -132,12 +136,22 @@ impl AudioRenderer {
             packets_tx,
             samples_rx,
             started: false,
+            last_service: Instant::now(),
             thread: Some(thread),
         })
     }
 
-    pub fn submit_packets(&mut self, packets: Vec<Bytes>, volume_percent: u8) {
+    pub(crate) fn submit_packets(&mut self, packets: Vec<TimedAudio<Bytes>>, volume_percent: u8) {
         self.gain.set_percent(volume_percent);
+        let now = Instant::now();
+        if now.saturating_duration_since(self.last_service) > MAX_LOCAL_AUDIO_AGE {
+            // The output device may have stopped along with the UI (suspend).
+            // Its byte count alone says nothing about the age of that audio.
+            self.queue.pause();
+            self.queue.clear();
+            self.started = false;
+        }
+        self.last_service = now;
         if self.started && self.queue.size() == 0 {
             self.queue.pause();
             self.started = false;
@@ -171,7 +185,13 @@ impl AudioRenderer {
             match self.samples_rx.try_recv() {
                 Ok(samples) => {
                     METRICS.audio_pcm_pending.fetch_sub(1, Ordering::Relaxed);
-                    fresh_pcm.push(samples);
+                    if samples.fits_playback(Instant::now(), Duration::ZERO, Duration::ZERO) {
+                        fresh_pcm.push(samples);
+                    } else {
+                        METRICS.audio_pcm_discarded.fetch_add(1, Ordering::Relaxed);
+                        crate::streaming::video::trace::record("audio_expired_us", 0,
+                            samples.received_at.elapsed().as_micros() as u64);
+                    }
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -185,7 +205,7 @@ impl AudioRenderer {
         let mut fresh_bytes = fresh_pcm
             .iter()
             .fold(0u32, |total, samples| {
-                total.saturating_add((samples.len() * size_of::<i16>()) as u32)
+                total.saturating_add((samples.data.len() * size_of::<i16>()) as u32)
             });
         if fresh_bytes > 0
             && self.queue.size().saturating_add(fresh_bytes) > AUDIO_TRIM_THRESHOLD_BYTES
@@ -199,14 +219,20 @@ impl AudioRenderer {
             METRICS.audio_latency_trims.fetch_add(1, Ordering::Relaxed);
             while fresh_pcm.len() > 1 && fresh_bytes > AUDIO_TRIM_TARGET_BYTES {
                 let stale = fresh_pcm.remove(0);
-                fresh_bytes -= (stale.len() * size_of::<i16>()) as u32;
+                fresh_bytes -= (stale.data.len() * size_of::<i16>()) as u32;
                 METRICS.audio_pcm_discarded.fetch_add(1, Ordering::Relaxed);
             }
         }
 
         for mut samples in fresh_pcm {
-            self.gain.apply_stereo(&mut samples);
-            let sample_bytes = (samples.len() * size_of::<i16>()) as u32;
+            let sample_bytes = (samples.data.len() * size_of::<i16>()) as u32;
+            let queued = Duration::from_secs_f64(f64::from(self.queue.size()) / f64::from(AUDIO_BYTES_PER_SECOND));
+            let duration = Duration::from_secs_f64(f64::from(sample_bytes) / f64::from(AUDIO_BYTES_PER_SECOND));
+            if !samples.fits_playback(Instant::now(), queued, duration) {
+                METRICS.audio_pcm_discarded.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            self.gain.apply_stereo(&mut samples.data);
             if self.queue.size().saturating_add(sample_bytes) > MAX_QUEUED_AUDIO_BYTES {
                 // A safety limit for unusually large frames, independent of
                 // the normal 160 ms latency recovery threshold.
@@ -215,7 +241,7 @@ impl AudioRenderer {
                 self.started = false;
                 METRICS.audio_queue_resets.fetch_add(1, Ordering::Relaxed);
             }
-            if let Err(error) = self.queue.queue_audio(&samples) {
+            if let Err(error) = self.queue.queue_audio(&samples.data) {
                 eprintln!("Failed to queue SDL audio: {error}");
             }
             if !self.started && self.queue.size() >= AUDIO_START_BUFFER_BYTES {
@@ -237,6 +263,19 @@ impl AudioRenderer {
         self.queue.pause();
         self.queue.clear();
         self.started = false;
+        self.last_service = Instant::now();
+        self.stop_decode_worker();
+        match spawn_decode_worker() {
+            Ok((packets_tx, samples_rx, thread)) => {
+                self.packets_tx = packets_tx;
+                self.samples_rx = samples_rx;
+                self.thread = Some(thread);
+            }
+            Err(error) => eprintln!("Failed to restart audio decode worker: {error:#}"),
+        }
+    }
+
+    fn stop_decode_worker(&mut self) {
         // Disconnect both sides before joining: the worker may be waiting on
         // either an empty Opus queue or a full PCM queue.
         let (empty_tx, _) = sync_channel(0);
@@ -250,20 +289,16 @@ impl AudioRenderer {
         METRICS.audio_opus_pending.store(0, Ordering::Relaxed);
         METRICS.audio_pcm_pending.store(0, Ordering::Relaxed);
         METRICS.audio_sdl_queue_ms.store(0, Ordering::Relaxed);
-        match spawn_decode_worker() {
-            Ok((packets_tx, samples_rx, thread)) => {
-                self.packets_tx = packets_tx;
-                self.samples_rx = samples_rx;
-                self.thread = Some(thread);
-            }
-            Err(error) => eprintln!("Failed to restart audio decode worker: {error:#}"),
-        }
     }
 }
 
-fn spawn_decode_worker() -> Result<(SyncSender<Bytes>, Receiver<Vec<i16>>, std::thread::JoinHandle<()>)> {
-    let (packets_tx, packets_rx) = sync_channel::<Bytes>(MAX_PENDING_OPUS_PACKETS);
-    let (samples_tx, samples_rx) = sync_channel::<Vec<i16>>(MAX_PENDING_PCM_BUFFERS);
+impl Drop for AudioRenderer {
+    fn drop(&mut self) { self.stop_decode_worker(); }
+}
+
+fn spawn_decode_worker() -> Result<(SyncSender<TimedAudio<Bytes>>, Receiver<TimedAudio<Vec<i16>>>, std::thread::JoinHandle<()>)> {
+    let (packets_tx, packets_rx) = sync_channel::<TimedAudio<Bytes>>(MAX_PENDING_OPUS_PACKETS);
+    let (samples_tx, samples_rx) = sync_channel::<TimedAudio<Vec<i16>>>(MAX_PENDING_PCM_BUFFERS);
 
     let mut decoder = NativeOpusDecoder::new().context("failed to create Opus decoder")?;
 
@@ -273,7 +308,7 @@ fn spawn_decode_worker() -> Result<(SyncSender<Bytes>, Receiver<Vec<i16>>, std::
             let mut decode_buf = vec![0i16; MAX_OPUS_FRAME_SAMPLES_PER_CHANNEL * AUDIO_CHANNELS];
             while let Ok(packet) = packets_rx.recv() {
                 METRICS.audio_opus_pending.fetch_sub(1, Ordering::Relaxed);
-                let samples_per_channel = match decoder.decode(&packet, &mut decode_buf) {
+                let samples_per_channel = match decoder.decode(&packet.data, &mut decode_buf) {
                     Ok(samples_per_channel) => samples_per_channel,
                     Err(error) => {
                         eprintln!("Failed to decode Opus audio packet: {error}");
@@ -282,13 +317,25 @@ fn spawn_decode_worker() -> Result<(SyncSender<Bytes>, Receiver<Vec<i16>>, std::
                 };
 
                 let sample_count = samples_per_channel * AUDIO_CHANNELS;
+                // Advance Opus prediction, but do not publish stale decoded
+                // audio. No downstream handoff is allowed to reset this age.
+                if !packet.fits_playback(Instant::now(), Duration::ZERO, Duration::ZERO) {
+                    METRICS.audio_pcm_discarded.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
                 METRICS.audio_pcm_pending.fetch_add(1, Ordering::Relaxed);
-                if samples_tx
-                    .send(decode_buf[..sample_count].to_vec())
-                    .is_err()
-                {
-                    METRICS.audio_pcm_pending.fetch_sub(1, Ordering::Relaxed);
-                    break;
+                match samples_tx.try_send(packet.map(decode_buf[..sample_count].to_vec())) {
+                    Ok(()) => {},
+                    Err(TrySendError::Full(_)) => {
+                        // A stopped renderer must not stop Opus consumption
+                        // and turn every upstream queue into an audio archive.
+                        METRICS.audio_pcm_pending.fetch_sub(1, Ordering::Relaxed);
+                        METRICS.audio_pcm_discarded.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(TrySendError::Disconnected(_)) => {
+                        METRICS.audio_pcm_pending.fetch_sub(1, Ordering::Relaxed);
+                        break;
+                    }
                 }
             }
         })
@@ -296,3 +343,7 @@ fn spawn_decode_worker() -> Result<(SyncSender<Bytes>, Receiver<Vec<i16>>, std::
 
     Ok((packets_tx, samples_rx, thread))
 }
+
+#[cfg(test)]
+#[path = "../../tests/audio-pipeline/src/cases.rs"]
+mod tests;

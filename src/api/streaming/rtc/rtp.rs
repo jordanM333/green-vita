@@ -1,6 +1,7 @@
 use crate::streaming::video::{SubmitResult, VideoDecodeWorker};
 use crate::streaming::video::policy::Recovery;
 use bytes::Bytes;
+use crate::streaming::audio_timing::TimedAudio;
 use h264_reader::annexb::AnnexBReader;
 use h264_reader::nal::sps::SeqParameterSet;
 use h264_reader::nal::{Nal, RefNal, UnitType};
@@ -75,6 +76,7 @@ pub(super) struct AudioRtp {
     sample_rate: u32,
     last_sequence: Option<u16>,
     latest_timestamp: Option<u32>,
+    arrivals: std::collections::VecDeque<(u32, Instant)>,
 }
 
 impl AudioRtp {
@@ -86,10 +88,11 @@ impl AudioRtp {
             sample_rate,
             last_sequence: None,
             latest_timestamp: None,
+            arrivals: Default::default(),
         }
     }
 
-    pub(super) fn receive(&mut self, packet: Packet, audio_packets: &mut Vec<Bytes>) {
+    pub(super) fn receive(&mut self, packet: Packet, received_at: Instant, audio_packets: &mut Vec<TimedAudio<Bytes>>) {
         if packet.header.payload_type != self.payload_type {
             return;
         }
@@ -113,6 +116,12 @@ impl AudioRtp {
         }
 
         let timestamp = packet.header.timestamp;
+        // Retain the first arrival, including duplicates and packets held by
+        // SampleBuilder. Never assign a new age when an old sample is released.
+        if !self.arrivals.iter().any(|(ts, _)| *ts == timestamp) {
+            self.arrivals.push_back((timestamp, received_at));
+            if self.arrivals.len() > 128 { self.arrivals.pop_front(); }
+        }
         if self.latest_timestamp.is_none_or(|latest| {
             let forward = timestamp.wrapping_sub(latest);
             forward > 0 && forward < (1 << 31)
@@ -140,7 +149,12 @@ impl AudioRtp {
             crate::streaming::video::metrics::METRICS.audio_rtp_lost.fetch_add(
                 u64::from(dropped), Ordering::Relaxed,
             );
-            audio_packets.push(sample.data);
+            let Some(index) = self.arrivals.iter().position(|(ts, _)| *ts == sample.packet_timestamp) else {
+                // Unattributable samples cannot pass the local age contract.
+                continue;
+            };
+            let (_, received_at) = self.arrivals.remove(index).expect("index found above");
+            audio_packets.push(TimedAudio { data: sample.data, received_at });
         }
     }
 }

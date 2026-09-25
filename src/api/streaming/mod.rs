@@ -8,6 +8,7 @@ use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
 use anyhow::Result;
 use bytes::Bytes;
+use crate::streaming::audio_timing::TimedAudio;
 use std::sync::Arc;
 
 pub(crate) enum PlaybackBackendEvent {
@@ -34,7 +35,7 @@ impl PlaybackBackend {
         }
     }
 
-    pub(crate) fn try_recv_audio_packets(&self) -> Option<Vec<Bytes>> {
+    pub(crate) fn try_recv_audio_packets(&self) -> Option<Vec<TimedAudio<Bytes>>> {
         match self {
             Self::Xbox(backend) => backend.try_recv_audio_packets(),
         }

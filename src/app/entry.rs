@@ -1,5 +1,4 @@
 use super::state::CredentialsLoadResult;
-use super::stream_session::cleanup_active_sessions;
 use super::{App, AppState, PollJob, poll_job};
 use crate::api::catalog::Game;
 use crate::api::catalog::worker::ImageKind;
@@ -170,11 +169,6 @@ impl App {
                         );
                     }
                 }
-                let api = self.service.api.clone();
-                tokio::spawn(async move {
-                    cleanup_active_sessions(&api, StreamKind::Cloud).await;
-                    cleanup_active_sessions(&api, StreamKind::Home).await;
-                });
                 self.set_state(AppState::ModeSelect { selected: 0 });
             }
             PollJob::Done(Ok(CredentialsLoadResult {

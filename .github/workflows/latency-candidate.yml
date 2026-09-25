@@ -51,16 +51,24 @@ jobs:
       - name: Verify native microphone Opus packets
         working-directory: tests/voice-codec
         run: cargo test --locked --target x86_64-unknown-linux-gnu
+      - name: Verify production audio pipeline with native Opus and stalled output
+        working-directory: tests/audio-pipeline
+        run: cargo test --locked --target x86_64-unknown-linux-gnu -- --test-threads=1
+      - name: Verify Home detach and Cloud owned-session cleanup
+        working-directory: tests/session-lifecycle
+        run: cargo test --locked --target x86_64-unknown-linux-gnu
       - name: Verify offline clock and returned-PTS analysis
         run: python3 -m unittest discover -s tests/latency-analysis -v
       - name: Verify ELF metadata headroom checks
         run: python3 -m unittest discover -s tests/link-layout -v
+      - name: Verify lifecycle wiring and packaged identity guards
+        run: python3 -m unittest discover -s tests/audit-contracts -v
 
   build:
     needs: feedback-tests
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/vita-rust/vitasdk-rs:latest
+      image: ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,7 +79,7 @@ jobs:
           RUSTFLAGS: "-C target-feature=-neon"
           GREENVITA_BUILD_NUMBER: "38.${{ github.run_number }}"
           GREENVITA_BUILD_SHA: ${{ github.sha }}
-        run: cargo vita build vpk --release
+        run: cargo vita build vpk --release --locked
       - name: Inspect executable segment layout
         if: always()
         run: |
@@ -81,12 +89,17 @@ jobs:
             python3 tools/check_vita_elf.py "$elf"
           fi
       - name: Record binary identity
-        run: sha256sum target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk > candidate-sha256.txt
+        env:
+          GREENVITA_SDK_IMAGE: ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc
+        run: |
+          sha256sum target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk > candidate-sha256.txt
+          python3 tools/build_provenance.py target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk --revision "$GITHUB_SHA" --number "38.$GITHUB_RUN_NUMBER" --checkout > candidate-provenance.json
       - uses: actions/upload-artifact@v4
         with:
           name: green-vita-latency-candidate-${{ github.sha }}
           path: |
             target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk
             candidate-sha256.txt
+            candidate-provenance.json
           if-no-files-found: error
           retention-days: 30
