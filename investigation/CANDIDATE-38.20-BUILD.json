@@ -1,0 +1,106 @@
+{
+  "build": "RX Test 38.20",
+  "status": "implemented and automated-tested; hardware validation pending; primary progressive-latency incident remains open",
+  "source_commit": "80039b8ecbf078c6d8d45cb49b7938bb31f70c39",
+  "source_tree": "f7c1cfe974b8e39f07d61e671c7dde09e1f3cb2d",
+  "implementation_commit": "b4a1552627075060ce36b04a7f266833bb0efe01",
+  "repository": "https://github.com/jordanM333/green-vita",
+  "branch": "latency-root-cause",
+  "workflow_url": "https://github.com/jordanM333/green-vita/actions/runs/36097525052",
+  "workflow_id": 36097525052,
+  "workflow_attempt": 1,
+  "workflow_conclusion": "success",
+  "workflow_created_utc": "2026-09-25T05:11:34Z",
+  "workflow_completed_utc": "2026-09-25T05:21:29Z",
+  "host_job_id": 107952826008,
+  "native_job_id": 107953428073,
+  "artifact_id": 10847589440,
+  "artifact_expires_utc": "2026-10-25T05:21:23Z",
+  "artifact_zip_sha256": "34aff59e31a94f17fe9fc8a1dffa91ac90139262f91e8978aef52a6d21dc24e6",
+  "vpk": {
+    "file_name": "GreenVita-RX-Test-38.20.vpk",
+    "bytes": 14713121,
+    "source_commit": "80039b8ecbf078c6d8d45cb49b7938bb31f70c39",
+    "build_number": "38.20",
+    "vpk_sha256": "d1f816ca057a68f32005b0c18b0252055ea1e8d7fbeed8c3c420b377efede469",
+    "eboot_sha256": "8675ec760af5b39e9e8d4f06a6648bb773884636c7fbaff0c6a49da066e279ee",
+    "sfo": {
+      "APP_VER": "00.00",
+      "BOOT_FILE": "",
+      "CATEGORY": "gd",
+      "CONTENT_ID": "",
+      "NP_COMMUNICATION_ID": "",
+      "PSP2_DISP_VER": "00.000",
+      "STITLE": "GreenVita RX Test",
+      "TITLE": "GreenVita RX Test",
+      "TITLE_ID": "GRNVTEST1",
+      "VERSION": "00.00"
+    },
+    "embedded_identity_checked": true
+  },
+  "verification": {
+    "rust_test_executions": 187,
+    "python_tests": 27,
+    "clippy_harnesses_passed": 10,
+    "clippy_warnings_remain": true,
+    "fresh_host_target_command_seconds": 87.394,
+    "native_release_compile_seconds": 326,
+    "elf_metadata_headroom_bytes": 104416,
+    "full_vpk_zip_crc": "pass",
+    "downloaded_hashes_and_identity_match_ci": true,
+    "workflow_checkout_matches_embedded_revision": true,
+    "tracked_checkout_clean_after_build": true,
+    "sctp_virtual_duration_seconds": 1800,
+    "sctp_outages_2s": 44,
+    "sctp_delivered_max_age_ms": 5,
+    "rtp_virtual_duration_seconds": 1800,
+    "rtp_access_units": 108000,
+    "rtp_fixture_output_mismatches": 0,
+    "audio_restart_cycles": 100,
+    "home_stop_http_requests_after_100_calls": 0,
+    "negative_controls": [
+      "baseline decoder identity test fails; corrected test passes",
+      "baseline fixed-delay budget collapses to 500000 bps; corrected budget stays at 2000000 bps"
+    ],
+    "hardware_minutes_home": 0,
+    "hardware_minutes_cloud": 0,
+    "hardware_validation": false,
+    "end_to_end_latency_verified": false,
+    "xbox_feedback_compliance_verified": false,
+    "full_session_per_frame_percentiles_available": false,
+    "note": "Virtual link/firmware/output-sink tests are not faithful replay or device latency measurements. Snapshot distributions in audit are explicitly windowed."
+  },
+  "superseded_attempt": {
+    "build": "38.19",
+    "workflow_id": 36096560537,
+    "source_commit": "b4a1552627075060ce36b04a7f266833bb0efe01",
+    "native_compile": "success",
+    "final_status": "provenance step failed on container checkout ownership; no artifact distributed",
+    "correction": "trust only explicit GitHub checkout for identity step; source/hash/dirty checks remain enabled; no streaming change"
+  },
+  "rollback": {
+    "build": "38.18",
+    "source_commit": "affe3c5e6f694fcb47063ba1454fc75fee53dace",
+    "vpk_sha256": "b231093897725264b08124eb25aaa0e5305cc83e8ade49d40e55e7e4459bb79e",
+    "instructions": "Reinstall retained RX38.18 VPK under GRNVTEST1 without deleting account/config data; this is a previous package, not a known-good latency baseline."
+  },
+  "fixed_mechanisms": [
+    "L1 unowned/Home REST cleanup",
+    "A1 lost audio age and blocking PCM handoff",
+    "V1 borrowed unknown output epoch",
+    "F1 fixed-offset REMB collapse",
+    "F2 feedback policy stale after chat answer"
+  ],
+  "open_issues": [
+    "U1 location of full multi-second delay on current installed binary",
+    "physical Home game preservation and reattach lease behavior",
+    "U2 SSRC/padding/unsupported bitstream variants and hidden kernel/firmware/DAC queues",
+    "Vita diagnostics/resource-contention overhead",
+    "separate mixed game/voice receive levels unavailable; server favorites unsupported"
+  ],
+  "documents": [
+    "FULL-AUDIT.md",
+    "DEVICE-CHECK.md"
+  ]
+}
+
