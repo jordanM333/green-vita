@@ -62,4 +62,3 @@ The prior RX38.20 package is identified in `CANDIDATE-38.20-BUILD.json` but is
 known to have the reported latency failure, not a known-good baseline. RX38.10
 is only a user-observed good-startup comparison; it lacks later Home-refresh
 and lifecycle safeguards, so a wholesale rollback is not the proposed fix.
-
