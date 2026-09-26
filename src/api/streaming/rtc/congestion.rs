@@ -1,4 +1,4 @@
-//! Growth-based REMB fallback (only when TWCC is not active).
+//! Growth-based receiver constraint, independent of transport-feedback activity.
 //! Absolute arrival offset is not evidence of continuing queue growth. A step
 //! after a pause must not be repeatedly spent as new congestion evidence.
 use std::time::{Duration, Instant};
@@ -58,12 +58,14 @@ impl ReceiveBudget {
             return;
         };
         if now.saturating_duration_since(trend_at) < DECREASE_INTERVAL { return; }
-        self.trend = Some((now, delay_ms));
+        // Advance the sampling time, not the delay anchor. Small increases must
+        // accumulate: forgiving 1-10ms each second allows unbounded slow drift.
+        self.trend = Some((now, previous_delay));
 
-        // Two successive one-second lower-envelope increases are required.
-        // Reuse the existing 20ms jitter tolerance, now against a moving
-        // reference rather than the session's fastest-ever arrival.
+        // Require two significant lower-envelope increases. A fixed path step
+        // is spent only once, while sub-tolerance growth is retained over time.
         if delay_ms > previous_delay.saturating_add(20) {
+            self.trend = Some((now, delay_ms));
             self.healthy_since = None;
             self.delayed_windows = self.delayed_windows.saturating_add(1);
             if self.delayed_windows >= 2 && self.last_change.is_none_or(|at|
@@ -80,9 +82,10 @@ impl ReceiveBudget {
                 }
             }
         } else {
-            self.delayed_windows = 0;
             if previous_delay > delay_ms.saturating_add(20) {
                 // Queue is draining. Do not immediately undo the reduction.
+                self.trend = Some((now, delay_ms));
+                self.delayed_windows = 0;
                 self.healthy_since = None;
                 return;
             }
@@ -99,6 +102,20 @@ impl ReceiveBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slow_overload_below_per_second_jitter_tolerance_still_accumulates() {
+        for ms_per_second in [1, 10] {
+            let start = Instant::now();
+            let mut budget = ReceiveBudget::new(2_000_000);
+            for tick in 0..=3000 / ms_per_second {
+                budget.receive(25_000, tick * ms_per_second / 10,
+                    start + Duration::from_millis(tick * 100));
+            }
+            assert!(budget.reductions > 0, "{ms_per_second} ms/s growth was forgiven");
+            assert!(budget.target() < 2_000_000);
+        }
+    }
 
     #[test]
     fn audit_regression_fixed_offset_does_not_collapse_receive_budget() {

@@ -114,6 +114,56 @@ mod tests {
     }
 
     #[test]
+    fn padding_between_fu_fragments_is_not_lost_media_even_across_wrap() {
+        for seq in [10_u16, 65534] {
+            let mut receiver = OrderedReceiver::default();
+            let mut assembler = video_rtp::VideoRtp::new(1280, 720);
+            let now = Instant::now();
+            for p in [packet(seq, 1000, false, &[0x7c, 0x85, 0x88]),
+                      packet(seq.wrapping_add(2), 1000, true, &[0x7c, 0x45, 0x99]),
+                      packet(seq.wrapping_add(1), 99999, true, &[]),
+                      packet(seq.wrapping_add(3), 2500, true, &[0x61, 0xaa, 0xbb])] {
+                receiver.receive(&mut assembler, p, now);
+            }
+            receiver.flush(&mut assembler, now);
+            assert_eq!(receiver.drops, 0);
+            assert!(!receiver.keyframe);
+            assert_eq!(*receiver.worker.submitted.lock().unwrap(), vec![
+                vec![0, 0, 0, 1, 0x65, 0x88, 0x99],
+                vec![0, 0, 0, 1, 0x61, 0xaa, 0xbb]]);
+        }
+    }
+
+    #[test]
+    fn padding_cannot_bridge_a_missing_fragment_or_complete_an_unfinished_fu() {
+        let mut receiver = OrderedReceiver::default();
+        let mut assembler = video_rtp::VideoRtp::new(1280, 720);
+        let now = Instant::now();
+        receiver.receive(&mut assembler, packet(10, 1000, false, &[0x7c, 0x85, 0x88]), now);
+        receiver.receive(&mut assembler, packet(11, 1000, true, &[]), now);
+        assert!(receiver.worker.submitted.lock().unwrap().is_empty());
+        // Sequence 12 is genuinely absent, not padding we actually received.
+        receiver.receive(&mut assembler, packet(13, 1000, true, &[0x7c, 0x45, 0xaa]), now);
+        receiver.flush(&mut assembler, now + Duration::from_millis(7));
+        receiver.receive(&mut assembler, packet(14, 2500, true, &[0x61, 0xaa, 0xbb]), now + Duration::from_millis(8));
+        assert!(receiver.keyframe);
+        assert!(receiver.worker.submitted.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn padding_during_unfinished_au_has_a_bounded_storage_limit() {
+        let mut assembler = video_rtp::VideoRtp::new(1280, 720);
+        let worker = VideoDecodeWorker::default();
+        let mut keyframe = false;
+        assembler.receive(&worker, packet(0, 1000, false, &[0x7c, 0x85, 0x88]), &mut keyframe);
+        for seq in 1..=2100 { assembler.receive(&worker, packet(seq, 1000, false, &[]), &mut keyframe); }
+        assert!(keyframe);
+        assert!(worker.submitted.lock().unwrap().is_empty());
+        assembler.receive(&worker, packet(2101, 2500, true, &[0x65, 0x88, 0xaa]), &mut keyframe);
+        assert_eq!(worker.submitted.lock().unwrap().len(), 1);
+    }
+
+    #[test]
     fn thirty_virtual_minutes_preserve_fragment_bytes_through_bursts_and_wraps() {
         let mut receiver = OrderedReceiver::default();
         let mut assembler = video_rtp::VideoRtp::new(1280, 720);
@@ -126,15 +176,16 @@ mod tests {
             // No hardware decode is claimed for these small assembly fixtures.
             let now = start + Duration::from_micros((frame / 8) * 133_333);
             for p in [packet(seq, timestamp, false, &[0x7c, 0x85, 0x88]),
-                      packet(seq.wrapping_add(2), timestamp, true, &[0x7c, 0x45, 0xaa]),
-                      packet(seq.wrapping_add(1), timestamp, false, &[0x7c, 0x05, 0x99])] {
+                      packet(seq.wrapping_add(3), timestamp, true, &[0x7c, 0x45, 0xaa]),
+                      packet(seq.wrapping_add(1), timestamp, true, &[]),
+                      packet(seq.wrapping_add(2), timestamp, false, &[0x7c, 0x05, 0x99])] {
                 receiver.receive(&mut assembler, p, now);
             }
             receiver.flush(&mut assembler, now);
             let mut outputs = receiver.worker.submitted.lock().unwrap();
             assert_eq!(*outputs, vec![vec![0, 0, 0, 1, 0x65, 0x88, 0x99, 0xaa]]);
             outputs.clear();
-            seq = seq.wrapping_add(3);
+            seq = seq.wrapping_add(4);
             timestamp = timestamp.wrapping_add(1500);
         }
         assert_eq!(receiver.drops, 0);

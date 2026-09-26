@@ -76,6 +76,8 @@ impl Stream {
         }
     }
 
+    pub(crate) fn kind(&self) -> StreamKind { self.kind }
+
     pub fn session_path(&self) -> String {
         format!("/{}", self.session_path.trim_start_matches('/'))
     }

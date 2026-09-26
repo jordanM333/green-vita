@@ -1,4 +1,4 @@
-//! Negotiated REMB ceiling; legacy delay adaptation runs only without active TWCC.
+//! Negotiated receiver constraint. TWCC activity is not proof of sender adaptation.
 use std::time::{Duration, Instant};
 #[path = "congestion.rs"]
 mod congestion;
@@ -55,8 +55,8 @@ pub(crate) struct VideoCeiling {
     delay_ms: u64,
 }
 
-/// A negotiated extension alone is insufficient: use sender-side adaptation
-/// only while authenticated video extensions AND successful TWCC sends advance.
+/// Observability only: extensions and successful TWCC sends prove local activity,
+/// not remote receipt, bandwidth adaptation, or a draining media path.
 #[derive(Default)]
 struct ArrivalFeedback {
     packets: u64,
@@ -91,21 +91,14 @@ impl Default for VideoCeiling {
 impl VideoCeiling {
     pub(crate) fn receive(&mut self, bytes: usize, delay_ms: u64, now: Instant) {
         self.delay_ms = delay_ms;
-        if !self.arrival.active { self.budget.receive(bytes, delay_ms, now); }
+        self.budget.receive(bytes, delay_ms, now);
     }
     pub(crate) fn target_bps(&self) -> u32 {
-        if self.arrival.active { VIDEO_CEILING_BPS } else { self.budget.target() }
+        self.budget.target()
     }
 
     pub(crate) fn update_arrival_feedback(&mut self, video_packets: u64, sent: u64, now: Instant) {
-        let previous = self.arrival.active;
         self.arrival.update(video_packets, sent, now);
-        if previous != self.arrival.active {
-            // Do not revive the poisoned pre-TWCC estimate on fallback, or let
-            // legacy REMB reductions overrule the working sender controller.
-            self.budget = congestion::ReceiveBudget::new(VIDEO_CEILING_BPS);
-            self.last_attempt = None;
-        }
     }
 
     pub(crate) fn answer(&mut self, sdp: &str) {
@@ -113,7 +106,15 @@ impl VideoCeiling {
         // last observed values, but require fresh RX and TX before reactivation.
         let arrival = ArrivalFeedback { packets: self.arrival.packets,
             reports: self.arrival.reports, ..Default::default() };
-        *self = Self { supported_payloads: remb_payloads(sdp), arrival, ..Default::default() };
+        let supported_payloads = remb_payloads(sdp);
+        if self.supported_payloads == supported_payloads {
+            // Chat-only SDP does not create a fresh video path. Preserve the
+            // measured constraint, while requiring new transport activity.
+            self.arrival = arrival;
+            self.last_attempt = None;
+        } else {
+            *self = Self { supported_payloads, arrival, ..Default::default() };
+        }
     }
     pub(crate) fn observe_payload(&mut self, payload: u8) {
         self.active = self.supported_payloads.contains(&payload);
@@ -131,7 +132,7 @@ impl VideoCeiling {
         if self.queued >= 4 && measured_kbps > u64::from(self.target_bps()) / 800 {
             self.over_windows += 1;
         }
-        let state = if self.active && self.arrival.active { "twcc-cap" }
+        let state = if self.active && self.arrival.active { "twcc+adaptive" }
             else if self.active { "adaptive" }
             else if self.supported_payloads.is_empty() { "unsupported" }
             else { "waiting-video" };
@@ -196,7 +197,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn working_twcc_keeps_one_controller_through_ten_minutes_of_delay_and_pause() {
+    fn advancing_twcc_counters_do_not_hide_sustained_arrival_growth() {
+        let start = Instant::now();
+        let mut cap = VideoCeiling::default();
+        let answer = "m=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 goog-remb";
+        cap.answer(answer);
+        cap.observe_payload(102);
+        for tick in 0..=100 {
+            let now = start + Duration::from_millis(tick * 100);
+            cap.update_arrival_feedback(tick * 10, tick, now);
+            cap.receive(25_000, tick * 10, now);
+        }
+        assert!(cap.budget.reductions > 0);
+        assert!(cap.target_bps() < VIDEO_CEILING_BPS);
+        let target = cap.target_bps();
+        cap.answer(answer); // Chat-only renegotiation is not a new video path.
+        cap.observe_payload(102);
+        assert_eq!(cap.target_bps(), target);
+    }
+
+    #[test]
+    fn thirty_virtual_minutes_with_twcc_and_a_responsive_sender_bound_queue_growth() {
+        // Fluid link model, not Xbox/GCC emulation or a captured-media replay.
+        let start = Instant::now();
+        let mut cap = VideoCeiling::default();
+        cap.answer("m=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 goog-remb");
+        cap.observe_payload(102);
+        let mut queued = 0f64;
+        let mut fixed = 0f64;
+        let mut sender_bps = VIDEO_CEILING_BPS;
+        let mut previous = sender_bps;
+        let mut worst_after_minute = 0;
+        for tick in 0..18000 {
+            let capacity: f64 = if tick < 20 { 3_000_000.0 } else { 1_000_000.0 };
+            queued += f64::from(sender_bps) / 10.0;
+            let delivered = queued.min(capacity / 10.0);
+            queued -= delivered;
+            fixed = (fixed + f64::from(VIDEO_CEILING_BPS) / 10.0 - capacity / 10.0).max(0.0);
+            let delay = (queued / capacity * 1000.0) as u64;
+            let now = start + Duration::from_millis(tick * 100);
+            cap.update_arrival_feedback(tick * 10, tick, now);
+            cap.receive((delivered / 8.0) as usize, delay, now);
+            sender_bps = previous; previous = cap.target_bps();
+            if tick >= 600 { worst_after_minute = worst_after_minute.max(delay); }
+        }
+        eprintln!("30min fluid model: fixed backlog {}ms, adaptive post-60s max {worst_after_minute}ms", fixed / 1000.0);
+        assert!(fixed > 1_000_000_000.0);
+        assert!(worst_after_minute < 1000, "persistent simulated backlog: {worst_after_minute}ms");
+        assert!(cap.budget.reductions > 0);
+    }
+
+    #[test]
+    fn fixed_offset_does_not_repeatedly_cut_through_ten_minutes_of_delay_and_pause() {
         let start = Instant::now();
         let mut cap = VideoCeiling::default();
         cap.answer("m=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 goog-remb");
@@ -205,18 +257,18 @@ mod tests {
             let now = start + Duration::from_millis(tick * 100);
             cap.update_arrival_feedback(tick * 10, tick, now);
             // Busy video, a low-complexity paused scene, then busy again.
-            // A persistent offset must not introduce a second estimator.
+            // A persistent offset alone must not trigger repeated reductions.
             let bytes = if (2000..4000).contains(&tick) { 500 } else { 50_000 };
             cap.receive(bytes, if tick < 100 { 5 } else { 1991 }, now);
             assert_eq!(cap.target_bps(), VIDEO_CEILING_BPS);
         }
         assert_eq!(cap.budget.reductions, 0);
-        assert!(cap.summary(980).starts_with("REMB:twcc-cap target:2000k"));
+        assert!(cap.summary(980).starts_with("REMB:twcc+adaptive target:2000k"));
         assert!(cap.summary(980).contains("delay:1991ms"), "do not hide latency");
     }
 
     #[test]
-    fn confirmed_arrival_feedback_releases_a_previous_legacy_clamp_immediately() {
+    fn starting_arrival_feedback_preserves_a_measured_congestion_ceiling() {
         let start = Instant::now();
         let mut cap = VideoCeiling::default();
         cap.answer("m=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 goog-remb");
@@ -228,8 +280,8 @@ mod tests {
         let now = start + Duration::from_secs(11);
         cap.attempted(now, true);
         cap.update_arrival_feedback(10, 1, now);
-        assert_eq!(cap.target_bps(), VIDEO_CEILING_BPS);
-        assert!(cap.due(now), "send the corrected ceiling without another half-second wait");
+        assert_eq!(cap.target_bps(), 500_000);
+        assert!(!cap.due(now), "counter transitions do not change feedback pacing");
     }
 
     #[test]

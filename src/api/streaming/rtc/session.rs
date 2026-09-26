@@ -25,6 +25,7 @@ const INITIAL_VIDEO_GRACE: Duration = Duration::from_millis(500);
 const INITIAL_VIDEO_KEYFRAME_INTERVAL: Duration = Duration::from_millis(500);
 
 pub(crate) struct RtcSessionConfig {
+    pub mode: &'static str,
     pub stun_server: &'static str,
     pub route_probe: &'static str,
     pub audio_sample_rate: u32,
@@ -69,6 +70,7 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     last_initial_video_keyframe_request: Option<Instant>,
     pub status: String,
     requested_video_size: (u32, u32),
+    mode: &'static str,
     video_clock: RtpClockProbe,
     audio_clock: RtpClockProbe,
     video_rate: super::feedback::ReceiveRate,
@@ -101,6 +103,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             last_initial_video_keyframe_request: None,
             status: "Negotiating WebRTC connection".to_owned(),
             requested_video_size: config.requested_video_size,
+            mode: config.mode,
             video_clock: RtpClockProbe::new(90_000),
             audio_clock: RtpClockProbe::new(i64::from(config.audio_sample_rate)),
             video_rate: super::feedback::ReceiveRate::new(),
@@ -227,8 +230,8 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                 .unwrap_or_else(|| "?".to_owned());
             let microphone = self.backend.microphone_status();
             self.status = format!(
-                "Build: RX Test {} revision {}\nXbox requested:{requested_width}x{requested_height} server:{server_size}\n{status}\n{link}\n{receive}\n{feedback}\n{microphone}",
-                crate::build_info::NUMBER, crate::build_info::REVISION,
+                "Build: RX Test {} revision {}\nMode:{}\nXbox requested:{requested_width}x{requested_height} server:{server_size}\n{status}\n{link}\n{receive}\n{feedback}\n{microphone}",
+                crate::build_info::NUMBER, crate::build_info::REVISION, self.mode,
             );
             crate::streaming::video::trace::status_snapshot(&self.status);
             eprintln!("{}", self.status);
@@ -380,9 +383,19 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                     if self.video.handles(&track_id) {
                         self.video_ceiling.observe_payload(packet.header.payload_type);
                         self.video_rate.receive(packet.payload.len(), Instant::now());
-                        self.video_clock.receive(packet.header.timestamp);
-                        if let Some(timing) = self.video_clock.timing() {
-                            self.video_ceiling.receive(packet.payload.len(), timing.added_delay_ms, Instant::now());
+                        // Empty RTP probes participate in sequence/TWCC handling,
+                        // but their timestamps do not describe a captured frame.
+                        if !packet.payload.is_empty() {
+                            self.video_clock.receive(packet.header.timestamp);
+                            if let Some(timing) = self.video_clock.timing() {
+                                let before = self.video_ceiling.target_bps();
+                                self.video_ceiling.receive(packet.payload.len(), timing.added_delay_ms, Instant::now());
+                                let after = self.video_ceiling.target_bps();
+                                if after != before {
+                                    crate::streaming::video::trace::record("receiver_ceiling_bps", packet.header.timestamp, u64::from(after));
+                                    crate::streaming::video::trace::record("receiver_ceiling_delay_ms", packet.header.timestamp, timing.added_delay_ms);
+                                }
+                            }
                         }
                         self.video.receive(packet, &mut keyframe_requested);
                     } else if self.audio.handles(&track_id) {

@@ -48,7 +48,7 @@ impl Trace {
         self.events.push_back((time, stage, timestamp, value));
         if matches!(stage, "recovery_begin" | "recovery_end_ms" | "au_abandon" |
             "age_drop" | "output_wait_expired" | "queue_byte_limit" | "queue_frame_limit" |
-            "au_queue_pressure_us" |
+            "au_queue_pressure_us" | "receiver_ceiling_bps" | "receiver_ceiling_delay_ms" |
             "rtp_gap_released_packets" |
             "decoder_poll_failed" | "keyframe_request" | "manual_refresh" |
             "lag_keyframe_request" | "keyframe_cutover_units")

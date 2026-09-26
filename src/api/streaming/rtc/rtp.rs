@@ -212,7 +212,9 @@ impl PendingVideoFrame {
             forward > 0 && forward < (1 << 15)
         }) {
             self.bytes = self.bytes.saturating_add(packet.payload.len());
-            if packet.header.marker { self.marker = Some(packet.header.sequence_number); }
+            if !packet.payload.is_empty() && packet.header.marker {
+                self.marker = Some(packet.header.sequence_number);
+            }
             self.packets.push(packet);
             true
         } else {
@@ -292,6 +294,7 @@ impl PendingVideoFrame {
         *depacketizer = H264Packet::default();
         let mut data = Vec::new();
         for packet in packets {
+            if packet.payload.is_empty() { continue; }
             let Ok(nalu) = depacketizer.depacketize(&packet.payload) else {
                 *depacketizer = H264Packet::default();
                 return FrameAssembly::Invalid(DropReason::Malformed);
@@ -316,6 +319,9 @@ fn validate_h264_rtp_fragments(packets: &[&Packet]) -> Result<(), DropReason> {
     let mut fragmented: Option<(u8, u8)> = None;
     for packet in packets {
         let payload = &packet.payload;
+        // Known padding occupies an RTP sequence number, but is not a NAL/FU.
+        // Sequence continuity was verified before reaching this validator.
+        if payload.is_empty() { continue; }
         if payload.len() < 2 {
             return Err(DropReason::Malformed);
         }
@@ -476,8 +482,20 @@ impl VideoRtp {
         }
         if packet.payload.is_empty() {
             stats.empty_packets = 1;
-            if self.next_sequence == Some(packet.header.sequence_number) {
-                self.next_sequence = Some(packet.header.sequence_number.wrapping_add(1));
+            if let Some(pending) = self.pending.as_mut() {
+                // Keep evidence of this known sequence slot inside a fragmented
+                // AU, even if a probe uses another timestamp or the marker bit.
+                pending.insert(packet);
+                if pending.packets.len() > 2048 {
+                    self.last_frame_timestamp = Some(pending.timestamp);
+                    self.pending = None;
+                    self.next_sequence = None;
+                    self.record_damage(worker);
+                    *keyframe_requested = true;
+                    stats.record_drop(DropReason::Other);
+                }
+            } else if self.next_sequence == Some(sequence) {
+                self.next_sequence = Some(sequence.wrapping_add(1));
             }
             return stats;
         }

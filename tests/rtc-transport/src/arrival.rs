@@ -82,7 +82,7 @@ fn media() -> MediaEngine {
     m
 }
 
-fn encrypted_feedback(accept: bool) {
+fn encrypted_feedback(accept: bool, growing: bool) {
     let mut receive_media = media();
     let registry = arrival_feedback::configure(&mut receive_media, vec![(102,90_000)]).unwrap();
     let mut receiver = RTCPeerConnectionBuilder::new().with_media_engine(receive_media)
@@ -122,11 +122,11 @@ fn encrypted_feedback(accept: bool) {
     let mut next = start + Duration::from_millis(300);
     let mut delivered = 0;
     let mut twcc_sent = 0;
-    while start.elapsed() < Duration::from_millis(1400) {
+    while start.elapsed() < Duration::from_millis(if growing { 6500 } else { 1400 }) {
         twcc_sent += transfer(&mut receiver, &mut sender, r_addr, s_addr);
         transfer(&mut sender, &mut receiver, s_addr, r_addr);
         ceiling.update_arrival_feedback(crate::reports::video_arrival_packets(), twcc_sent, Instant::now());
-        if Instant::now() >= next && sequence < 20 {
+        if Instant::now() >= next && (growing || sequence < 20) {
             let mut header = rtc::rtp::Header { version: 2, ssrc: 12345, payload_type: 102,
                 sequence_number: sequence, timestamp: u32::from(sequence)*1500, ..Default::default() };
             // Also inject the extension in the declined case: a stray header
@@ -141,7 +141,9 @@ fn encrypted_feedback(accept: bool) {
             if let rtc::peer_connection::message::RTCMessage::RtpPacket(_, packet) = msg {
                 delivered += 1;
                 ceiling.observe_payload(packet.header.payload_type);
-                ceiling.receive(packet.payload.len(), 1991, Instant::now());
+                // Inject a controller observation, not simulated network delay.
+                let delay = if growing { start.elapsed().as_millis() as u64 / 10 } else { 1991 };
+                ceiling.receive(packet.payload.len(), delay, Instant::now());
             }
         }
         let now = Instant::now();
@@ -154,23 +156,32 @@ fn encrypted_feedback(accept: bool) {
         }
         std::thread::sleep(Duration::from_millis(1));
     }
-    assert_eq!(delivered, 20);
+    if growing { assert!(delivered > 400); } else { assert_eq!(delivered, 20); }
     let seen = seen.lock().unwrap();
     assert!(seen.rr > 0, "existing receiver reports must still cross SRTCP");
     if accept {
         assert!(!seen.twcc.is_empty(), "negotiated arrival feedback must be decrypted at the remote sender");
         assert!(seen.twcc.iter().all(|p| p.media_ssrc == 12345));
         assert!(seen.twcc.iter().map(|p| p.recv_deltas.len()).sum::<usize>() >= 19);
-        assert_eq!(ceiling.target_bps(), crate::feedback::VIDEO_CEILING_BPS);
         assert!(seen.remb.len() >= 2);
-        assert!(seen.remb.iter().all(|bps| *bps == crate::feedback::VIDEO_CEILING_BPS),
-            "decrypted receiver ceilings must not overrule active TWCC: {:?}", seen.remb);
+        if growing {
+            assert!(seen.remb.iter().any(|bps| *bps < crate::feedback::VIDEO_CEILING_BPS),
+                "a reduced constraint must reach the sender while TWCC continues: {:?}", seen.remb);
+            assert!(ceiling.target_bps() < crate::feedback::VIDEO_CEILING_BPS);
+        } else {
+            assert_eq!(ceiling.target_bps(), crate::feedback::VIDEO_CEILING_BPS);
+            assert!(seen.remb.iter().all(|bps| *bps == crate::feedback::VIDEO_CEILING_BPS),
+                "fixed offset alone must not repeatedly constrain quality: {:?}", seen.remb);
+        }
     } else { assert!(seen.twcc.is_empty(), "peer declined the extension"); }
 }
 #[test]
-fn negotiated_arrival_feedback_crosses_srtcp_after_first_packet_codec_discovery() { encrypted_feedback(true); }
+fn negotiated_arrival_feedback_crosses_srtcp_after_first_packet_codec_discovery() { encrypted_feedback(true, false); }
 #[test]
-fn declined_arrival_feedback_keeps_media_and_receiver_reports_working() { encrypted_feedback(false); }
+fn declined_arrival_feedback_keeps_media_and_receiver_reports_working() { encrypted_feedback(false, false); }
+
+#[test]
+fn growth_constraint_reaches_sender_over_srtcp_while_twcc_remains_active() { encrypted_feedback(true, true); }
 
 #[test]
 fn arrival_binding_after_clock_fallback_preserves_loss_and_reports_wraparound() {

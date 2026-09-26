@@ -26,6 +26,10 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
 
     fn session_config(&self) -> RtcSessionConfig {
         RtcSessionConfig {
+            mode: match self.stream.kind() {
+                crate::api_xbox::session_kind::StreamKind::Home => "Home",
+                crate::api_xbox::session_kind::StreamKind::Cloud => "Cloud",
+            },
             stun_server: STUN_SERVER,
             route_probe: ROUTE_PROBE,
             audio_sample_rate: AUDIO_SAMPLE_RATE as u32,
