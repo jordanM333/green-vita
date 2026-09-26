@@ -1,0 +1,115 @@
+{
+  "build": "RX Test 38.21",
+  "status": "implemented and automated-tested; hardware validation pending; progressive video-latency incident remains open",
+  "repository": "https://github.com/jordanM333/green-vita",
+  "branch": "latency-root-cause",
+  "source_commit": "49baec007d3b3de20d27b6ca0671e183e000c9c5",
+  "source_tree": "e1cc38ab0626fb2a746a19fb975f473d8b2c5d42",
+  "baseline_head": "a55dd5edbf51c0e6b190ca3ceaedeaabdb6afae5",
+  "workflow_url": "https://github.com/jordanM333/green-vita/actions/runs/36217851432",
+  "workflow_id": 36217851432,
+  "workflow_attempt": 1,
+  "workflow_conclusion": "success",
+  "workflow_created_utc": "2026-09-26T04:26:49Z",
+  "workflow_completed_utc": "2026-09-26T04:36:41Z",
+  "host_job_id": 108337302080,
+  "native_job_id": 108337704817,
+  "artifact_id": 10897239399,
+  "artifact_expires_utc": "2026-10-26T04:36:35Z",
+  "artifact_zip_sha256": "0503da46f451a9a9848ce9b60aec5b8365b463f6b1dcc7a4cb753003349a3a8b",
+  "vpk": {
+    "file_name": "GreenVita-RX-Test-38.21.vpk",
+    "bytes": 14714187,
+    "source_commit": "49baec007d3b3de20d27b6ca0671e183e000c9c5",
+    "build_number": "38.21",
+    "vpk_sha256": "bbc81a9fd47859c41b479c0b38e51472782232aca9c1ce39fa0a4ecb76472518",
+    "eboot_sha256": "7d4a894bee1e9c364f0ef21cac6ae02f8938b291e81927b05a1c08d3c29d9d52",
+    "sfo": {
+      "APP_VER": "00.00",
+      "BOOT_FILE": "",
+      "CATEGORY": "gd",
+      "CONTENT_ID": "",
+      "NP_COMMUNICATION_ID": "",
+      "PSP2_DISP_VER": "00.000",
+      "STITLE": "GreenVita RX Test",
+      "TITLE": "GreenVita RX Test",
+      "TITLE_ID": "GRNVTEST1",
+      "VERSION": "00.00"
+    },
+    "embedded_identity_checked": true
+  },
+  "verification": {
+    "rust_test_executions": 197,
+    "python_tests": 27,
+    "local_and_clean_ci_tests_passed": true,
+    "clippy_harnesses_passed": 10,
+    "clippy_warnings_remain": true,
+    "native_warnings_remain": true,
+    "local_test_and_clippy_command_wall_seconds": 157.782,
+    "native_release_compile_seconds": 327,
+    "elf_metadata_headroom_bytes": 104068,
+    "elf_metadata_minimum_headroom_bytes": 65536,
+    "full_artifact_and_vpk_zip_crc": "pass",
+    "downloaded_hashes_and_identity_match_ci": true,
+    "workflow_checkout_matches_embedded_revision": true,
+    "tracked_checkout_clean_after_build": true,
+    "negative_controls": [
+      "Active TWCC counters with growing delay fail before/pass after",
+      "Slow 1–10ms/s growth is forgiven before/detected after",
+      "Responsive-link model exceeds unchanged limit before/passes after",
+      "Production H264 assembler drops intact IDR and P with interleaved empty RTP before/preserves bytes after"
+    ],
+    "responsive_fluid_link": {
+      "virtual_duration_seconds": 1800,
+      "sender_response_assumed_ms": 100,
+      "fixed_cap_final_backlog_ms": 1798000,
+      "corrected_max_backlog_ms_after_first_minute": 224,
+      "unchanged_assertion_ms_less_than": 1000,
+      "is_xbox_emulation": false,
+      "is_device_measurement": false
+    },
+    "rtp_virtual_duration_seconds": 1800,
+    "rtp_access_units": 108000,
+    "rtp_fixture_output_mismatches": 0,
+    "hardware_minutes_home": 0,
+    "hardware_minutes_cloud": 0,
+    "hardware_validation": false,
+    "end_to_end_latency_verified": false,
+    "xbox_feedback_compliance_verified": false,
+    "faithful_captured_packet_replay": false,
+    "note": "Shared Rust tests execute in multiple harnesses. Virtual duration is not elapsed device testing. Host models do not validate firmware, the Xbox sender or physical presentation."
+  },
+  "changes": [
+    "F1 keep growth-based receiver constraint active alongside TWCC; preserve it across chat-only SDP",
+    "F2 retain sub-tolerance delay growth across sampling windows instead of repeatedly rebasing it away",
+    "F3 retain known empty-RTP sequence slots during fragmented H264 assembly; exclude their timestamps from media clock",
+    "Record explicit Home/Cloud mode and target-change incidents"
+  ],
+  "preserved": [
+    "Home media-only refresh and no unowned/Home REST stop",
+    "Voice/microphone/mute/levels",
+    "Controller and rear touch mappings",
+    "Account/catalog paths",
+    "Bottom mic/Guide/quick-settings controls and diagnostics toggle"
+  ],
+  "open_issues": [
+    "Sender response to reduced REMB is unverified on Xbox",
+    "19s old-picture tails after packet silence: firmware pause/resume cause unresolved",
+    "Physical input-to-display and A/V timing, sustained Home/Cloud behavior unverified",
+    "Exact sender/path/kernel position of accumulated video arrival delay unknown",
+    "Diagnostics and voice-on resource contention unmeasured on Vita",
+    "Native/compiler warnings remain; server favorites and separate mixed receive audio controls are not newly implemented"
+  ],
+  "rollback": {
+    "build": "38.20",
+    "source_commit": "80039b8ecbf078c6d8d45cb49b7938bb31f70c39",
+    "vpk_sha256": "d1f816ca057a68f32005b0c18b0252055ea1e8d7fbeed8c3c420b377efede469",
+    "workflow_url": "https://github.com/jordanM333/green-vita/actions/runs/36097525052",
+    "instructions": "Reinstall a retained prior GRNVTEST1 VPK without uninstalling or deleting account/config data. RX38.20 is known to fail latency acceptance, not a known-good baseline. RX38.10 lacks later Home-refresh/lifecycle safeguards."
+  },
+  "documents": [
+    "RX3821-AUDIT.md",
+    "FULL-AUDIT.md",
+    "DEVICE-CHECK-38.21.md"
+  ]
+}

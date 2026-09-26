@@ -1,6 +1,6 @@
 # RX38.20 failure review and RX38.21 correction
 
-Status before packaging: implemented; final automated and native checks in progress.
+Status: implemented and automated-tested; native package verified; hardware validation pending.
 **The user-visible progressive video-latency incident remains open until device acceptance.**
 This review supplements `FULL-AUDIT.md`, including its full-path queue inventory,
 clock contract, lifecycle review and frozen acceptance criteria. It does not
@@ -62,7 +62,7 @@ probe handling relevant to startup; it does not establish a sole startup cause.
 | ID / affected code | Verified mechanism and consequence | Correction / validation |
 | --- | --- | --- |
 | F1 `rtc/feedback.rs` | Advancing video-extension and TWCC-send counters bypass `ReceiveBudget::receive` and force target back to 2Mbps. Activity was mistaken for effective sender adaptation. In .20: 1,908 TWCC sends, 389 REMB attempts, zero reductions despite growing arrival delay. The old test encoded a constant-offset scenario and never exercised active-TWCC growth. | Always evaluate the growth-based receiver constraint while continuing TWCC. Counter transitions no longer reset/release it. Unchanged video SDP during chat negotiation preserves it. A growth regression fails on affected code and passes after correction. Real encrypted transport test observes a reduced REMB at the peer while TWCC continues. This does not prove Xbox obeys it. |
-| F2 `rtc/congestion.rs` | Rebasing the delay anchor every second forgives each small increase. Two successive >20ms/s increases were required; 1–10ms/s could grow indefinitely. A longer responsive-link model still accumulated ~24.6s with only F1 corrected. | Keep the delay anchor until a significant change, preserving sub-tolerance increases across sampling windows; drain clears the growth sequence. Keep existing ceilings, thresholds and feedback intervals. Slow-growth tests fail before/pass after. Constant offset and clock-skew regressions still pass. |
+| F2 `rtc/congestion.rs` | Rebasing the delay anchor every second forgives each small increase. Two successive >20ms/s increases were required; 1–10ms/s could grow indefinitely. Direct slow-growth regressions demonstrate this independently of the TWCC bypass. | Keep the delay anchor until a significant change, preserving sub-tolerance increases across sampling windows; drain clears the growth sequence. Keep existing ceilings, thresholds and feedback intervals. Slow-growth tests fail before/pass after. Constant offset and clock-skew regressions still pass. |
 | F3 `rtc/rtp.rs`, `rtc/session.rs` | Empty RTP is ignored inside an unfinished FU-A, leaving a false sequence hole. A complete IDR and following P-frame are discarded and keyframe recovery requested. Also, probe timestamps are not necessarily media timestamps but previously entered the video clock. | Retain known padding sequence slots, ignore their marker/timestamp for media assembly, skip empty payloads only after sequence continuity is verified, and exclude them from media-clock/rate-control observations. Enforce the existing 2,048-packet bound even on padding. Real production assembler test fails before (two drops) and passes after. Missing fragments still fail; padding cannot finish an incomplete FU. |
 
 359 empty video packets occur in the recording, but no packet payloads/sequences
@@ -91,16 +91,18 @@ No-output decoder windows remain unavailable, not zero-latency samples.
 | Local input admission average | 1 | 1 | 2 |
 | AU queue count | 0 | 6 | 28 |
 
-Timeline: video relative arrival grows from 823ms at63.312s to1560ms at68.318s
-and1746ms at75.326s. At194.515s it is2014ms while audio is0ms, local input1/5ms,
-decoder75/182ms average/max and receive-to-GPU103/220ms. The AU queue is empty.
+Timeline: video relative arrival grows from 823 ms at 63.312 s to 1560 ms at
+68.318 s and 1746 ms at 75.326 s. At 194.515 s it is 2014 ms while audio is
+0 ms, local input 1/5 ms, decoder 75/182 ms average/max and receive-to-GPU
+103/220 ms. The AU queue is empty.
 This contradicts attributing that entire offset to the AU queue or GPU alone.
 It cannot distinguish sender, path and kernel buffering; ingress timestamps and
 synchronized capture/display clocks are unavailable.
 
-Do not omit the long tails: at34.276s, decoder average/max6131/19812ms and
-receive-to-GPU5006/19833ms occur after a19761ms video packet gap. At53.299s,
-decoder1286/16916ms and receive-to-GPU1063/16914ms follow a16838ms packet gap.
+Do not omit the long tails: at 34.276 s, decoder average/max 6131/19812 ms and
+receive-to-GPU 5006/19833 ms occur after a 19761 ms video packet gap. At
+53.299 s, decoder 1286/16916 ms and receive-to-GPU 1063/16914 ms follow a
+16838 ms packet gap.
 Old firmware pictures after paused/static video are a plausible explanation,
 not established without payloads and firmware access. This independent
 pause/resume uncertainty is not closed by the feedback correction.
@@ -162,17 +164,17 @@ behavior, including echo and voice-on performance, is not claimed reverified.
 
 ## Frozen acceptance and one device procedure
 
-Retain all limits in `FULL-AUDIT.md`:30min Home and30min Cloud; early/late p95
-growth≤50ms; no added delay>250ms sustained5s; no measured action-to-visible
-response>500ms or recurrence of5–6s lag; audible A/V relationship within100ms of
-baseline after recovery; isolated-disturbance recovery≤1s without repeated
+Retain all limits in `FULL-AUDIT.md`: 30 min Home and 30 min Cloud; early/late p95
+growth ≤50 ms; no added delay >250 ms sustained 5 s; no measured action-to-visible
+response >500 ms or recurrence of 5–6 s lag; audible A/V relationship within
+100 ms of baseline after recovery; isolated-disturbance recovery ≤1 s without repeated
 storms; no game termination on Home refresh; retained features working.
 **Actual device duration here:0 minutes.** These criteria have not been relaxed
 to pass the model or the build.
 
-Use one candidate with unchanged network/settings. Home: play30min, include an
+Use one candidate with unchanged network/settings. Home: play 30 min, include an
 in-game pause/resume and one manual refresh, enable/disable voice and diagnostics.
-Check action response near startup and minutes2,5,15,30. Repeat Cloud on the same
+Check action response near startup and minutes 2, 5, 15, 30. Repeat Cloud on the same
 candidate. Stop early if clearly unplayable; do not keep restarting to obtain a
 favorable sample. The app automatically retains history/status/incidents and
 the tail trace. New `receiver_ceiling_bps` / `receiver_ceiling_delay_ms` incidents
@@ -184,4 +186,29 @@ a falling cap but unchanged rate challenges the sender-response hypothesis;
 failure after rate/arrival settle shifts focus to local decoder/presentation or
 input. The 19-second silence/tail issue needs pause/resume observation, not a new
 arbitrary threshold. Source/workflow/VPK identity, final test counts and rollback
-will be recorded in `CANDIDATE-38.21-BUILD.json` after successful packaging.
+are recorded in `CANDIDATE-38.21-BUILD.json`. The concise install/check procedure
+is `DEVICE-CHECK-38.21.md`.
+
+## Final verification and provenance
+
+Implementation commit `49baec007d3b3de20d27b6ca0671e183e000c9c5`, tree
+`e1cc38ab0626fb2a746a19fb975f473d8b2c5d42`, built as RX38.21 by successful
+workflow `36217851432`, attempt 1. The later documentation-only commit does not
+change the packaged source. Downloaded archive and VPK CRC checks passed;
+local inspection independently matched the embedded full revision, build number,
+title ID, executable hash and package hash against CI's provenance. SFO version
+`00.00` is not the candidate identity; embedded RX number/revision are used.
+
+Local and clean CI runs each passed 197 Rust test executions and 27 Python tests
+(224 total, including shared tests repeated in several harnesses). Ten local
+Clippy harnesses passed with existing warnings. Local test/Clippy command wall
+time totaled 157.782 seconds. Native release compilation took 327 seconds;
+metadata headroom was 104,068 bytes against the existing 65,536-byte minimum.
+Existing native warnings remain; no claim of warning-free or formal race proof.
+
+VPK SHA-256:
+`bbc81a9fd47859c41b479c0b38e51472782232aca9c1ce39fa0a4ecb76472518`.
+Before/after logs, clean CI logs, local results, source diff and package metadata
+are in the accompanying verification archive. Physical device duration remains
+zero minutes: sender compliance, firmware pause/resume behavior, voice-on load,
+physical presentation and end-to-end latency are not certified by these tests.
