@@ -5,6 +5,7 @@ mod api_xbox;
 mod app;
 mod build_info;
 mod catalog_preferences;
+mod diagnostic;
 mod fs_utils;
 mod http;
 mod i18n;

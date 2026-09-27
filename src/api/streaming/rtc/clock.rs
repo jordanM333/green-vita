@@ -29,6 +29,10 @@ impl IngressProbe {
         }
     }
 
+    pub(super) fn rate(&self) -> u64 {
+        self.clock.clock_rate as u64
+    }
+
     pub(super) fn reset(&mut self) {
         *self = Self::new(self.clock.clock_rate);
     }
@@ -42,8 +46,8 @@ impl IngressProbe {
     }
 
     pub(super) fn take_summary(&mut self, now: Instant) -> String {
-        let media_us = self.clock.elapsed_ticks.saturating_sub(self.previous_ticks) * 1_000_000
-            / self.clock.clock_rate as u64;
+        let media_us =
+            self.clock.elapsed_ticks.saturating_sub(self.previous_ticks) * 1_000_000 / self.rate();
         let wall_us = self
             .previous_at
             .map(|at| now.saturating_duration_since(at).as_micros());

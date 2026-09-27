@@ -44,6 +44,7 @@ pub(crate) fn reset() {
 }
 
 pub(crate) fn record(stage: &'static str, timestamp: u32, value: u64) {
+    crate::diagnostic::event(stage, timestamp, value);
     // The flight recorder must never hold up receive, decode, or display.
     if let Ok(mut trace) = TRACE.try_lock() {
         if let Some(trace) = trace.as_mut() {
@@ -170,6 +171,7 @@ impl Trace {
 
 /// Called with the once-per-second diagnostics, preserving gradual changes.
 pub(crate) fn status_snapshot(status: &str) {
+    crate::diagnostic::snapshot(status);
     if let Ok(mut trace) = TRACE.lock()
         && let Some(trace) = trace.as_mut()
     {
@@ -190,6 +192,7 @@ pub(crate) fn status_snapshot(status: &str) {
 
 /// Called after streaming stops; no filesystem writes in the media loop.
 pub(crate) fn save(status: &str) {
+    crate::diagnostic::save();
     let (text, history, incidents) = if let Ok(trace) = TRACE.lock()
         && let Some(trace) = trace.as_ref()
     {

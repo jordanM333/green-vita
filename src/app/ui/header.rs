@@ -41,6 +41,11 @@ pub(crate) fn show_header_row(
             }
         },
     );
+    ui.label(
+        egui::RichText::new(crate::diagnostic::status())
+            .size(12.0)
+            .color(theme.text),
+    );
 }
 
 pub(crate) fn show_header_row_with_action(

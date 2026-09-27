@@ -1,6 +1,12 @@
 //! Exercise the actual SCTP dependency with a virtual clock and two endpoints.
 //! This reproduces transport queueing; it does not emulate Xbox arrival_feedback control.
 #![cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../src/diagnostic.rs"]
+mod diagnostic;
+#[allow(dead_code)]
+#[path = "../../../src/build_info.rs"]
+mod build_info;
 #[path = "../../../src/api_xbox/streaming/control/admission.rs"]
 pub mod admission;
 #[cfg(test)]

@@ -82,6 +82,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
             ui.label(egui::RichText::new(format!("RX Test {} · {} streaming",
                 crate::build_info::NUMBER, if home { "Home" } else { "Cloud" }))
                 .color(theme.text));
+            ui.label(crate::diagnostic::status());
             ui.add_space(6.0);
             ui.set_max_width(240.0);
             for (index, item) in menu_items(app).iter().copied().enumerate() {
@@ -104,6 +105,8 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     } else if app.state.streaming().is_some_and(|s|s.microphone.is_on()) {
                         "paused-mic-on"
                     } else { "paused-mic-off" })
+                } else if item == Command::ExitGame && home {
+                    "Exit stream (keep game running)".to_owned()
                 } else {
                     i18n.text(item.label_key())
                 };

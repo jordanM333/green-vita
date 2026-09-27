@@ -1,0 +1,48 @@
+DIAGNOSTIC BUILD — PROGRESSIVE LATENCY NOT YET FIXED
+Schema 1. No media payload, credentials, console-control command, or capture-time claim.
+Return this complete folder (zip it on your computer after copying with VitaShell).
+manifest.json is written last; a .partial folder means saving did not finish.
+
+All *_us and a/b times below use the same client monotonic origin. UNKNOWN is
+18446744073709551615, never zero. section initial/onset/post may overlap; deduplicate
+identical rows across sections only. Within-section duplicates remain observations.
+Epoch identifies RTC/socket ownership; track_open splits track generations within it.
+RTP timestamps and sequence numbers are unsigned modular 32/16-bit values.
+media: 0 unassociated/unauthenticated, 1 video, 2 audio.
+flags: bit 0 parsed RTP header, bit 1 RTP marker, bit 2 nonempty payload.
+
+stage             at_us                 a                   b                   c
+udp               application dequeue   before recv syscall last real EAGAIN    UDP bytes
+socket_empty      after peek            before peek         UNKNOWN             0
+socket_ready      after peek            before peek         UNKNOWN             0
+socket_error      after IO              before IO           UNKNOWN             OS error
+receive_pass      after receive pass    pass start          previous pass end   datagrams
+rtc               authenticated delivery original dequeue    UNKNOWN             clock rate
+ordered           reorder release       original dequeue    RTC delivery        90000
+sender_report     RTC delivery          NTP 64-bit          report RTP          clock rate
+track_open        callback              0                   0                   0
+other trace       event                 existing value      UNKNOWN             UNKNOWN
+
+udp identities are untrusted clear SRTP headers. Accept only a UNIQUE match to
+rtc using epoch + SSRC + seq + RTP + original dequeue. No matching row = unknown.
+Empty/control datagrams have flags 0 and cannot be called video or audio.
+A real non-consuming peek returning EAGAIN at E (timestamp BEFORE call) proves
+0 <= UDP socket residence <= D-E for subsequently dequeued packet D. This is an
+UPPER bound, NOT an arrival timestamp; large bounds do not prove backlog.
+This excludes neither Wi-Fi/driver queues before the UDP socket nor sender queues.
+rtc.at - rtc.a and ordered.at - ordered.b are measured same-packet residence.
+Legacy downstream events have frame RTP only; associate with an AU only when that
+identity is unique within the epoch/track generation; otherwise leave unknown.
+au_complete a = first UDP dequeue to AU completion. h264_assembly_us a = actual
+assembly residence. decode_submit a = local age at submit (inspect trace contract).
+No downstream event here establishes physical scanout or audible output.
+
+Trigger: video RTP media progress falls >=250 ms behind wall progress for >=500 ms
+of forward timestamp samples. This is ONLY a capture trigger; it changes no media
+policy. Capture retains first 3 seconds + rolling previous 12 seconds + next 10
+seconds, then freezes. 180-second timeout is NOT REPRODUCED DURING CAPTURE.
+16384 initial + 49152 rolling + 49152 post records (64 bytes or less each), bounded
+48 x 8192-byte status snapshots. Capacity loss and try_lock skips are explicit.
+The analyzer must not bridge stream resets/discontinuities or infer healthy media
+from missing records. This cannot determine fixed startup latency or separate
+sender delay from network/driver delay before the socket. See DIAGNOSTIC-DESIGN.md.

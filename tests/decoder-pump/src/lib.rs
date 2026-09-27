@@ -1,6 +1,12 @@
 //! A controlled decoder FIFO, NOT a Vita hardware emulator or latency measurement.
 //! Production adapter, worker, metadata and texture ownership run unchanged.
 #![allow(dead_code, unused_imports, non_snake_case, unsafe_op_in_unsafe_fn)]
+#[allow(dead_code)]
+#[path = "../../../src/diagnostic.rs"]
+mod diagnostic;
+#[allow(dead_code)]
+#[path = "../../../src/build_info.rs"]
+mod build_info;
 extern crate self as vitasdk_sys;
 use std::{
     collections::{HashMap, VecDeque},

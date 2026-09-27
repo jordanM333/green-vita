@@ -108,6 +108,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         let transport =
             RtcTransport::bind(&mut peer, config.stun_server, config.route_probe).await?;
         let video = VideoReceiver::new(config.decoder, Arc::clone(&direct_output))?;
+        crate::diagnostic::begin_stream();
         crate::streaming::video::trace::reset();
 
         Ok(Self {
@@ -408,12 +409,14 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                         .map(|receiver| receiver.track().kind());
                     match track_kind {
                         Some(RtpCodecKind::Video) => {
+                            crate::diagnostic::track(1, init.ssrc);
                             self.video_clock.reset();
                             self.video_ingress.reset();
                             self.video.open(init.track_id, init.receiver_id, init.ssrc);
                             self.status = "Receiving video track".to_owned();
                         }
                         Some(RtpCodecKind::Audio) => {
+                            crate::diagnostic::track(2, init.ssrc);
                             self.audio_clock.reset();
                             self.audio_ingress.reset();
                             self.audio.open(init.track_id);
@@ -447,6 +450,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     fn handle_peer_messages(&mut self) -> bool {
         let mut keyframe_requested = false;
         for (clock_rate, report) in super::reports::take_clock_reports() {
+            crate::diagnostic::report(report.ssrc, report.rtp_time, report.ntp_time, clock_rate);
             if clock_rate == 90_000 {
                 self.video_clock.sender_report(&report);
             } else {
@@ -458,6 +462,22 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             match message {
                 RTCMessage::RtpPacket(track_id, packet) => {
                     if self.video.handles(&track_id) {
+                        crate::diagnostic::packet(
+                            "rtc",
+                            crate::diagnostic::Identity {
+                                ssrc: packet.header.ssrc,
+                                timestamp: packet.header.timestamp,
+                                sequence: packet.header.sequence_number,
+                                media: 1,
+                                flags: 1
+                                    | (u8::from(packet.header.marker) * 2)
+                                    | (u8::from(!packet.payload.is_empty()) * 4),
+                            },
+                            delivered_at,
+                            Some(dequeued_at),
+                            None,
+                            90_000,
+                        );
                         self.video_ceiling
                             .observe_payload(packet.header.payload_type);
                         self.video_rate
@@ -505,6 +525,22 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                             &mut keyframe_requested,
                         );
                     } else if self.audio.handles(&track_id) {
+                        crate::diagnostic::packet(
+                            "rtc",
+                            crate::diagnostic::Identity {
+                                ssrc: packet.header.ssrc,
+                                timestamp: packet.header.timestamp,
+                                sequence: packet.header.sequence_number,
+                                media: 2,
+                                flags: 1
+                                    | (u8::from(packet.header.marker) * 2)
+                                    | (u8::from(!packet.payload.is_empty()) * 4),
+                            },
+                            delivered_at,
+                            Some(dequeued_at),
+                            None,
+                            self.audio_ingress.rate(),
+                        );
                         self.audio_ingress.receive(
                             packet.header.timestamp,
                             dequeued_at,

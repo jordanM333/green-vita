@@ -53,18 +53,48 @@ impl ReceiveBoundary {
         // the normal receive path. It cannot consume or reorder a datagram.
         let mut byte = [MaybeUninit::uninit(); 1];
         let started = Instant::now();
-        match SockRef::from(socket).peek_from(&mut byte) {
-            Ok(_) => self.readiness_gap += 1, // May be a concurrent arrival; not proof of a reactor bug.
+        let result = SockRef::from(socket).peek_from(&mut byte);
+        let finished = Instant::now();
+        match result {
+            Ok(_) => {
+                self.readiness_gap += 1; // May be a concurrent arrival; not proof of a reactor bug.
+                crate::diagnostic::packet(
+                    "socket_ready",
+                    Default::default(),
+                    finished,
+                    Some(started),
+                    None,
+                    0,
+                );
+            }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 self.last_empty = Some(started); // Before syscall, so the bound is conservative.
                 self.empty += 1;
+                crate::diagnostic::packet(
+                    "socket_empty",
+                    Default::default(),
+                    finished,
+                    Some(started),
+                    None,
+                    0,
+                );
             }
             Err(error) => {
                 self.errors += 1;
                 self.last_error = error.raw_os_error();
+                crate::diagnostic::packet(
+                    "socket_error",
+                    Default::default(),
+                    finished,
+                    Some(started),
+                    None,
+                    error.raw_os_error().unwrap_or(-1) as u64,
+                );
             }
         }
-        self.io_call_max_us = self.io_call_max_us.max(started.elapsed().as_micros());
+        self.io_call_max_us = self
+            .io_call_max_us
+            .max(finished.duration_since(started).as_micros());
     }
 
     fn take_summary(&mut self, now: Instant, rcvbuf: Option<usize>) -> String {
@@ -197,6 +227,11 @@ impl RtcTransport {
                     if outgoing.message.len() >= 8 && outgoing.message[0] >> 6 == 2 {
                         // SRTCP keeps its first RTCP header clear. Count successful UDP sends,
                         // not server acknowledgements; encrypted REMB contents are not inspected.
+                        crate::diagnostic::event(
+                            "rtcp_udp_sent_type",
+                            0,
+                            u64::from(outgoing.message[1]),
+                        );
                         match outgoing.message[1] {
                             201 => self.rr_sent += 1,
                             206 => self.feedback_sent += 1,
@@ -234,6 +269,14 @@ impl RtcTransport {
             match result {
                 Ok((n, peer_addr)) => {
                     self.boundary.packet(arrived);
+                    crate::diagnostic::packet(
+                        "udp",
+                        crate::diagnostic::udp_identity(&self.recv_buf[..n]),
+                        arrived,
+                        Some(receive_started),
+                        self.boundary.last_empty,
+                        n as u64,
+                    );
                     self.receive_rate.receive(n, arrived);
                     received += 1;
                     if let Err(_error) = peer.handle_read(TaggedBytesMut {
@@ -271,6 +314,14 @@ impl RtcTransport {
         self.receive_passes += 1;
         self.receive_packets_max = self.receive_packets_max.max(received);
         self.receive_pass_max_us = self.receive_pass_max_us.max(started.elapsed().as_micros());
+        crate::diagnostic::packet(
+            "receive_pass",
+            Default::default(),
+            Instant::now(),
+            Some(started),
+            self.boundary.last_pass_end,
+            received as u64,
+        );
         self.boundary.last_pass_end = Some(Instant::now());
     }
 

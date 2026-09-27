@@ -133,6 +133,7 @@ impl VideoReceiver {
         };
         if receiver.write_rtcp(vec![Box::new(nack)]).is_ok() {
             self.nack_queued += count;
+            crate::diagnostic::event("nack_queued", 0, count);
         } else {
             self.nack_failed += 1;
         }
@@ -216,6 +217,22 @@ impl VideoReceiver {
         delivered_at: Instant,
         keyframe_requested: &mut bool,
     ) {
+        crate::diagnostic::packet(
+            "ordered",
+            crate::diagnostic::Identity {
+                ssrc: packet.header.ssrc,
+                timestamp: packet.header.timestamp,
+                sequence: packet.header.sequence_number,
+                media: 1,
+                flags: 1
+                    | (u8::from(packet.header.marker) * 2)
+                    | (u8::from(!packet.payload.is_empty()) * 4),
+            },
+            Instant::now(),
+            Some(received_at),
+            Some(delivered_at),
+            90_000,
+        );
         let order_us = delivered_at.elapsed().as_micros() as u64;
         self.order_window.0 += 1;
         self.order_window.1 += order_us;

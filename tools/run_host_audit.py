@@ -38,7 +38,7 @@ def main():
         if args.clippy:
             run(name + "-clippy", ["cargo", "clippy", "--locked", "--all-targets", "--target",
                 "x86_64-unknown-linux-gnu", "--manifest-path", f"tests/{name}/Cargo.toml", "--", "-D", "warnings"])
-    for name in ["latency-analysis", "link-layout", "audit-contracts"]:
+    for name in ["latency-analysis", "diagnostic-capture", "link-layout", "audit-contracts"]:
         run(name, ["python3", "-m", "unittest", "discover", "-s", f"tests/{name}", "-v"])
     report = dict(hardware_validation=False, xbox_sender_emulated=False, results=results)
     (args.output / "results.json").write_text(json.dumps(report, indent=2) + "\n")

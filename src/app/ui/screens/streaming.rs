@@ -43,6 +43,17 @@ pub(crate) fn show(
             });
         }
 
+        egui::Frame::default()
+            .fill(egui::Color32::from_black_alpha(192))
+            .inner_margin(egui::Margin::same(4))
+            .show(ui, |ui| {
+                ui.colored_label(
+                    theme.text_bright,
+                    "DIAGNOSTIC — progressive latency not yet fixed",
+                );
+                ui.colored_label(theme.text_bright, crate::diagnostic::status());
+            });
+
         // Keep collecting metrics when hidden so the quick menu can restore the live overlay
         // without restarting the stream or resetting its counters.
         if app.settings.show_stream_debug_info {
