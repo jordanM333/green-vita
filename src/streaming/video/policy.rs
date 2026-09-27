@@ -86,7 +86,7 @@ impl Recovery {
     pub(crate) fn summary(&self, now: Instant) -> String {
         let current = self.wait_ms(now);
         format!(
-            "Recovery wait:{}ms max:{}ms completed:{}",
+            "Recovery wait:{}ms max:{}ms IDRadmitted:{} (not live-edge proof)",
             current,
             current.max(self.longest_wait.as_millis() as u64),
             self.completed

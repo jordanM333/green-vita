@@ -88,7 +88,7 @@ impl Trace {
                 | "picture_regressed"
                 | "presentation_expired"
                 | "recovery_begin"
-                | "recovery_end_ms"
+                | "recovery_idr_admitted_ms"
                 | "au_abandon"
                 | "age_drop"
                 | "output_wait_expired"
@@ -241,6 +241,36 @@ pub(crate) fn save(status: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn missing_new_output_keeps_aging_instead_of_becoming_healthy() {
+        let mut trace = Trace {
+            start: Instant::now(),
+            events: VecDeque::new(),
+            history: VecDeque::new(),
+            incidents: VecDeque::new(),
+            last_au: None,
+            last_picture: None,
+            stages: [None; 9],
+        };
+        trace.push(1_000_000, "picture_output_rtp", 42, 22_000_000);
+        trace.push(1_000_000, "receive_to_gpu_done_us", 40, 100_000);
+        let status = trace.progress_at(2_000_000);
+        assert!(status.contains("decoded:23000/1000"), "{status}");
+        assert!(status.contains("GPU:1100/1000"), "{status}");
+        assert!(
+            status.contains("Vrx:?"),
+            "missing input must remain unknown"
+        );
+    }
+
+    #[test]
+    fn busy_recorder_drops_telemetry_instead_of_blocking_media() {
+        let _held = TRACE.lock().unwrap();
+        let before = CONTENDED.load(Ordering::Relaxed);
+        record("video_received", 1, 0);
+        assert_eq!(CONTENDED.load(Ordering::Relaxed), before + 1);
+    }
+
     #[test]
     fn incidents_outlive_verbose_ring_and_preserve_real_gaps_and_recovery_reason() {
         let mut trace = Trace {

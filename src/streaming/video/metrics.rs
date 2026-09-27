@@ -364,3 +364,25 @@ pub fn video_performance_summary(window: std::time::Duration) -> String {
         METRICS.input_admission_errors.load(Ordering::Relaxed),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn fps_is_a_rate_over_elapsed_time_not_a_status_window_count() {
+        for count in [
+            &METRICS.decode_calls,
+            &METRICS.decoded,
+            &METRICS.presented,
+            &METRICS.paint_count,
+        ] {
+            count.store(120, Ordering::Relaxed);
+        }
+        let summary = video_performance_summary(std::time::Duration::from_secs(2));
+        assert!(
+            summary.contains("FPS hwCall:60 decoded:60 shown:60 ui:60"),
+            "{summary}"
+        );
+        assert!(summary.contains("window:2000ms"));
+    }
+}

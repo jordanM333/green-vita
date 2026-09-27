@@ -470,7 +470,7 @@ impl VideoRtp {
 
     pub(super) fn recovery_summary(&self, now: Instant) -> String {
         format!(
-            "{}\nRefresh pending:{} completed:{}",
+            "{}\nRefresh pending:{} IDRadmitted:{}",
             self.recovery.summary(now),
             u8::from(self.refresh_pending),
             self.refresh_completed
@@ -762,7 +762,7 @@ impl VideoRtp {
                 }
                 if unit.has_idr && self.recovery.waiting() {
                     crate::streaming::video::trace::record(
-                        "recovery_end_ms",
+                        "recovery_idr_admitted_ms",
                         completed.timestamp,
                         self.recovery.wait_ms(Instant::now()),
                     );

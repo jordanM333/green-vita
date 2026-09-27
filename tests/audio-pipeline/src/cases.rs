@@ -125,3 +125,54 @@ fn thirty_minutes_of_pcm_overproduction_cannot_build_a_device_archive() {
         u64::from(maximum) * 1000 / u64::from(AUDIO_BYTES_PER_SECOND)
     );
 }
+
+#[test]
+fn sample_clock_mismatch_remains_bounded_and_recovery_discards_old_pcm() {
+    // Explicit sample-clock simulation, not a measurement of the Vita DAC.
+    // Both clock directions matter: a slow device accumulates samples; a fast
+    // device underruns. Run the production admission/start/trim policy for
+    // 30 media minutes per direction, retaining fractional sample consumption.
+    for ppm in [-1000i64, 1000] {
+        let sdl = sdl2::init().unwrap();
+        let audio = sdl.audio().unwrap();
+        let mut renderer = AudioRenderer::new(&audio).unwrap();
+        let (tx, rx) = sync_channel(1);
+        let original = std::mem::replace(&mut renderer.samples_rx, rx);
+        let trims = METRICS.audio_latency_trims.load(Ordering::Relaxed);
+        let underruns = METRICS.audio_underruns.load(Ordering::Relaxed);
+        let mut fraction = 0i64;
+        let mut maximum = 0;
+        for _ in 0..90_000 {
+            if renderer.started {
+                fraction += 960 * (1_000_000 + ppm);
+                let frames = fraction / 1_000_000;
+                fraction %= 1_000_000;
+                let mut queued = renderer.queue.samples.borrow_mut();
+                let consumed = queued.len().min(frames as usize * 2);
+                queued.drain(..consumed);
+            }
+            METRICS.audio_pcm_pending.fetch_add(1, Ordering::Relaxed);
+            tx.send(TimedAudio {
+                data: vec![7; 1920],
+                received_at: Instant::now(),
+            })
+            .unwrap();
+            renderer.submit_packets(vec![], 100);
+            maximum = maximum.max(renderer.queue.size());
+            assert!(renderer.queue.size() <= AUDIO_TRIM_THRESHOLD_BYTES);
+        }
+        if ppm < 0 {
+            assert!(METRICS.audio_latency_trims.load(Ordering::Relaxed) > trims);
+        } else {
+            assert!(METRICS.audio_underruns.load(Ordering::Relaxed) > underruns);
+        }
+        renderer.samples_rx = original;
+        renderer.reset_stream();
+        assert_eq!(renderer.queue.size(), 0);
+        assert_eq!(METRICS.audio_pcm_pending.load(Ordering::Relaxed), 0);
+        println!(
+            "30 media minutes, DAC model {ppm:+}ppm: software queue maximum {}ms; recovery empty",
+            u64::from(maximum) * 1000 / u64::from(AUDIO_BYTES_PER_SECOND)
+        );
+    }
+}

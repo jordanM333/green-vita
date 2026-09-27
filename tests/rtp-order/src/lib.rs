@@ -510,7 +510,7 @@ mod repair_integration {
         assert!(
             video
                 .recovery_summary(Instant::now())
-                .contains("Refresh pending:0 completed:1")
+                .contains("Refresh pending:0 IDRadmitted:1")
         );
         video.receive(
             &worker,

@@ -1,6 +1,6 @@
 # GreenVita architecture investigation — 2026-09-26
 
-Status: investigation/remediation in progress; NOT a hardware-qualified release.
+Status: source remediation and available software verification complete; consolidated candidate packaging is gated by CI. NOT hardware-qualified. Investigation began 2026-09-26; closeout 2026-09-27.
 Baseline: exact C05 dirty source recovered against 8d9cba8b22b82cddfe9e81e352558132c2fcbbc6. All 508 preserved source-input hashes matched before the recovery checkpoint b6e5a15. New logs were read from this request's four local attachments, not substituted with older files.
 
 ## Pre-implementation issue register
@@ -21,3 +21,168 @@ No finding above is labeled CONFIRMED ROOT CAUSE of the complete user-reported f
 ## Follow-up finding before retransmission-policy correction
 
 PR-SCTP abandonment was being evaluated on the first transmission (`nsent=1`) using `nsent >= max_retransmits`, and retransmission paths still emitted a chunk after marking it abandoned. That generates FORWARD-TSN traffic on a lossless link and treats “zero retries” as immediate abandonment. The reference usrsctp implementation checks the retry budget when a chunk becomes eligible for fast retransmission or T3 recovery, before actually retransmitting (`sctp_indata.c`, `sctp_timer.c`, commit fd070e05a7474f38c7fecdf4d4b6005d2547ee00). New lossless endpoint regression is expected to fail even after duplicate pacing. Classification: CONFIRMED ROOT CAUSE of unnecessary recovery traffic in the deterministic transport; CONTRIBUTING DEFECT with unproven magnitude on Vita. Remediation: move budget checks to retransmission eligibility, count retries separately from the initial attempt, do not put abandoned DATA on the wire, advance FORWARD-TSN immediately after abandonment. Regression risks: lost-report recovery, fragmentation, reliable DCEP and configured retry limits; retain the existing loss/long-outage/WebRTC tests and add explicit wire-attempt limits.
+
+## Evidence reconstruction and attempt history
+
+The audited lineage starts at `8d9cba8b22b82cddfe9e81e352558132c2fcbbc6` on `latency-root-cause`; the default `master` is a different lineage tip (`ae2625d`). C05 was not that clean commit: the exact 508-file dirty build-input map was reconstructed before testing. Its equivalent clean remote rollback checkpoint is `0dce3ad9b888897addfe27431a8ca8c092eb6cf2`, tree `2336116a58a3e9ba9fee428fc4c4abecaf4c6894`. The C05 VPK SHA256 recorded in preserved provenance is `e160daac300e3696234fabdb9c6938c7d0095ecb719b1aa80686076be1f2ad31`; it is historical evidence, not the output of this remediation.
+
+The review covers source/build/CI inventories, relevant Git history, prior audit packages, ten distinct retained history files, associated trace/status/incident files, and three short recordings. Two recordings share a filename stem but have different file hashes; none provides a synchronized console-display reference and a complete sustained trial. Samples show RX33/RX34-era gameplay with the overlay and the Vita; they are not packet captures or reproducible H.264 streams. No complete authenticated payload capture was available for deterministic Xbox replay. The existing RX36 Cloud burst test replays AU completion timings only and says so explicitly.
+
+| Symptom | Prior hypothesis and code family | Attempt | What the evidence actually establishes |
+|---|---|---|---|
+| Slow visual response despite input calls | Input timestamps / stale queued input | `27b2447`, `3ed4f05`, `d7397bf`: monotonic clocks, latest-state admission, capacity instead of ACK-byte cap | Host tests establish these defects/guards. Latest local admission is ~1ms, not input delivery or response time. No complete hardware cure was proven. |
+| Low display rate / old image | UI walking queued pictures / GPU backlog | `752d4a9`, `015a96b`, `527b7ca`: latest texture, wake-driven drawing, callback completion | Correctly avoids FIFO presentation and unbounded GPU submissions. It did not reject an old item in a one-slot mailbox or establish scanout time. |
+| Growing AVC residence | Output serviced only on subsequent input | `5185b47`, `1b88867`: independent output polling with pending-PTS bookkeeping | Controlled FIFO reproduces the mechanism. Latest trace has matched independent outputs, yet a 22.3-second old result still reached GPU completion. Polling is necessary, not an age guarantee. |
+| Cloud freezes after queue pressure | Aggressive compressed-frame eviction | `9936ade`, `70ccd93`: larger bounded AU queue, preserve intact reference chain | Timed burst replay supports preserving valid dependencies. The 50ms pressure threshold became observation-only; count bounds were mistaken for time bounds. |
+| Video damage / repeated IDR wait | Packet disorder/loss | `15ebee1`, `fe8e8b4`, `f758fad`: reorder grace, tail-first processing, negotiated NACK | Real assembler and RTCP tests prove bounded repair and rejection of damaged units. Latest recovery still waits 202–1811ms; repair does not explain all arrival-clock growth. |
+| Delayed stream / stale REMB | Missing sender feedback / competing controllers | `46347dc`, `00f0d62`, `165f429`, `4a3881d`, `affe3c5`, `49baec0`: RR, TWCC, controller ownership, ceiling feedback | Reports negotiate and traverse authenticated test peers. That does not prove Xbox honors REMB. C05 requests 500kbps while receiving multi-Mbps video in several windows. |
+| Refresh interrupts Home | Recovery coupled to session lifecycle | `a42576c`, `38f76ab`, then `f758fad`: media-only refresh | Current Home refresh stays inside the media pipeline. Do not restore old session enumeration/deletion workarounds. Obsolete unused helpers were removed in this review. |
+| Queue pressure persists | Repeated IDR/catch-up mechanisms | `297174d`, `4a3881d`: complete-IDR cutover, remove arrival-only refresh trigger | An intact IDR permits safe local cutover. An IDR request does not purge a sender/network queue; admission is not proof of live-edge presentation. |
+| Audio/session defects | Missing age propagation / lifecycle cleanup | `b4a1552` and C01–C05 hardening | Local audio expiry and ownership tests pass. Audio hardware timing, physical A/V alignment, and sustained Vita performance were still open. C05 HTTP/login fixes are preserved. |
+
+The central failure of the previous reasoning was treating a verified local improvement as evidence about the entire system. Different builds corrected real defects, but missing boundaries, short retained traces, process-wide counters, no physical reference, and synthetic peers left the reported symptom unaccounted for. This review does not retroactively label those earlier hypotheses proven.
+
+## Latest session reconstruction
+
+128 snapshots cover 1.204–129.378 seconds. The verbose trace retains only the last 3.453 seconds (4,096 rows). Its statistics must not be generalized to the whole session.
+
+| Wall time | Video added arrival delay | Audio added arrival delay | AU depth | Matched receive-to-GPU maximum in window | DTLS RX packets / processing ms |
+|---|---:|---:|---:|---:|---:|
+| 5.210s | 1ms | 1ms | 0 | 79ms | 44 / 9 |
+| 35.249s | 5ms | 5ms | 0 | 22,350ms | 54 / 11 |
+| 90.318s | 75ms | 5ms | 0 | 163ms | 47 / 10 |
+| 100.331s | 1,241ms | 75ms | 26 | 159ms | 878 / 188 |
+| 110.351s | 1,380ms | 151ms | 9 | 156ms | 883 / 191 |
+| 118.360s | 94ms | 100ms | 0 | 114ms | 1,416 / 315 |
+| 129.378s | 1,198ms | 101ms | 1 | 238ms | 919 / 206 |
+
+The early 22-second video-data lull has continuing low-rate RTP/probe traffic. A very old matched picture returns when video resumes. That is separate from later gradual arrival-delay growth; the logs cannot establish whether the lull was sender pause/unchanged-scene behavior or another sender failure. It must not be presented as 22 seconds of continuously queued gameplay.
+
+From 90.318 to 100.331 seconds, added video delay rises 1.166 seconds in 10.013 wall seconds: an apparent media-time deficit of ~116ms/s, or media progress ~0.884 wall seconds per second over that interval. This locates missing progression at or before the observed RTP arrival boundary, not specifically in the decoder queue. Capture timestamps, kernel arrival timestamps, authenticated SCTP chunk counts and server timing were absent. Sender scheduling, network residence and kernel/socket/RTC service cannot be separated retrospectively.
+
+In the final trace, median/p95/max receive-to-decoder-submission are 20.53/97.69/126.54ms; decode calls 3.21/8.79/13.12ms; matched decoder residence 87.02/130.85/157.53ms; matched receive-to-GPU 126.75/208.07/238.66ms. The nominal last-frame source cadence (~58fps) is not measured sustainable throughput. If a FIFO accepts 60fps and serves 50fps, its backlog grows 10 frames/s and age grows about 200ms/s until it drops, blocks or runs out of memory. A finite queue only limits count; freshness requires a time policy as well.
+
+All-history maxima are also inconsistent with declaring a fix from the most recent small queue: retained RX37.4 sessions show added arrival delay up to 8,892ms; RX38.7 5,276ms; RX38.9 1,703ms; RX38.10 1,888ms; RX38.14 1,837ms; RX38.15 1,991ms; RX38.20 2,014ms; C05 2,085ms. They are different sessions, not a controlled quality ranking.
+
+## Queue and ownership ledger
+
+`U` means unmeasured, not zero. “Observed” refers to C05 unless specified. All media residence clocks below are local monotonic `Instant`; RTP sequence/timestamps use modular ordering. No row implicitly includes capture or panel/DAC delay.
+
+| Buffer / owner; producer → consumer | Capacity; observed depth/max | Blocking / overflow / stale policy | Lifetime and recovery |
+|---|---|---|---|
+| Controller sampling / UI → latest gamepad mailbox → RTC | 1 state; instantaneous U | Short mutex; newest unsent state replaces old state | Session-owned; release state retained across backpressure; sampled time follows report |
+| Explicit gamepad pulses / UI → RTC | 32; U/U | Drop oldest pulse on overflow; distinct from held input state | Drained within worker; not a media clock |
+| Commands / UI → RTC | 16; U/U | Lossy `try_send`; refresh and stop also have independent coalesced signals | Session-owned; no media recovery through console RPC |
+| Input/feedback ingress / serialization → SCTP | 256B / 128B unsent admission limits plus actual cwnd/rwnd credit; deferred 0 in latest status | No artificial cap on acknowledged-wait bytes; rejected samples coalesce before retry | Monotonic input origin; unordered zero-retry reports; >250ms old frame feedback rejected |
+| SCTP pending/inflight, per-stream reassembly / RTC | Congestion/receive-window controlled; no explicit media-time SLA; U/U | Reliable negotiation/control differs from ephemeral input. Initial send now awaits ACK; only loss applies retry budget. FORWARD-TSN duplicates paced; T3 retained | Association-owned; teardown releases queues; payload retry tests cover zero/one retry. Sender input consumption remains unobservable |
+| RTC protocol read/write/control queues / ICE, DTLS, SRTP, SCTP → socket/application | Internal dynamic queues; no comprehensive occupancy counter | Serviced between bounded socket passes. Media input cadence is bounded by receive pass, but individual crypto/protocol calls are not preemptible | Session-owned. Reliable control cannot be arbitrarily discarded as stale video |
+| UDP transmit / RTC → kernel | One explicitly deferred datagram, plus kernel U | Nonblocking `try_send_to`; preserve exact unsent bytes on WouldBlock; <=32 packets or 2ms per flush, checked after each indivisible call | No indefinite socket-writability wait in media pump; OS errors counted |
+| Server capture/encode/send, console processing | External; all depths/capacities U | Negotiated rate/REMB/TWCC are requests, not evidence of compliance | Not recoverable by purging only local AUs; cannot certify a sender budget from these logs |
+| Network and UDP kernel receive queue / sender → RTC | OS allocation U; C05 wire counters only | `try_recv_from`; 2,048-byte datagram scratch is not backlog capacity; pass <=32 packets or 2ms, individual call may exceed it | Timestamp is stamped after dequeue. Kernel backlog is explicitly outside local-age claims |
+| Video reorder / RTC packets → H.264 assembly | Normal 24 packets / 6ms; repair 64 / 60ms. Observed 0 / 39, wait max65ms | Ordered packets immediate; 2ms initial NACK opportunity, retry20ms; bounded loss release; already-arrived gap filler processed before expiry | Sequence wrap handled; cleared for source change; no unbounded completeness wait |
+| H.264 partial AU / ordered packets → complete AU | One AU, <=2MiB / 2,048 packets; depth U | Reject malformed/incomplete FU/reference damage; do not reinterpret arbitrary P frames as independently decodable | Owned packet bytes; first arrival retained; source change clears assembly and waits for IDR |
+| Completed AU / RTP → decoder worker | 32 AUs AND 4MiB; latest1, observed max32; local queue wait max114ms in final status | Nonblocking admission. Short bursts preserve reference chain; >240ms receive-age abandons the epoch and requests IDR. Full queue also enters dependency recovery | RAII byte credits released on dequeue/drop; complete-IDR cutover purges old queued work; in-flight old epoch rejected |
+| AVC pending output and metadata / hardware → worker | Metadata256; hardware depth U, not equivalent to metadata count | Output polled independently; output-debt watermark8 alternates input/output; no-output stops speculative polling until useful work | Hardware created/used/destroyed on decoder thread. Matched PTS required; old/unknown generations never acquire new identity |
+| Native decode call / worker → CDRAM lease | One call/lease | No ownership mutex held through hardware call; native call itself can block and has no cancellable deadline | Checked dimensions/stride/capacity, references alive through call; host fake verifies application ownership, not undocumented firmware guarantees |
+| Completed texture / decoder → UI | One pending + one displayed + spare (3 surfaces; fallback2); depth <=1 | Latest useful decoded picture wins. Reject age>240ms at publish AND take; reject same/older RTP timestamp within epoch | Exclusive leases prevent writes into displayed surface; resync revokes old pending epoch; target replacement waits for lease release |
+| Decoder/RTC/UI notifications | One latest result/frame; event channel32 | Coalesced notifications, stale handles no longer used for texture selection | Notification carries no redundant texture ownership; UI obtains live surface directly |
+| SDL/GXM render submission / UI → GPU/display callback | Application waits after each presentation; underlying driver depth U | `sceGxmDisplayQueueFinish` bounds outstanding submission; C05 callback wait typically3–5ms | Completion records actual matched picture. It is not panel scanout; physical scanout remains U |
+| Audio RTP builder / RTC → Opus packets | 32 late packets, 80ms media-time bound; arrival metadata128; observed RTP lead20ms | Sequence/timestamp-aware; first arrival retained, no age reset on release | New source clears builder; missing timestamp association rejected rather than fabricated |
+| Audio receive batch / RTC → UI | Up to32 packets/batch; channel16 batches | Nonblocking batch delivery/drop; packet timestamps retained | Session-owned; downstream age budget applies even when a batch had waited while UI stalled |
+| Opus input / UI → audio worker | 32 packets; final0, max U | `try_send`; full drops incoming packet; no producer wait | One worker/decoder; prediction can advance without retaining obsolete output |
+| PCM / Opus → UI | 8 buffers; final0, max U | Nonblocking output; discard if stale or sink full; received time preserved | Worker joined before replacement; 100-cycle start/reset test; old 6-second PCM rejected |
+| SDL software output / UI → audio device | Hard240ms, trim threshold160ms to newest80ms, startup40ms; observed56–136ms | Admission includes upstream age + queued duration + complete new buffer; clear after UI service stall | Device can retain additional samples; requested1,024-sample device buffer ~21.3ms at48kHz is not a measured audible latency |
+| Microphone capture / capture → Opus → RTC | 3 encoded clips, age80ms; captured20ms at16kHz | Drop oldest/stale; epoch/mute under one lock at final admission | Negotiation separate from receive work; muted clips cannot replay after re-enable; latest problematic session has mic off |
+| Diagnostics / all workers → export | 4,096 events, 1,024 incidents, 2,100 status entries | Metadata only, drop oldest. Hot event recorder now `try_lock`; contention increments `traceSkip` rather than blocking media | Session trace reset; some legacy atomic counters remain process totals; export is not performed on every frame |
+
+No unmeasured queue is represented as empty. The ledger deliberately distinguishes the bounded application architecture from the unmeasured native/sender boundaries; those are release-qualification uncertainties.
+
+## Latency budget and overload policy
+
+The receive boundary is local receive after UDP dequeue/authentication, not capture. This review imposes a 240ms local video receive-to-selection ceiling, matching the existing audio receive-to-playback-admission ceiling. This is a maximum admission budget, not a target latency and not a claim of 240ms button-to-photon performance.
+
+| Contribution | Expected in sustainable operation | Ceiling / action |
+|---|---:|---|
+| Socket service cadence / input scheduling | Few ms | 32 datagrams or 2ms per RX/TX pass, after indivisible calls; work returns to other stages. No guarantee against an OS/native call that itself stalls |
+| RTP reorder | 0–6ms | Up to60ms for negotiated repair; release loss, reject broken AU and acquire IDR |
+| AU assembly | Usually one frame interval or less | 2MiB/2,048-packet safety limit; total local-age budget still applies |
+| AU wait | Prefer <50ms | 50ms is pressure, not discard. Total receive-age>240ms enters one dependency-recovery epoch |
+| Decode call / output | C05 tail median3.21ms call, output residence median87ms | Continue output servicing; discard obsolete decoded pictures without damaging reference decoding. Native call hard deadline unavailable |
+| Render wait | Next UI opportunity, ideally one display interval | One latest slot; recheck 240ms budget at selection after UI stall |
+| GPU completion / scanout | C05 callback median3.14ms; scanout unmeasured | One outstanding app presentation; no fabricated panel-time bound |
+| Audio reorder/decode/output | Local SDL queue normally40–160ms plus preceding local work | Whole-buffer playback admission<=240ms; trim to current PCM. No deliberate seconds-long wait to match delayed video |
+| Sender/network/capture | Unmeasured fixed offset and variable residence | RTP/wall-clock progression + SR offsets expose drift; feedback and authenticated control counters show response. Local purge cannot prove sender live edge |
+
+Under sustainable production/service rates, the latest-picture slot does not walk historical pictures. During overload, decoded outputs expire safely; compressed deadline expiry invalidates the dependency epoch and waits for a complete independently decodable IDR. Loss recovery, queue overflow, explicit Home refresh and safe IDR cutover use the same epoch ownership. Catch-up requests based solely on uncalibrated arrival delay remain disabled. There is no session reconnect or game termination in this policy.
+
+Audio runs against device consumption with bounded admission/trim; video presents newest useful media independently. Neither SR offsets nor process wall time are used to delay one path to match an unverified sender clock. Consequently exact physical A/V synchronization is not certified. Matching local ceilings alone cannot align streams whose upstream delays differ by a second. Adding an audio delay to conceal that video failure would violate the responsiveness objective.
+
+## Design comparison and Vita constraints
+
+This is a conceptual comparison, not a throughput benchmark on absent hardware. RFC3758 §3.2/3.5 requires ordered stream entries in FORWARD-TSN, excludes unordered entries, retains T3 recovery, and permits duplicate coalescing for an RTT (recommended delay no more than 200ms). The corrected implementation follows those mechanisms. usrsctp's loss-path retry checks provide an independent implementation comparison for initial-attempt accounting.
+
+Moonlight Common-C's depacketizer (`VideoDepacketizer.c`, inspected upstream) explicitly requests decoder refresh on a dependency failure. The inspected Vita Moonlight source (`xyzz/vita-moonlight`, commit `984603bd6f93f752593048fe494b5ffca14514e1`) also decodes dependency work before dropping a rendered result, reuses native buffers, and waits for rendering completion. It is not an Xbox/WebRTC sender and does not prove equivalent performance or identical SDK contracts. Its configuration values and older frame-pacer behavior were not copied.
+
+GreenVita retains the hardware AVC decoder, one-reference 1280×720 capacity, 960×544 RGB565 output, fixed surfaces and separated decode/RTC/UI workers. Native handles now remain on their owner thread; the old undocumented `Send` assumption is removed. This avoids designing for desktop software decode or increasing quality to disguise backlog. Per-frame full-buffer allocation/copy still exists at assembly and the surface copy required by the SDL ownership path; replacing that path without authoritative GXM ownership evidence would add risk. The review does not claim zero-copy or a measured maximum sustainable Vita bitrate.
+
+The approved SDK image remains pinned to `ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc`. Local retrieval was blocked; GitHub CI successfully used the pinned container. Native check and strict Clippy are separate from host fakes. CPU2 decoder affinity and time-critical CPU1 RTC work remain; nonblocking trace and TX fairness reduce avoidable contention without guessing new priorities.
+
+## Home, Cloud, preservation and interference review
+
+Both providers share UDP/WebRTC, feedback registration, RTP/audio/video assembly, AVC worker, textures, audio output and input admission. They differ in provisioning/credentials/SDP responses, server/console behavior, transport path, and session cleanup ownership. Home remains attached to an already-running console/game. Refresh requests media recovery only. Cloud cleanup is scoped to the owned Cloud session on stop; Home detach does not enumerate/delete console sessions. Old generic active-session enumeration/deletion helpers were unused and removed, not reconnected to recovery.
+
+No rear-touch mapping, game selection, quick-settings layout, microphone control, mute epoch, volume or account behavior was redesigned. Existing mapping, catalog, voice, HTTP/login and lifecycle regressions remain in the suite. Voice on/off over real host ICE/DTLS is tested; Vita capture cost and server voice interoperability remain hardware questions. Diagnostics toggling remains a visibility control; the metadata recorder continues independently, so “overlay off” does not mean recording is off. The recorder now cannot block hot paths on its mutex.
+
+Policies retained with distinct roles: finite reorder repair, AU count/byte safety bounds, total local age ceiling, output servicing, decoded-picture replacement, dependency epoch recovery, complete-IDR cutover, and sender feedback. Policies removed/replaced: premature PR-SCTP abandonment, redundant texture IDs in notifications, old unused destructive-session helpers, cross-thread native handle transfer, blocking hot trace lock, and unrestricted socket TX drain/wait. No bitrate/resolution parameter was changed. No additional automatic reconnect loop was added.
+
+## Verification interpretation
+
+Baseline: 238 Rust test executions and 27 Python tests passed before corrections. The new regressions failed on that recovered behavior: a 22-second old matched picture was accepted, RTP 1500 replaced newer RTP 3000, old compressed data entered native decode, and lossless input reports caused unnecessary FORWARD-TSNs. Initial duplicate pacing reduced traffic but the stronger lossless test still failed (370 forward advances for 500 reports); moving the retry check to the loss path eliminated that cause.
+
+Host after the full changes: 255 Rust test executions, 27 Python tests, strict Clippy in all 11 harnesses. These are executions across overlapping production-module harnesses, not 255 independent system scenarios. The separately run vendored SCTP suite passes 113 tests. CI run 36282455366 verified source revision 2560448b8de93ad10d63cf2b70eb50332b539407 with native all-target/all-feature checking, strict target Clippy and optimized native compilation. The initial native lint failures were corrected. The final candidate workflow repeats those gates on its exact checkout before packaging and checks embedded commit/build identity, executable layout and unchanged tracked source. Its immutable result and artifact hashes belong in the accompanying closeout, avoiding a self-referential commit ID in this source document.
+
+Measured deterministic transport comparison for the same 120s fixture: 14,875 reports; original 35,637 outbound packets and 20,760 FORWARD-TSNs; duplicate pacing 25,212 packets and 10,335 forwards; corrected retry policy 14,877 packets and 0 forwards. The 30-minute fixture sends 224,875 reports,224,877 total packets,0 forwards and no growing packet-rate tail under repeated delay steps. Separate packet-loss tests verify that zero retries sends once, one retry permits exactly two attempts, and abandoned loss still emits FORWARD-TSN. These tests run the vendored protocol, not a model that merely assumes the sender honors feedback.
+
+20 virtual minutes of production texture selection:72,000 outputs,23,880 current selections and120 deliberately expired stalled selections; no historical walk-through.30 media minutes of production audio admission against a non-consuming recording sink: 90,000 PCM buffers, maximum software queue 160ms, reset leaves 0 bytes. Additional 30-minute sample-clock simulations at −1000ppm and +1000ppm exercise slow-device accumulation and fast-device underruns through the production renderer; both stay at or below 160ms and clear on reset. This verifies bounded admission/trim/rebuffer behavior, not inaudible adaptive resampling or physical A/V alignment. These are accelerated scheduling/overproduction tests, not20/30 minutes of measured Vita CPU/DAC behavior. Existing tests cover real host DTLS/SRTP/NACK/TWCC, loss/disorder, burst AU timings, decoder FIFO/backpressure, incomplete H.264/keyframe recovery, RTP wrap, Home refresh/detach, Cloud owned cleanup,100 audio start/reset cycles, mic mute epochs, and diagnostics parsing.
+
+A complete sustained game-stream replay is not available. No host fake certifies firmware output-buffer retention, native call worst-case duration, physical panel presentation, DAC buffering, or the Xbox sender's behavior. No before/after hardware improvement is claimed in this report.
+
+Primary references: https://www.rfc-editor.org/rfc/rfc3758.html ; https://www.rfc-editor.org/rfc/rfc8831 ; https://github.com/sctplab/usrsctp ; https://github.com/moonlight-stream/moonlight-common-c/blob/master/src/VideoDepacketizer.c ; https://github.com/xyzz/vita-moonlight .
+
+
+## Final static and concurrency review
+
+Reviewed the aggregate diff against the recovered C05 checkpoint, not only the latest commit. Decoder construction/destruction stays on one thread. Texture leases exclude the displayed surface and finish before teardown; no ownership lock crosses a native decode call. Deadline recovery uses an epoch compare/exchange so an expired AU cannot invalidate a concurrently admitted replacement IDR. Native decode errors still invalidate the decoder state because the handle is no longer trustworthy. Output publication checks epoch and media order again under the surface lock. Queue byte reservations release on every dequeue/drop path. The recorder drops contested telemetry instead of making media wait; skip counts are explicit. TX preserves the exact unsent datagram when the socket would block and yields to receive/input after a finite pass. Reliable control negotiation and ephemeral input retain different policies. No new console/game termination path was introduced.
+
+The two fields previously called recovery/refresh “completed” now explicitly say `IDRadmitted`; the trace event is `recovery_idr_admitted_ms`. That point is the end of dependency acquisition, not proof of current visible output. The stage-age/quiet counters and arrival-clock progression must be evaluated after it. A previously presented texture can remain on the panel during an outage; the client cannot produce a live frame when none arrives. Its age keeps growing in diagnostics rather than being described as a fresh zero-depth pipeline.
+
+Application media storage has finite count/byte bounds and compressed/decoded/PCM local-age admission checks. External sender, network, kernel and firmware buffers remain outside that guarantee. Reliable protocol internal queues are not media playout FIFOs; their service/occupancy is not universally bounded by a deadline. A single native/crypto call can exceed the pass budget because it cannot be preempted. These are explicit limits, not silently passed gates.
+
+Audio continues to drain independently during video dependency recovery; a healthy audio device is not flushed on every video IDR. A UI/service stall clears old device-queued audio, stale compressed/decoded audio fails its age checks, and actual session replacement resets the renderer/Opus worker. There is no speculative sender-clock A/V delay and no claim that two independent local age ceilings guarantee lip synchronization. A/V re-alignment after an actual Xbox outage still requires physical observation.
+
+## Software gate interpretation and remaining hardware work
+
+| Gate | Result / boundary |
+|---|---|
+| Formatting, host compilation and strict lint | PASS on final local source; repeated in candidate CI |
+| Host regressions and sustained overload | PASS: 255 Rust executions, 27 Python tests; accelerated transport/video/audio durations described above |
+| Full vendored SCTP protocol suite | PASS: 113 tests in CI; host local dependency retrieval was blocked, so it is not reported as a local pass |
+| Native target checks, strict lint, optimized compilation | PASS on revision 2560448 in run 36282455366; final candidate repeats them. The pinned compiler emits its existing unstable `target-feature=neon` warning; no Clippy warning was suppressed |
+| Dependency-safe recovery / loss / keyframe / clock wrap | PASS in production-module harnesses; no firmware or Xbox sender emulation |
+| Home refresh, repeated detach/reconnect lifecycle | PASS for source wiring and recording-HTTP ownership tests; no console termination request. End-to-end console behavior NOT PERFORMED |
+| Audio reset and sample-clock mismatch | PASS for real Opus/production renderer with recording SDL; DAC and physical A/V NOT PERFORMED |
+| Static/concurrency and aggregate diff review | COMPLETE, with native-call/firmware uncertainties retained above |
+| Artifact provenance | Required packaging gate; exact output recorded in accompanying closeout |
+| Sustained physical Home/Cloud play, voice capture cost, button-to-panel latency | NOT PERFORMED: no Vita/console available |
+
+There is no assertion that the user's complete reported failure is solved. The candidate is justified by reproduced defects and passing regression gates. It is not a production release or a substitute for the remaining hardware observation. No main-branch merge or release publication is part of this work.
+
+## One focused hardware acceptance procedure
+
+Install only the candidate identified by the accompanying provenance. Run 30 minutes of Home and then 30 minutes of Cloud in a game with continuous motion and a repeatable action that produces visible motion and sound. In each session keep voice off for minutes 0–10, on for 10–20, and off for 20–30; toggle the diagnostics overlay at minutes 10 and 20. Use Home Refresh once at minute 15 and verify that the running game/session is preserved. Stop normally after each session. Do not start a third stream before exporting the evidence: the recorder keeps the current session and one previous session.
+
+Record a short phone clip of the Vita and the pressing finger near minute 2 and minute 29 of each session, repeating the same visible/audible action about ten times. Include the console display in the Home clip if it is conveniently available; it is optional. These clips provide the physical observation the software cannot collect. A single early/late impression or the nominal camera frame rate alone is not a precise latency measurement.
+
+Automatically collected on normal stop: 35 minutes of one-second history, bounded detailed trace/incident rings, per-stage media age and silence time, SCTP authenticated control counts, UDP pass/traffic timing, dependency recovery reasons, audio queue/drop/underrun/trim counts, and embedded build identity. Copy all `pipeline-*` files from `ux0:data/green-vita-540-test` once after both sessions, with the clips. No counter interpretation is required from the tester.
+
+Engineering PASS requires no progressive response delay, no sustained freeze or recovery storm, preserved Home game through refresh, and stable audible/visible alignment; early/late clip measurements must show no meaningful growth beyond recording uncertainty. The telemetry must independently support bounded local age and convergence after refresh, without an increasing arrival-time deficit. FAIL is growing visible response delay, sustained stale/frozen pictures, audio continuing late after video recovery, termination of the Home game, or persistent recovery without current output. Missing physical evidence is INCONCLUSIVE, never PASS. The result distinguishes a corrected client bottleneck from remaining sender/network/kernel/firmware delay; analysis remains the engineer's job.

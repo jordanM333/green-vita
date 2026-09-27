@@ -31,6 +31,10 @@ jobs:
   vita:
     needs: host
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-C target-feature=-neon"
+      GREENVITA_BUILD_NUMBER: "AR01-${{ github.run_number }}"
+      GREENVITA_BUILD_SHA: ${{ github.sha }}
     container:
       image: ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc
     steps:
@@ -39,8 +43,33 @@ jobs:
         run: make native-check
       - name: Strict target Clippy
         run: make native-clippy
-      - name: Compile native release executable (no release package)
+      - name: Compile native release executable
         run: cargo build --release --locked -Zbuild-std=std,panic_abort
+      - name: Package the consolidated hardware candidate
+        if: github.event_name == 'push' && github.ref == 'refs/heads/architecture-review-20260926'
+        run: |
+          make vpk
+          python3 tools/check_vita_elf.py target/armv7-sony-vita-newlibeabihf/release/green-vita.elf
+      - name: Verify packaged identity and source provenance
+        if: github.event_name == 'push' && github.ref == 'refs/heads/architecture-review-20260926'
+        env:
+          GREENVITA_SDK_IMAGE: ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: safe.directory
+          GIT_CONFIG_VALUE_0: ${{ github.workspace }}
+        run: |
+          python3 tools/build_provenance.py target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk --revision "$GITHUB_SHA" --number "$GREENVITA_BUILD_NUMBER" --checkout > candidate-provenance.json
+          sha256sum target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk > candidate-sha256.txt
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/architecture-review-20260926'
+        with:
+          name: GreenVita-AR01-${{ github.sha }}
+          path: |
+            target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk
+            candidate-provenance.json
+            candidate-sha256.txt
+          if-no-files-found: error
+          retention-days: 30
       - uses: actions/upload-artifact@v4
         if: always()
         with:
