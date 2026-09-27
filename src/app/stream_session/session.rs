@@ -22,6 +22,8 @@ pub(crate) struct StreamingSession {
     pub(crate) hint_started_at: Instant,
     pub(crate) video_startup: crate::streaming::video::startup::VideoStartup,
     pub(crate) video_lag: crate::streaming::video::startup::VideoLagHelp,
+    pub(crate) media_reconnecting: bool,
+    pub(crate) media_refresh_failed: bool,
     pub(in crate::app) pause_selected: usize,
     pub(in crate::app) title_id: Option<String>,
     pub(super) return_target: StreamReturnTarget,
@@ -55,6 +57,8 @@ impl StreamingSession {
             hint_started_at: Instant::now(),
             video_startup: crate::streaming::video::startup::VideoStartup::new(Instant::now()),
             video_lag: Default::default(),
+            media_reconnecting: false,
+            media_refresh_failed: false,
             pause_selected: 0,
             title_id,
             return_target,
@@ -68,8 +72,10 @@ impl StreamingSession {
         })
     }
 
-    pub(crate) fn refresh_video(&self) {
+    pub(crate) fn refresh_video(&mut self) {
         self.backend.refresh_video();
+        self.media_reconnecting = true;
+        self.media_refresh_failed = false;
     }
 
     pub(crate) fn can_refresh(&self) -> bool {
@@ -150,25 +156,26 @@ impl StreamingSession {
         while let Some(event) = self.backend.try_recv_event() {
             events.push(event);
         }
-        while let Some(mut packets) = self.backend.try_recv_audio_packets() {
-            self.pending_audio_packets.append(&mut packets);
-        }
-
-        if let Some((frame_id, _frame)) = self.backend.take_latest_frame() {
-            self.latest_video_frame = Some(frame_id);
-        }
-
-        if !self.video_startup.picture_seen() {
-            self.video_startup.observe_picture(
-                self.latest_video_frame.is_some()
-                    || self.backend.direct_video_output().has_produced_frame(),
-            );
-        }
-
         let mut closed = false;
         let mut error = None;
         for event in events {
             match event {
+                PlaybackBackendEvent::MediaReset => {
+                    self.media_reconnecting = true;
+                    self.media_refresh_failed = false;
+                    self.pending_audio_packets.clear();
+                    self.latest_video_frame = None;
+                    self.video_timing = None;
+                    self.video_lag = Default::default();
+                    self.video_startup =
+                        crate::streaming::video::startup::VideoStartup::new(Instant::now());
+                    self.status = "Reconnecting media to the running Home session…".to_owned();
+                }
+                PlaybackBackendEvent::MediaRefreshFailed(message) => {
+                    self.media_reconnecting = false;
+                    self.media_refresh_failed = true;
+                    self.status = message;
+                }
                 PlaybackBackendEvent::Status(status) => self.status = status,
                 PlaybackBackendEvent::VideoResolution(width, height) => {
                     self.stream_video_size = Some((width, height));
@@ -181,6 +188,23 @@ impl StreamingSession {
                 PlaybackBackendEvent::Closed => closed = true,
                 PlaybackBackendEvent::Error(message) => error = Some(message),
             }
+        }
+
+        while let Some(mut packets) = self.backend.try_recv_audio_packets() {
+            self.pending_audio_packets.append(&mut packets);
+        }
+
+        if let Some((frame_id, _frame)) = self.backend.take_latest_frame() {
+            self.latest_video_frame = Some(frame_id);
+            self.media_reconnecting = false;
+            self.media_refresh_failed = false;
+        }
+
+        if !self.video_startup.picture_seen() {
+            self.video_startup.observe_picture(
+                self.latest_video_frame.is_some()
+                    || self.backend.direct_video_output().has_produced_frame(),
+            );
         }
 
         (closed, error)

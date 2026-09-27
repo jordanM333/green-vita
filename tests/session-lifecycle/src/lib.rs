@@ -20,7 +20,22 @@ pub mod chat_sdp;
 pub mod session_kind;
 #[path = "../../../src/api_xbox/stream.rs"]
 pub mod stream;
+pub use stream::Stream;
+#[path = "../../../src/jobs.rs"]
+pub mod jobs;
+#[cfg(test)]
+mod refresh;
+#[cfg(test)]
+pub use refresh::{api, streaming};
 pub mod api_xbox {
+    pub use crate::session_kind;
+    #[cfg(test)]
+    pub mod streaming {
+        pub use crate::refresh::backend;
+        pub mod rtc {
+            pub use crate::refresh::worker;
+        }
+    }
     pub mod auth {
         #[derive(Debug, Clone)]
         pub struct EndpointCredentials;
@@ -42,8 +57,16 @@ pub mod api_xbox {
                 path: &str,
                 _: Option<&serde_json::Value>,
             ) -> anyhow::Result<T> {
-                self.0.lock().unwrap().push((method, path.to_owned()));
-                Ok(serde_json::from_value(serde_json::json!({}))?)
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((method.clone(), path.to_owned()));
+                let value = if method == reqwest::Method::GET && path.ends_with("/sdp") {
+                    serde_json::json!({"exchangeResponse": "{\"sdp\":\"v=0\\r\\n\"}"})
+                } else {
+                    serde_json::json!({})
+                };
+                Ok(serde_json::from_value(value)?)
             }
         }
     }
@@ -51,6 +74,32 @@ pub mod api_xbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn repeated_media_sdp_exchange_uses_the_existing_session_endpoint_only() {
+        let api = api_xbox::api::ApiClient::default();
+        let stream = stream::Stream::new(
+            api.clone(),
+            api_xbox::auth::EndpointCredentials,
+            stream::StartStreamResponse {
+                session_path: "/v5/sessions/home/owned".into(),
+            },
+            session_kind::StreamKind::Home,
+        );
+        for _ in 0..100 {
+            assert_eq!(stream.send_sdp_offer("v=0\r\n").await.unwrap(), "v=0\r\n");
+        }
+        let requests = api.0.lock().unwrap();
+        assert_eq!(requests.len(), 200);
+        for pair in requests.as_chunks::<2>().0 {
+            assert_eq!(
+                pair,
+                &[
+                    (reqwest::Method::POST, "/v5/sessions/home/owned/sdp".into()),
+                    (reqwest::Method::GET, "/v5/sessions/home/owned/sdp".into()),
+                ]
+            );
+        }
+    }
     #[tokio::test]
     async fn home_cleanup_never_issues_a_termination_request() {
         let api = api_xbox::api::ApiClient::default();

@@ -42,8 +42,8 @@ impl App {
                 0,
                 streaming.video_timing.map_or(0, |t| t.added_delay_ms),
             );
-            // Repair media in the existing peer/session. Never DELETE /sessions
-            // or start /play here: either can end the user's running Home game.
+            // Replace the media connection in the existing Xbox session.
+            // Never DELETE /sessions or start /play to recover media.
             streaming.refresh_video();
             streaming.set_paused(false);
         }

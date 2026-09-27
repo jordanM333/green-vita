@@ -296,16 +296,25 @@ pub(crate) fn show(
             });
     }
 
-    if streaming.can_refresh() && streaming.video_lag.needs_help(std::time::Instant::now()) {
+    if streaming.media_reconnecting
+        || streaming.media_refresh_failed
+        || (streaming.can_refresh() && streaming.video_lag.needs_help(std::time::Instant::now()))
+    {
         egui::Area::new(egui::Id::new("video_lag_help"))
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 36.0))
             .interactable(false)
             .show(ctx, |ui| {
                 ui.label(
-                    egui::RichText::new(i18n.text("streaming-lag-home"))
-                        .color(egui::Color32::WHITE)
-                        .background_color(egui::Color32::from_black_alpha(160))
-                        .size(13.0),
+                    egui::RichText::new(i18n.text(if streaming.media_reconnecting {
+                        "streaming-media-reconnecting"
+                    } else if streaming.media_refresh_failed {
+                        "streaming-media-refresh-failed"
+                    } else {
+                        "streaming-lag-home"
+                    }))
+                    .color(egui::Color32::WHITE)
+                    .background_color(egui::Color32::from_black_alpha(160))
+                    .size(13.0),
                 );
             });
     }

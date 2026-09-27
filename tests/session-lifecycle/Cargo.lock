@@ -108,6 +108,7 @@ name = "green-vita-session-lifecycle-tests"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "reqwest",
  "serde",
  "serde_json",

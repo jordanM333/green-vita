@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: "-C target-feature=-neon"
-      GREENVITA_BUILD_NUMBER: "AR01-${{ github.run_number }}"
+      GREENVITA_BUILD_NUMBER: "AR02-${{ github.run_number }}"
       GREENVITA_BUILD_SHA: ${{ github.sha }}
     container:
       image: ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc
@@ -46,12 +46,12 @@ jobs:
       - name: Compile native release executable
         run: cargo build --release --locked -Zbuild-std=std,panic_abort
       - name: Package the consolidated hardware candidate
-        if: github.event_name == 'push' && github.ref == 'refs/heads/architecture-review-20260926'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/architecture-review-20260926' && contains(github.event.head_commit.message, '[release-candidate]')
         run: |
           make vpk
           python3 tools/check_vita_elf.py target/armv7-sony-vita-newlibeabihf/release/green-vita.elf
       - name: Verify packaged identity and source provenance
-        if: github.event_name == 'push' && github.ref == 'refs/heads/architecture-review-20260926'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/architecture-review-20260926' && contains(github.event.head_commit.message, '[release-candidate]')
         env:
           GREENVITA_SDK_IMAGE: ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc
           GIT_CONFIG_COUNT: "1"
@@ -61,9 +61,9 @@ jobs:
           python3 tools/build_provenance.py target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk --revision "$GITHUB_SHA" --number "$GREENVITA_BUILD_NUMBER" --checkout > candidate-provenance.json
           sha256sum target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk > candidate-sha256.txt
       - uses: actions/upload-artifact@v4
-        if: github.event_name == 'push' && github.ref == 'refs/heads/architecture-review-20260926'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/architecture-review-20260926' && contains(github.event.head_commit.message, '[release-candidate]')
         with:
-          name: GreenVita-AR01-${{ github.sha }}
+          name: GreenVita-AR02-${{ github.sha }}
           path: |
             target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk
             candidate-provenance.json

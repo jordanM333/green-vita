@@ -15,6 +15,8 @@ pub(crate) enum PlaybackBackendEvent {
     Status(String),
     VideoResolution(u32, u32),
     VideoTiming(crate::streaming::video::freshness::VideoTiming),
+    MediaReset,
+    MediaRefreshFailed(String),
     Closed,
     Error(String),
 }
@@ -74,7 +76,7 @@ impl PlaybackBackend {
         }
     }
 
-    pub(crate) fn refresh_video(&self) {
+    pub(crate) fn refresh_video(&mut self) {
         match self {
             Self::Xbox(backend) => backend.refresh_video(),
         }

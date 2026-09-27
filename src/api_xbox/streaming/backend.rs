@@ -17,10 +17,18 @@ use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 
 const STREAM_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+#[path = "refresh_attempt.rs"]
+mod refresh_attempt;
 
 pub(crate) struct XboxStreamingBackend {
     stream: Stream,
-    worker: RtcWorker,
+    worker: Option<RtcWorker>,
+    microphone: crate::streaming::microphone::Microphone,
+    output: Arc<DirectVideoOutput>,
+    refresh_requested: bool,
+    refresh_attempt: refresh_attempt::RefreshAttempt,
+    retiring_worker: Option<JoinHandle<Result<()>>>,
+    refresh_events: std::collections::VecDeque<PlaybackBackendEvent>,
     ice_next_poll_at: Instant,
     remote_ice_candidates: HashSet<String>,
     pending_local_ice_candidates: Vec<RTCIceCandidateInit>,
@@ -35,10 +43,17 @@ impl XboxStreamingBackend {
         stream: Stream,
         microphone: crate::streaming::microphone::Microphone,
     ) -> Result<Self> {
-        let worker = worker::spawn(stream.clone(), microphone)?;
+        let worker = worker::spawn(stream.clone(), microphone.clone())?;
+        let output = Arc::clone(&worker.direct_video_output);
         Ok(Self {
             stream,
-            worker,
+            worker: Some(worker),
+            microphone,
+            output,
+            refresh_requested: false,
+            refresh_attempt: Default::default(),
+            retiring_worker: None,
+            refresh_events: Default::default(),
             ice_next_poll_at: Instant::now(),
             remote_ice_candidates: HashSet::new(),
             pending_local_ice_candidates: Vec::new(),
@@ -50,8 +65,18 @@ impl XboxStreamingBackend {
     }
 
     pub(crate) fn try_recv_event(&mut self) -> Option<PlaybackBackendEvent> {
+        if !self.refresh_requested
+            && self.retiring_worker.is_none()
+            && self.worker.is_some()
+            && self.output.has_produced_frame()
+        {
+            self.refresh_attempt.finish();
+        }
+        if let Some(event) = self.refresh_events.pop_front() {
+            return Some(event);
+        }
         loop {
-            match self.worker.events_rx.try_recv().ok()? {
+            match self.worker.as_ref()?.events_rx.try_recv().ok()? {
                 RtcWorkerEvent::LocalCandidates(candidates) => {
                     self.pending_local_ice_candidates.extend(candidates);
                 }
@@ -66,6 +91,10 @@ impl XboxStreamingBackend {
                 }
                 RtcWorkerEvent::Closed => return Some(PlaybackBackendEvent::Closed),
                 RtcWorkerEvent::Error(message) => {
+                    if self.refresh_attempt.active() {
+                        self.refresh_attempt.finish();
+                        return Some(PlaybackBackendEvent::MediaRefreshFailed(message));
+                    }
                     return Some(PlaybackBackendEvent::Error(message));
                 }
             }
@@ -73,7 +102,7 @@ impl XboxStreamingBackend {
     }
 
     pub(crate) fn try_recv_audio_packets(&self) -> Option<Vec<TimedAudio<Bytes>>> {
-        let batch = self.worker.audio_rx.try_recv().ok()?;
+        let batch = self.worker.as_ref()?.audio_rx.try_recv().ok()?;
         let age_us = batch.queued_at.elapsed().as_micros() as u64;
         METRICS
             .audio_batch_age_sum_us
@@ -88,33 +117,113 @@ impl XboxStreamingBackend {
     }
 
     pub(crate) fn take_latest_frame(&self) -> Option<(u64, DecodedFrame)> {
-        self.worker.latest_frame.lock().ok()?.take()
+        self.worker.as_ref()?.latest_frame.lock().ok()?.take()
     }
 
     pub(crate) fn direct_video_output(&self) -> Arc<DirectVideoOutput> {
-        Arc::clone(&self.worker.direct_video_output)
+        Arc::clone(&self.output)
     }
 
     pub(crate) fn send_gamepad_frame(&self, frame: GamepadFrame) {
-        self.worker.send_gamepad_frame(frame);
+        if let Some(worker) = &self.worker {
+            worker.send_gamepad_frame(frame);
+        }
     }
 
     pub(crate) fn send_gamepad_pulse(&self, frame: GamepadFrame) {
-        self.worker.send_gamepad_pulse(frame);
+        if let Some(worker) = &self.worker {
+            worker.send_gamepad_pulse(frame);
+        }
     }
 
     pub(crate) fn send_pointer_event(&self, event: PointerEvent) {
-        self.worker.send_pointer_event(event);
+        if let Some(worker) = &self.worker {
+            worker.send_pointer_event(event);
+        }
     }
 
-    pub(crate) fn refresh_video(&self) {
-        self.worker.refresh_video();
+    pub(crate) fn refresh_video(&mut self) {
+        if self.stream.kind() == crate::api_xbox::session_kind::StreamKind::Home {
+            // The previous action only requested an IDR on the delayed transport.
+            // A manual media reconnect reuses this exact REST session. Neither
+            // Stream::stop nor a new /play request is part of refresh.
+            if self.retiring_worker.is_none() && self.refresh_attempt.begin(Instant::now()) {
+                self.refresh_requested = true;
+            }
+        } else if let Some(worker) = &self.worker {
+            worker.refresh_video();
+        }
     }
 
     pub(crate) async fn maintain(&mut self) -> Option<String> {
+        self.maintain_refresh().await;
         self.post_local_ice().await;
         self.poll_remote_ice().await;
         self.keep_alive().await
+    }
+
+    async fn maintain_refresh(&mut self) {
+        if std::mem::take(&mut self.refresh_requested) {
+            // Join old ICE tasks before posting the replacement offer: an old
+            // candidate response must never be delivered to the new peer.
+            if let Some(job) = self.ice_post_job.take() {
+                crate::jobs::cancel(job).await;
+            }
+            if let Some(job) = self.ice_poll_job.take() {
+                crate::jobs::cancel(job).await;
+            }
+            self.pending_local_ice_candidates.clear();
+            self.remote_ice_candidates.clear();
+            self.refresh_events.clear();
+            self.refresh_events
+                .push_back(PlaybackBackendEvent::MediaReset);
+            // A new output identity immediately detaches old textures and
+            // resets the Opus/PCM/device queues in the shell.
+            self.output = Arc::new(DirectVideoOutput::new(
+                crate::streaming::video::HW_OUTPUT_WIDTH,
+                crate::streaming::video::HW_OUTPUT_HEIGHT,
+            ));
+            if let Some(worker) = self.worker.take() {
+                self.retiring_worker = Some(tokio::spawn(worker.shutdown()));
+            } else {
+                self.start_refreshed_worker();
+            }
+        }
+        if let Some(job) = self.retiring_worker.take() {
+            match poll_job(job).await {
+                PollJob::Pending(job) => self.retiring_worker = Some(job),
+                PollJob::Done(Ok(())) => self.start_refreshed_worker(),
+                PollJob::Done(Err(error)) => {
+                    self.refresh_attempt.finish();
+                    self.refresh_events
+                        .push_back(PlaybackBackendEvent::MediaRefreshFailed(format!(
+                            "Media refresh failed: {error:#}. Refresh stream to retry."
+                        )));
+                }
+            }
+        }
+        if self.retiring_worker.is_none() && self.refresh_attempt.timed_out(Instant::now()) {
+            self.refresh_events.push_back(PlaybackBackendEvent::MediaRefreshFailed(
+                "Media reconnect did not produce a picture within 15 seconds. Refresh stream to retry.".into(),
+            ));
+        }
+    }
+
+    fn start_refreshed_worker(&mut self) {
+        match worker::spawn(self.stream.clone(), self.microphone.clone()) {
+            Ok(worker) => {
+                self.output = Arc::clone(&worker.direct_video_output);
+                self.worker = Some(worker);
+                self.ice_next_poll_at = Instant::now();
+            }
+            Err(error) => {
+                self.refresh_attempt.finish();
+                self.refresh_events
+                    .push_back(PlaybackBackendEvent::MediaRefreshFailed(format!(
+                        "Media refresh failed: {error:#}. Refresh stream to retry."
+                    )));
+            }
+        }
     }
 
     pub(crate) fn description(&self) -> String {
@@ -128,6 +237,7 @@ impl XboxStreamingBackend {
             ice_post_job,
             ice_poll_job,
             keepalive_job,
+            retiring_worker,
             ..
         } = self;
         if let Some(job) = ice_post_job {
@@ -139,7 +249,15 @@ impl XboxStreamingBackend {
         if let Some(job) = keepalive_job {
             crate::jobs::cancel(job).await;
         }
-        let stopped = worker.shutdown().await;
+        // A pending join is not cancellable teardown: wait until native decoder
+        // ownership is released, including stop while refresh is in progress.
+        if let Some(job) = retiring_worker {
+            job.await??;
+        }
+        let stopped = match worker {
+            Some(worker) => worker.shutdown().await,
+            None => Ok(()),
+        };
         stream.stop().await?;
         stopped?;
         eprintln!("Streaming resources released");
@@ -147,6 +265,9 @@ impl XboxStreamingBackend {
     }
 
     async fn post_local_ice(&mut self) {
+        if self.worker.is_none() {
+            return;
+        }
         if let Some(job) = self.ice_post_job.take() {
             match poll_job(job).await {
                 PollJob::Pending(job) => {
@@ -175,6 +296,9 @@ impl XboxStreamingBackend {
     }
 
     async fn poll_remote_ice(&mut self) {
+        if self.worker.is_none() {
+            return;
+        }
         if let Some(job) = self.ice_poll_job.take() {
             match poll_job(job).await {
                 PollJob::Pending(job) => self.ice_poll_job = Some(job),
@@ -190,8 +314,10 @@ impl XboxStreamingBackend {
                             candidate.sdp_mid.as_deref().unwrap_or(""),
                             candidate.sdp_mline_index.unwrap_or(0)
                         );
-                        if self.remote_ice_candidates.insert(key) {
-                            self.worker.add_remote_candidate(candidate);
+                        if self.remote_ice_candidates.insert(key)
+                            && let Some(worker) = &self.worker
+                        {
+                            worker.add_remote_candidate(candidate);
                         }
                     }
                 }
