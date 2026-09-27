@@ -29,10 +29,20 @@ pub(crate) struct PictureTracker {
 
 impl PictureTracker {
     /// Unretired metadata is a reason to try output, not a firmware readiness count.
-    pub fn has_pending(&self) -> bool { !self.pending.is_empty() }
-    pub fn pending_count(&self) -> usize { self.pending.len() }
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+    pub fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
 
-    pub fn submit(&mut self, rtp: u32, received_at: Instant, submitted_at: Instant, epoch: u64) -> u64 {
+    pub fn submit(
+        &mut self,
+        rtp: u32,
+        received_at: Instant,
+        submitted_at: Instant,
+        epoch: u64,
+    ) -> u64 {
         // RTP and Vita AVC timestamps both use 90 kHz. Extend the RTP wrap so
         // pictures on either side retain distinct identities in the decoder.
         self.last_pts = match self.last_rtp {
@@ -41,15 +51,26 @@ impl PictureTracker {
         };
         self.last_rtp = Some(rtp);
         self.pending.retain(|(pts, _)| *pts != self.last_pts);
-        if self.pending.len() == MAX_TRACKED_PICTURES { self.pending.pop_front(); }
-        self.pending.push_back((self.last_pts, FrameTiming {
-            rtp_timestamp: rtp, received_at, submitted_at, decoded_at: submitted_at, epoch,
-        }));
+        if self.pending.len() == MAX_TRACKED_PICTURES {
+            self.pending.pop_front();
+        }
+        self.pending.push_back((
+            self.last_pts,
+            FrameTiming {
+                rtp_timestamp: rtp,
+                received_at,
+                submitted_at,
+                decoded_at: submitted_at,
+                epoch,
+            },
+        ));
         self.last_pts
     }
 
     pub fn output(&mut self, pts: u64, decoded_at: Instant) -> Option<FrameTiming> {
-        if pts == UNKNOWN_PTS { return None; }
+        if pts == UNKNOWN_PTS {
+            return None;
+        }
         let index = self.pending.iter().position(|(key, _)| *key == pts)?;
         let (_, mut timing) = self.pending.remove(index)?;
         timing.decoded_at = decoded_at;
@@ -67,13 +88,20 @@ pub(crate) struct PresentationState {
 
 impl PresentationState {
     pub fn record(&mut self, generation: u64, timing: Option<FrameTiming>, rendered_at: Instant) {
-        if generation <= self.generation { return; }
+        if generation <= self.generation {
+            return;
+        }
         self.generation = generation;
-        self.latest = timing.map(|timing| PresentedFrame { timing, rendered_at });
+        self.latest = timing.map(|timing| PresentedFrame {
+            timing,
+            rendered_at,
+        });
         self.pending = self.latest;
     }
 
-    pub fn take(&mut self) -> Option<PresentedFrame> { self.pending.take() }
+    pub fn take(&mut self) -> Option<PresentedFrame> {
+        self.pending.take()
+    }
 }
 
 #[cfg(test)]
@@ -87,11 +115,27 @@ mod tests {
         let mut tracker = PictureTracker::default();
         let first = tracker.submit(1000, start, start, 1);
         // The first decode call returned no picture. The next may output either AU.
-        let second = tracker.submit(2500, start + Duration::from_millis(17), start + Duration::from_millis(18), 1);
-        assert_eq!(tracker.output(second, start + Duration::from_millis(20)).unwrap().rtp_timestamp, 2500);
-        let delayed = tracker.output(first, start + Duration::from_secs(1)).unwrap();
+        let second = tracker.submit(
+            2500,
+            start + Duration::from_millis(17),
+            start + Duration::from_millis(18),
+            1,
+        );
+        assert_eq!(
+            tracker
+                .output(second, start + Duration::from_millis(20))
+                .unwrap()
+                .rtp_timestamp,
+            2500
+        );
+        let delayed = tracker
+            .output(first, start + Duration::from_secs(1))
+            .unwrap();
         assert_eq!(delayed.rtp_timestamp, 1000);
-        assert_eq!(delayed.decoded_at.duration_since(delayed.received_at), Duration::from_secs(1));
+        assert_eq!(
+            delayed.decoded_at.duration_since(delayed.received_at),
+            Duration::from_secs(1)
+        );
         assert!(tracker.output(first, start).is_none());
     }
 
@@ -103,14 +147,19 @@ mod tests {
         let after = tracker.submit(0, now, now, 0);
         assert_eq!(after - before, 1500);
         assert_eq!(tracker.output(after, now).unwrap().rtp_timestamp, 0);
-        assert_eq!(tracker.output(before, now).unwrap().rtp_timestamp, u32::MAX - 1499);
+        assert_eq!(
+            tracker.output(before, now).unwrap().rtp_timestamp,
+            u32::MAX - 1499
+        );
     }
 
     #[test]
     fn unknown_unmatched_and_evicted_pts_never_guess_a_picture() {
         let now = Instant::now();
         let mut tracker = PictureTracker::default();
-        for rtp in 0..300 { tracker.submit(rtp, now, now, 0); }
+        for rtp in 0..300 {
+            tracker.submit(rtp, now, now, 0);
+        }
         assert_eq!(tracker.pending.len(), MAX_TRACKED_PICTURES);
         assert!(tracker.output(UNKNOWN_PTS, now).is_none());
         assert!(tracker.output(0, now).is_none());

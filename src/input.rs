@@ -308,34 +308,16 @@ impl RearTouchButtons {
         } else {
             button
         };
-        (include_rear && self.rear_fingers.values().any(|pressed| *pressed == rear_button))
+        (include_rear
+            && self
+                .rear_fingers
+                .values()
+                .any(|pressed| *pressed == rear_button))
             || (include_front
                 && self
                     .front_fingers
                     .values()
                     .any(|pressed| *pressed == button))
-    }
-}
-
-#[cfg(test)]
-mod rear_layout_tests {
-    use super::{RearTouchButton, RearTouchButtons};
-
-    #[test]
-    fn swaps_each_rear_trigger_and_thumb_without_swapping_front_touch() {
-        let mut buttons = RearTouchButtons::default();
-        buttons.rear_fingers.insert(1, RearTouchButton::L2);
-        buttons.rear_fingers.insert(2, RearTouchButton::R3);
-        buttons.front_fingers.insert(3, RearTouchButton::R2);
-
-        assert!(buttons.pressed(RearTouchButton::L3, true, false, true));
-        assert!(buttons.pressed(RearTouchButton::R2, true, false, true));
-        assert!(!buttons.pressed(RearTouchButton::L2, true, false, true));
-        assert!(!buttons.pressed(RearTouchButton::R3, true, false, true));
-        assert!(buttons.pressed(RearTouchButton::R2, false, true, true));
-        assert!(!buttons.pressed(RearTouchButton::R3, false, true, true));
-        assert!(buttons.pressed(RearTouchButton::L2, true, false, false));
-        assert!(buttons.pressed(RearTouchButton::R3, true, false, false));
     }
 }
 
@@ -493,4 +475,26 @@ fn map_touch_to_stream_pos(
         (local_x / video_rect.width() as f32 * stream_width as f32).round() as u32,
         (local_y / video_rect.height() as f32 * stream_height as f32).round() as u32,
     ))
+}
+
+#[cfg(test)]
+mod rear_layout_tests {
+    use super::{RearTouchButton, RearTouchButtons};
+
+    #[test]
+    fn swaps_each_rear_trigger_and_thumb_without_swapping_front_touch() {
+        let mut buttons = RearTouchButtons::default();
+        buttons.rear_fingers.insert(1, RearTouchButton::L2);
+        buttons.rear_fingers.insert(2, RearTouchButton::R3);
+        buttons.front_fingers.insert(3, RearTouchButton::R2);
+
+        assert!(buttons.pressed(RearTouchButton::L3, true, false, true));
+        assert!(buttons.pressed(RearTouchButton::R2, true, false, true));
+        assert!(!buttons.pressed(RearTouchButton::L2, true, false, true));
+        assert!(!buttons.pressed(RearTouchButton::R3, true, false, true));
+        assert!(buttons.pressed(RearTouchButton::R2, false, true, true));
+        assert!(!buttons.pressed(RearTouchButton::R3, false, true, true));
+        assert!(buttons.pressed(RearTouchButton::L2, true, false, false));
+        assert!(buttons.pressed(RearTouchButton::R3, true, false, false));
+    }
 }

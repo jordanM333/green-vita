@@ -34,10 +34,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App) {
                         theme.text,
                         field(&i18n, "connecting-target", &session.label),
                     );
-                    ui.colored_label(
-                        theme.text,
-                        field(&i18n, "connecting-session", &session.stream.session_id),
-                    );
+                    ui.colored_label(theme.text, i18n.text("connecting-session-preparing"));
                     let status = crate::app::describe_stream_state(
                         &i18n,
                         session.stream.state,
@@ -65,29 +62,21 @@ impl App {
             InputCommand::Back => {
                 let state =
                     std::mem::replace(&mut self.state, AppState::ModeSelect { selected: 0 });
-                match state {
-                    AppState::StartingStream { target, job } => {
-                        if let Some(job) = job {
-                            job.abort();
-                        }
-                        self.set_state(return_screen(target.kind, target.return_selected));
+                let return_to = match &state {
+                    AppState::StartingStream { target, .. } => {
+                        return_screen(target.kind, target.return_selected)
                     }
                     AppState::Connecting { session, .. } => {
-                        let return_to = return_screen(session.kind, session.return_selected);
-                        let session_id = session.stream.session_id.clone();
-                        eprintln!("Cancelling connecting session {session_id}...");
-                        match session.stream.stop().await {
-                            Ok(response) => {
-                                eprintln!("Cancelled session {session_id}: {response}");
-                            }
-                            Err(error) => {
-                                eprintln!("Failed to cancel session {session_id}: {error:#}");
-                            }
-                        }
-                        self.set_state(return_to);
+                        return_screen(session.kind, session.return_selected)
                     }
-                    state => self.state = state,
-                }
+                    _ => {
+                        self.state = state;
+                        return Ok(());
+                    }
+                };
+                let stopped = state.shutdown().await;
+                self.set_state(return_to);
+                stopped?;
             }
             InputCommand::MoveUp
             | InputCommand::MoveDown

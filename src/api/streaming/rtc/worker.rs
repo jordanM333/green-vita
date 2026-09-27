@@ -1,23 +1,22 @@
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use crate::api::streaming::rtc::session::{RtcSession, RtcSessionBackend, RtcSessionConfig};
+use crate::streaming::audio_timing::TimedAudio;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
-use crate::streaming::video::{DecodedFrame, DirectVideoOutput, HW_OUTPUT_HEIGHT, HW_OUTPUT_WIDTH};
 use crate::streaming::video::metrics::METRICS;
+use crate::streaming::video::{DecodedFrame, DirectVideoOutput, HW_OUTPUT_HEIGHT, HW_OUTPUT_WIDTH};
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use crate::streaming::audio_timing::TimedAudio;
-use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use rtc::peer_connection::sdp::RTCSessionDescription;
 use rtc::peer_connection::state::RTCPeerConnectionState;
 use rtc::peer_connection::transport::RTCIceCandidateInit;
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const PUMP_SLEEP: Duration = Duration::from_millis(1);
-const PUMP_ERROR_SLEEP: Duration = Duration::from_millis(100);
 const GAMEPAD_PULSE_DURATION: Duration = Duration::from_millis(100);
 const GAMEPAD_REFRESH_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_PENDING_COMMANDS: usize = 16;
@@ -25,6 +24,8 @@ const MAX_PENDING_EVENTS: usize = 32;
 const MAX_PENDING_AUDIO_BATCHES: usize = 16;
 const SDP_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(45);
 
+#[path = "failure_budget.rs"]
+mod failure_budget;
 #[path = "latest_input.rs"]
 mod latest_input;
 
@@ -62,6 +63,18 @@ struct SampledGamepadFrame {
 pub(crate) struct TimedAudioBatch {
     pub(crate) packets: Vec<TimedAudio<Bytes>>,
     pub(crate) queued_at: Instant,
+}
+
+/// Worker-owned endpoints and shared mailboxes. The UI retains the opposite
+/// channel ends; dropping it still unblocks an important event send at shutdown.
+struct WorkerChannels {
+    commands_rx: Receiver<RtcWorkerCommand>,
+    events_tx: SyncSender<RtcWorkerEvent>,
+    audio_tx: SyncSender<TimedAudioBatch>,
+    latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
+    latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
+    gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
+    refresh_video: Arc<AtomicBool>,
 }
 
 pub struct RtcWorker {
@@ -102,15 +115,17 @@ impl RtcWorker {
                 match catch_unwind(AssertUnwindSafe(|| {
                     run_worker_thread(
                         provider,
-                        commands_rx,
-                        events_tx.clone(),
-                        audio_tx,
-                        worker_latest_frame,
-                        worker_latest_gamepad,
-                        worker_gamepad_pulses,
+                        WorkerChannels {
+                            commands_rx,
+                            events_tx: events_tx.clone(),
+                            audio_tx,
+                            latest_frame: worker_latest_frame,
+                            latest_gamepad: worker_latest_gamepad,
+                            gamepad_pulses: worker_gamepad_pulses,
+                            refresh_video: worker_refresh,
+                        },
                         worker_direct_video_output,
                         worker_stop,
-                        worker_refresh,
                     )
                 })) {
                     Ok(Ok(())) => {}
@@ -150,8 +165,13 @@ impl RtcWorker {
         // behind a full UI channel. Cancellation covers SDP negotiation too.
         drop(self);
         if let Some(thread) = thread {
-            tokio::task::spawn_blocking(move || thread.join().map_err(|_| anyhow::anyhow!("RTC worker panicked")))
-                .await.context("failed to join RTC worker")??;
+            tokio::task::spawn_blocking(move || {
+                thread
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("RTC worker panicked"))
+            })
+            .await
+            .context("failed to join RTC worker")??;
         }
         Ok(())
     }
@@ -179,6 +199,10 @@ impl RtcWorker {
 
     pub fn send_gamepad_pulse(&self, frame: GamepadFrame) {
         if let Ok(mut pulses) = self.gamepad_pulses.lock() {
+            const MAX_PENDING_PULSES: usize = 32;
+            if pulses.len() == MAX_PENDING_PULSES {
+                pulses.pop_front();
+            }
             pulses.push_back(frame);
         }
     }
@@ -197,15 +221,9 @@ impl Drop for RtcWorker {
 
 fn run_worker_thread<P: RtcWorkerProvider>(
     provider: P,
-    commands_rx: Receiver<RtcWorkerCommand>,
-    events_tx: SyncSender<RtcWorkerEvent>,
-    audio_tx: SyncSender<TimedAudioBatch>,
-    latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
-    latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
-    gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
+    channels: WorkerChannels,
     direct_video_output: Arc<DirectVideoOutput>,
     stop: Arc<tokio::sync::Notify>,
-    refresh_video: Arc<AtomicBool>,
 ) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -231,7 +249,7 @@ fn run_worker_thread<P: RtcWorkerProvider>(
                 prioritize_rtc_thread();
 
                 send_lossy(
-                    &events_tx,
+                    &channels.events_tx,
                     RtcWorkerEvent::Status {
                         status: session.status.clone(),
                     },
@@ -240,13 +258,7 @@ fn run_worker_thread<P: RtcWorkerProvider>(
                 run_session(
                     session,
                     &provider,
-                    commands_rx,
-                    events_tx,
-                    audio_tx,
-                    latest_frame,
-                    latest_gamepad,
-                    gamepad_pulses,
-                    refresh_video,
+                    channels,
                 )
                 .await
             } => result,
@@ -256,7 +268,9 @@ fn run_worker_thread<P: RtcWorkerProvider>(
 
 #[cfg(target_os = "vita")]
 fn prioritize_rtc_thread() {
+    // SAFETY: query the calling thread; this SDK call takes no pointers.
     let thread_id = unsafe { vitasdk_sys::sceKernelGetThreadId() };
+    // SAFETY: current live thread ID and fixed user-CPU mask; no ownership transfer.
     let affinity_result = unsafe {
         vitasdk_sys::sceKernelChangeThreadCpuAffinityMask(
             thread_id,
@@ -267,6 +281,7 @@ fn prioritize_rtc_thread() {
         eprintln!("Failed to pin RTC thread to user CPU 1: {affinity_result:#x}");
     }
 
+    // SAFETY: applies to the calling thread, with a valid SDL enum; no pointers.
     let result = unsafe {
         sdl2::sys::SDL_SetThreadPriority(
             sdl2::sys::SDL_ThreadPriority::SDL_THREAD_PRIORITY_TIME_CRITICAL,
@@ -280,31 +295,38 @@ fn prioritize_rtc_thread() {
 async fn run_session<P: RtcWorkerProvider>(
     mut session: RtcSession<P::Protocol>,
     provider: &P,
-    commands_rx: Receiver<RtcWorkerCommand>,
-    events_tx: SyncSender<RtcWorkerEvent>,
-    audio_tx: SyncSender<TimedAudioBatch>,
-    latest_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
-    latest_gamepad: Arc<Mutex<Option<SampledGamepadFrame>>>,
-    gamepad_pulses: Arc<Mutex<VecDeque<GamepadFrame>>>,
-    refresh_video: Arc<AtomicBool>,
+    channels: WorkerChannels,
 ) -> Result<()> {
+    let WorkerChannels {
+        commands_rx,
+        events_tx,
+        audio_tx,
+        latest_frame,
+        latest_gamepad,
+        gamepad_pulses,
+        refresh_video,
+    } = channels;
     let mut last_status = session.status.clone();
     let mut last_connection_state = session.connection_state;
     let mut last_server_video_size = session.backend.server_video_size();
-    let mut consecutive_pump_errors = 0u32;
+    let mut pump_failures = failure_budget::FailureBudget::default();
     let mut active_gamepad_pulse: Option<(GamepadFrame, Instant)> = None;
     let mut last_gamepad_sent: Option<(GamepadFrame, Instant)> = None;
     let mut pending_gamepad = latest_input::LatestInput::new();
     // Keep the HTTP chat exchange alive across pump iterations. Awaiting it
     // inline would freeze media and controller traffic while Xbox answers.
-    let mut chat_exchange: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + '_>>> = None;
+    let mut chat_exchange: Option<
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + '_>>,
+    > = None;
 
     loop {
         if !drain_commands(&mut session, &commands_rx) {
             let _ = session.close();
             return Ok(());
         }
-        if refresh_video.swap(false, Ordering::AcqRel) { session.refresh_video(); }
+        if refresh_video.swap(false, Ordering::AcqRel) {
+            session.refresh_video();
+        }
         let pulses = gamepad_pulses
             .lock()
             .map(|mut pulses| pulses.drain(..).collect::<Vec<_>>())
@@ -351,21 +373,26 @@ async fn run_session<P: RtcWorkerProvider>(
         if pump_us > 5_000 {
             crate::streaming::video::trace::record("rtc_pump_slow_us", 0, pump_us);
         }
-        METRICS.rtc_pump_sum_us.fetch_add(pump_us, Ordering::Relaxed);
+        METRICS
+            .rtc_pump_sum_us
+            .fetch_add(pump_us, Ordering::Relaxed);
         METRICS.rtc_pump_count.fetch_add(1, Ordering::Relaxed);
-        METRICS.rtc_pump_max_us.fetch_max(pump_us, Ordering::Relaxed);
+        METRICS
+            .rtc_pump_max_us
+            .fetch_max(pump_us, Ordering::Relaxed);
         let local_candidates = match pump_result {
             Ok(candidates) => {
-                if consecutive_pump_errors > 0 {
-                    consecutive_pump_errors = 0;
+                if pump_failures.recovered() {
                     session.status = "WebRTC pump recovered".to_owned();
                 }
                 candidates
             }
-            Err(error) => {
-                consecutive_pump_errors = consecutive_pump_errors.saturating_add(1);
-                session.status =
-                    format!("WebRTC pump error; retrying ({consecutive_pump_errors}): {error:#}");
+            Err(_) => {
+                let Some(retry_after) = pump_failures.failed() else {
+                    let _ = session.close();
+                    anyhow::bail!("WebRTC transport failed repeatedly; disconnect and reconnect");
+                };
+                session.status = "WebRTC transport error; retrying".to_owned();
                 eprintln!("{}", session.status);
                 send_lossy(
                     &events_tx,
@@ -373,7 +400,7 @@ async fn run_session<P: RtcWorkerProvider>(
                         status: session.status.clone(),
                     },
                 );
-                tokio::time::sleep(PUMP_ERROR_SLEEP).await;
+                tokio::time::sleep(retry_after).await;
                 continue;
             }
         };
@@ -385,26 +412,24 @@ async fn run_session<P: RtcWorkerProvider>(
         }
 
         let audio_packets = std::mem::take(&mut session.audio.packets);
-        if !audio_packets.is_empty() {
-            if audio_tx
+        if !audio_packets.is_empty()
+            && audio_tx
                 .try_send(TimedAudioBatch {
                     packets: audio_packets,
                     queued_at: Instant::now(),
                 })
                 .is_err()
-            {
-                METRICS.audio_batch_dropped.fetch_add(1, Ordering::Relaxed);
-            }
+        {
+            METRICS.audio_batch_dropped.fetch_add(1, Ordering::Relaxed);
         }
 
         if let Some(frame) = session.video.latest_frame.take()
             && let Ok(mut latest) = latest_frame.lock()
+            && latest.replace(frame).is_some()
         {
-            if latest.replace(frame).is_some() {
-                crate::streaming::video::metrics::METRICS
-                    .handoff_replaced
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
+            crate::streaming::video::metrics::METRICS
+                .handoff_replaced
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
 
         if session.status != last_status || session.connection_state != last_connection_state {
@@ -429,6 +454,10 @@ async fn run_session<P: RtcWorkerProvider>(
             send_lossy(&events_tx, RtcWorkerEvent::VideoResolution(width, height));
         }
 
+        if session.connection_state == RTCPeerConnectionState::Failed {
+            let _ = session.close();
+            anyhow::bail!("WebRTC connection failed; disconnect and reconnect");
+        }
         if session.connection_state == RTCPeerConnectionState::Closed {
             send_important_event(&events_tx, RtcWorkerEvent::Closed);
             return Ok(());
@@ -439,7 +468,8 @@ async fn run_session<P: RtcWorkerProvider>(
         {
             chat_exchange = Some(Box::pin(async move {
                 tokio::time::timeout(Duration::from_secs(15), provider.exchange_chat_sdp(&offer))
-                    .await.context("Xbox microphone negotiation timed out")?
+                    .await
+                    .context("Xbox microphone negotiation timed out")?
             }));
         }
 
@@ -478,15 +508,21 @@ fn send_sampled_gamepad_frame<B: super::session::RtcSessionBackend>(
         return true;
     }
 
-    let age_us = now.saturating_duration_since(sampled.sampled_at).as_micros() as u64;
+    let age_us = now
+        .saturating_duration_since(sampled.sampled_at)
+        .as_micros() as u64;
     if session
         .backend
         .send_gamepad_frame(&mut session.peer, sampled.frame.clone())
     {
         METRICS.input_sent_total.fetch_add(1, Ordering::Relaxed);
-        METRICS.input_send_age_sum_us.fetch_add(age_us, Ordering::Relaxed);
+        METRICS
+            .input_send_age_sum_us
+            .fetch_add(age_us, Ordering::Relaxed);
         METRICS.input_send_age_count.fetch_add(1, Ordering::Relaxed);
-        METRICS.input_send_age_max_us.fetch_max(age_us, Ordering::Relaxed);
+        METRICS
+            .input_send_age_max_us
+            .fetch_max(age_us, Ordering::Relaxed);
         *last_sent = Some((sampled.frame.clone(), now));
         true
     } else {
@@ -502,8 +538,8 @@ fn drain_commands<B: super::session::RtcSessionBackend>(
     loop {
         match commands_rx.try_recv() {
             Ok(RtcWorkerCommand::AddRemoteCandidate(candidate)) => {
-                if let Err(error) = session.add_remote_candidate(candidate) {
-                    eprintln!("Failed to add remote ICE candidate: {error:#}");
+                if let Err(_error) = session.add_remote_candidate(candidate) {
+                    eprintln!("Failed to add remote ICE candidate");
                 }
             }
             Ok(RtcWorkerCommand::SendPointerEvent(event)) => {

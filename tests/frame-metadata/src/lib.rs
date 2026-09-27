@@ -5,7 +5,9 @@ pub(crate) mod input_state;
 pub(crate) mod timing;
 mod streaming {
     pub(crate) use crate::input_state as input;
-    pub(crate) mod video { pub(crate) use crate::timing; }
+    pub(crate) mod video {
+        pub(crate) use crate::timing;
+    }
 }
 #[path = "../../../src/api_xbox/streaming/control/input.rs"]
 mod input_packet;

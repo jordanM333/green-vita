@@ -86,7 +86,7 @@ impl App {
     pub async fn handle_command(&mut self, command: AppCommand) -> Result<()> {
         match command {
             AppCommand::Input(command) => self.handle_input_command(command).await?,
-            AppCommand::Menu(command) => self.handle_menu_command(command)?,
+            AppCommand::Menu(command) => self.handle_menu_command(command).await?,
             AppCommand::Navigate(command) => self.handle_navigation_command(command)?,
             AppCommand::Screen(command) => self.handle_screen_command(command).await?,
         }
@@ -96,7 +96,7 @@ impl App {
 
     async fn handle_input_command(&mut self, command: InputCommand) -> Result<()> {
         if self.menu.open {
-            return self.handle_menu_input(command);
+            return self.handle_menu_input(command).await;
         }
 
         match &self.state {

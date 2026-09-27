@@ -32,12 +32,12 @@ def main():
     if results[-1]["exit_code"] == 0:
         run("feedback", [feedback, "--nocapture"])
     for name in ["rtc-reports", "frame-metadata", "rtc-transport", "frame-signal", "rtp-order",
-                 "decoder-pump", "feature-foundations", "voice-codec", "audio-pipeline", "session-lifecycle"]:
+                 "decoder-pump", "feature-foundations", "voice-codec", "audio-pipeline", "session-lifecycle", "release-hardening"]:
         run(name, ["cargo", "test", "--locked", "--target", "x86_64-unknown-linux-gnu",
                    "--manifest-path", f"tests/{name}/Cargo.toml", "--", "--test-threads=1", "--nocapture"])
         if args.clippy:
             run(name + "-clippy", ["cargo", "clippy", "--locked", "--all-targets", "--target",
-                "x86_64-unknown-linux-gnu", "--manifest-path", f"tests/{name}/Cargo.toml"])
+                "x86_64-unknown-linux-gnu", "--manifest-path", f"tests/{name}/Cargo.toml", "--", "-D", "warnings"])
     for name in ["latency-analysis", "link-layout", "audit-contracts"]:
         run(name, ["python3", "-m", "unittest", "discover", "-s", f"tests/{name}", "-v"])
     report = dict(hardware_validation=False, xbox_sender_emulated=False, results=results)

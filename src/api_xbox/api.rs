@@ -6,9 +6,6 @@ use anyhow::{Context, Result};
 use reqwest::{Client, Method};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::time::Duration;
-
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 const DEVICE_INFO_JSON: &str = r#"{"appInfo":{"env":{"clientAppId":"www.xbox.com","clientAppType":"browser","clientAppVersion":"26.1.97","clientSdkVersion":"10.3.7","httpEnvironment":"prod","sdkInstallId":""}},"dev":{"hw":{"make":"Microsoft","model":"unknown","sdktype":"web"},"os":{"name":"android","ver":"22631.2715","platform":"desktop"},"displayInfo":{"dimensions":{"widthInPixels":960,"heightInPixels":540},"pixelDensity":{"dpiX":1,"dpiY":1}},"browser":{"browserName":"chrome","browserVersion":"140.0.3485.54"}}}"#;
 
@@ -62,19 +59,22 @@ pub struct Console {
 
 #[derive(Debug, Clone)]
 pub struct ApiClient {
-    client: Client,
+    client: Option<Client>,
     pub config: ApiClientConfig,
 }
 
 impl ApiClient {
     pub fn new(config: ApiClientConfig) -> Self {
         Self {
-            client: Client::builder()
-                .timeout(REQUEST_TIMEOUT)
-                .build()
-                .unwrap_or_default(),
+            client: crate::http::client().ok(),
             config,
         }
+    }
+
+    fn client(&self) -> Result<&Client> {
+        self.client
+            .as_ref()
+            .context("secure HTTP client unavailable")
     }
 
     fn credentials_for(&self, kind: StreamKind) -> &EndpointCredentials {
@@ -85,7 +85,9 @@ impl ApiClient {
     }
 
     pub async fn get_consoles(&self) -> Result<ConsolesResponse> {
-        self.get_json(StreamKind::Home, "/v6/servers/home").await
+        self.get_json(StreamKind::Home, "/v6/servers/home")
+            .await
+            .context("console discovery failed")
     }
 
     pub async fn get_titles(&self) -> Result<Value> {
@@ -102,11 +104,22 @@ impl ApiClient {
         self.get_json(StreamKind::Cloud, &path).await
     }
 
-    pub(crate) async fn get_gallery(&self, id: &str, market: &str, language: &str) -> Result<Value> {
+    pub(crate) async fn get_gallery(
+        &self,
+        id: &str,
+        market: &str,
+        language: &str,
+    ) -> Result<Value> {
         // Public editorial feed: never attach the account's streaming token.
-        Ok(self.client.get("https://catalog.gamepass.com/sigls/v2")
-            .query(&[("id", id), ("market", market), ("language", language)])
-            .send().await?.error_for_status()?.json().await?)
+        crate::http::json(
+            crate::http::send(
+                self.client()?
+                    .get("https://catalog.gamepass.com/sigls/v2")
+                    .query(&[("id", id), ("market", market), ("language", language)]),
+            )
+            .await?,
+        )
+        .await
     }
 
     pub async fn get_wait_time(
@@ -213,9 +226,9 @@ impl ApiClient {
     where
         T: for<'de> Deserialize<'de>,
     {
-        let url = format!("{}{}", credentials.host, path);
+        let url = crate::http::api_url(&credentials.host, path)?;
         let mut request = self
-            .client
+            .client()?
             .request(method, url)
             .header("Accept", "application/json")
             .header("Content-Type", "application/json")
@@ -229,22 +242,42 @@ impl ApiClient {
             request = request.json(body);
         }
 
-        let response = request.send().await.context("xCloud HTTP request failed")?;
-        let status = response.status();
-        let text = response
-            .text()
+        let response = crate::http::send(request)
             .await
-            .context("failed to read xCloud response body")?;
+            .context("waiting for service response")?;
+        let status = response.status();
+        let bytes = crate::http::body(
+            response,
+            crate::http::Payload::Metadata,
+            crate::resource_limits::ResourceLimits::default(),
+        )
+        .await
+        .context("reading service response")?;
         if !status.is_success() {
-            anyhow::bail!("xCloud request failed with {status}: {text}");
+            // Preserve only this known protocol code; never echo arbitrary server text.
+            let fallback = serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .is_some_and(|value| {
+                    value
+                        .get("errorDetails")
+                        .and_then(Value::as_str)
+                        .is_some_and(|s| s.contains("OfferingDoesNotContainTitle"))
+                        || value.get("code").and_then(Value::as_str)
+                            == Some("OfferingDoesNotContainTitle")
+                        || value.pointer("/errorDetails/code").and_then(Value::as_str)
+                            == Some("OfferingDoesNotContainTitle")
+                });
+            if fallback {
+                anyhow::bail!("OfferingDoesNotContainTitle");
+            }
+            anyhow::bail!("xCloud request rejected (HTTP {})", status.as_u16());
         }
-        if text.trim().is_empty() {
-            let retry = json!({ "status": status.as_u16() });
-            return serde_json::from_value(retry)
+        if bytes.iter().all(u8::is_ascii_whitespace) {
+            return serde_json::from_value(json!({ "status": status.as_u16() }))
                 .context("failed to decode empty-body status marker");
         }
-        serde_json::from_str::<T>(&text)
-            .with_context(|| format!("failed to decode xCloud JSON response: {text}"))
+        serde_json::from_slice::<T>(&bytes)
+            .map_err(|_| anyhow::anyhow!("malformed xCloud JSON response"))
     }
 }
 

@@ -4,12 +4,15 @@ mod api;
 mod api_xbox;
 mod app;
 mod build_info;
+mod catalog_preferences;
+mod fs_utils;
+mod http;
 mod i18n;
 mod input;
 mod jobs;
+mod resource_limits;
 mod safe_memory;
 mod settings;
-mod catalog_preferences;
 mod shell;
 mod streaming;
 
@@ -32,17 +35,6 @@ pub static SCE_LIBC_HEAP_SIZE: u32 = 40 * 1024 * 1024;
 #[used]
 #[unsafe(export_name = "_newlib_heap_size_user")]
 pub static NEWLIB_HEAP_SIZE_USER: u32 = 192 * 1024 * 1024;
-
-mod fs_utils {
-    use anyhow::{Context, Result};
-
-    /// Removes `path` before writing - `std::fs::write` alone doesn't reliably truncate an
-    /// existing file on the Vita's newlib filesystem.
-    pub fn write_file_truncating(path: &str, data: impl AsRef<[u8]>) -> Result<()> {
-        let _ = std::fs::remove_file(path);
-        std::fs::write(path, data).with_context(|| format!("failed to write {path}"))
-    }
-}
 
 fn main() -> anyhow::Result<()> {
     let _app_util = safe_memory::AppUtil::initialize()?;

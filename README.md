@@ -1,195 +1,75 @@
-<p align="center">
-  <img src="assets/greenvita.svg" alt="GreenVita" width="220">
-</p>
+# GreenVita
 
-<h1 align="center">GreenVita</h1>
+GreenVita is a Rust homebrew client for Xbox Cloud Gaming and Xbox Home Remote Play on PS Vita. It derives from [Day-OS/green-vita](https://github.com/Day-OS/green-vita). This checkout is a release-hardening candidate, **not an approved final release**. See [FINAL_BUILD_AUDIT.md](FINAL_BUILD_AUDIT.md) and [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
 
-> This `vita-stream-tuning` branch is a 960×540, 30 FPS, 2000 Kbps A/B test build.
-> It installs as `GRNVTEST1` alongside stock GreenVita. Its login, settings, and
-> catalog cache use a separate data directory, so sign in again in the test app.
+The sole application runtime target is `armv7-sony-vita-newlibeabihf`. Linux and Windows are build hosts; this repository does not implement a desktop player. A homebrew-enabled Vita, network access, Microsoft/Xbox account and the applicable Xbox service/console permissions are required. Cloud availability is determined by Microsoft. GreenVita is not affiliated with Microsoft or Sony.
 
-<p align="center">
-  Xbox Cloud Gaming on PlayStation Vita.
-  <br>
-  A native Rust client with an egui/SDL2 interface and hardware H.264 decoding.
-</p>
+Home and Cloud use separate session/signalling paths. Supported features include controller/rear-touch mappings, microphone mute and voice chat, audio-level controls, bottom mic/Xbox/quick-settings controls, and a diagnostics toggle. Cloud collections use service-provided history/order where available. Favorites are not claimed to be account-synchronized without a verified service contract; legacy local preferences remain readable.
 
-<p align="center">
-  <img alt="Rust 2024" src="https://img.shields.io/badge/Rust-2024-f74c00?style=for-the-badge&logo=rust&logoColor=white">
-  <img alt="PS Vita homebrew" src="https://img.shields.io/badge/PS%20Vita-homebrew-44aa00?style=for-the-badge">
-  <img alt="Xbox Cloud Gaming" src="https://img.shields.io/badge/Xbox-Cloud%20Gaming-107c10?style=for-the-badge&logo=xbox&logoColor=white">
-</p>
+**Known release blockers:** sustained device latency, complete native buffer-contract evidence and device cleanup validation remain open. A bounded local queue or successful build does not establish input-to-display latency. No hardening change in this pass is advertised as a latency fix.
 
+## Reproducible Vita build
 
-> [!NOTE]
-> Xbox Home/Remote Play is experimental. The Home token, console discovery,
-> session start, and WebRTC path are wired up, but a physical Xbox is needed to
-> validate streaming and troubleshoot console-specific failures.
-
-## Install
-
-You need a homebrew-enabled PS Vita with VitaShell and an Xbox account that has
-access to Xbox Cloud Gaming.
-
-1. Download the test VPK from the manually dispatched `Build and release VPK`
-   workflow on this branch, or build it locally using the instructions below.
-2. Transfer the VPK to the Vita.
-3. Install it with VitaShell.
-4. Launch GreenVita and complete the device-code sign-in.
-
-To try Home streaming, enable Remote features on the Xbox, sign into GreenVita
-with the same Microsoft account, choose **Home**, then select your console. If
-the console does not appear or the stream fails, record the displayed error;
-this path is not yet confirmed to work on a physical Xbox.
-
-The global **Swap L2/L3 and R2/R3 on rear touch** setting changes only the rear
-panel layout. It is off by default; the front touch panel and physical buttons
-keep their normal mapping.
-
-For the latency test build, the larger audio line at the top of the streaming
-diagnostics shows RTPbuf (audio RTP timestamp lead over the next assembled
-Opus packet), SDL (queued playback in milliseconds), Opus/PCM (pending decode
-buffers), audio RTP gaps/late/lost, and trim/skip recovery counts. The detailed
-readout also shows
-batchAge (RTC-to-app audio handoff), Input local (sample-to-RTC send), and
-RTCpump (local WebRTC processing). These are local measurements, not the
-Xbox-to-screen or controller-to-Xbox round-trip time. The audio startup prebuffer
-is 40 ms in this test build. If SDL's queued audio plus fresh decoded audio
-exceeds 160 ms, the renderer discards stale queued PCM and retains up to 80 ms
-of the newest decoded PCM; trim and skip count these recovery events. This can
-produce a brief audible discontinuity. The 240 ms emergency limit remains.
-An xHome SDP/ICE response containing only null error code/message fields is
-treated as a successful exchange; actual signaling errors still stop the stream.
-
-> [!IMPORTANT]
-> Enable **Unsafe Homebrew** in HENkaku Settings. GreenVita needs access to the
-> Vita hardware video-decoder module.
-
-## Build
-
-### 1. Install VitaSDK
-
-GreenVita follows the official [VitaSDK/VDPM setup](https://github.com/vitasdk/vdpm).
-On Arch Linux, install the host tools first:
-
-```sh
-sudo pacman -S --needed base-devel git cmake python wget patch p7zip tar pkgconf rustup
-```
-
-Then bootstrap VitaSDK and its port libraries:
-
-```sh
-git clone https://github.com/vitasdk/vdpm
-cd vdpm
-./bootstrap-vitasdk.sh
-
-export VITASDK=/usr/local/vitasdk
-export PATH="$VITASDK/bin:$PATH"
-
-./install-all.sh
-```
-
-`install-all.sh` installs the Vita port libraries used by this project,
-including SDL2 and Opus. The old vitaGL/vitaShaRK dependency list is not needed.
-
-Add these exports to your shell profile so future terminals can find VitaSDK:
-
-```sh
-export VITASDK=/usr/local/vitasdk
-export PATH="$VITASDK/bin:$PATH"
-```
-
-> [!TIP]
-> On Windows, VitaSDK recommends following the Linux instructions through
-> WSL2. MSYS2 is also supported by VDPM, but WSL2 is the simpler route.
-
-### 2. Install the Rust tools
-
-```sh
-rustup toolchain install nightly
-cargo +nightly install cargo-vita
-```
-
-See the official [`cargo-vita` documentation](https://github.com/vita-rust/cargo-vita)
-for its complete command reference.
-
-### 3. Build the VPK
-
-From the GreenVita repository:
-
-```sh
-make vpk
-```
-
-The Makefile supplies the required Vita Rust flags. The resulting package is:
+Use the immutable SDK image in [`tools/sdk-image.txt`](tools/sdk-image.txt):
 
 ```text
-target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk
+ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc
 ```
 
-<details>
-<summary>Building without Make</summary>
+The pinned digest matches the retained RX38.21 native CI record. The continuation validated the original registry manifest, config and all nine compressed layer hashes; no publisher signature was verified. The user subsequently authorized this exact SDK. Target checking passes after full external preflight; strict native Clippy still fails. Extracted-tool execution remains NOT EQUIVALENT to hermetic container verification. See `C05_CONNECTION_RESULTS.md` for current connection-regression results, `C04_PACKAGE_RESULTS.md` for the previous delivery and `SDK_VALIDATION_HOLD.md` for the earlier hold and exact metadata. Local tool/version checks are not cryptographic attestation.
 
-Unix-like shell:
+This image supplies VitaSDK, SDL2, Opus, AVCDEC/GXM headers/libraries, cargo-vita, and Rust `1.97.0-nightly (4b0c9d76a 2026-05-10)` with rust-src. The exact tested compiler is pinned through the image, rather than asserting an untested minimum Rust version. Cargo.lock preserves registry and git dependency revisions; no broad dependency upgrade is required.
+
+From a Linux/macOS shell with Docker installed:
 
 ```sh
-RUSTFLAGS="-C target-feature=-neon" cargo +nightly vita build vpk --release
+SDK_IMAGE=$(cat tools/sdk-image.txt)
+docker run --rm -v "$PWD:/work" -w /work "$SDK_IMAGE" make native-check
+docker run --rm -v "$PWD:/work" -w /work "$SDK_IMAGE" make native-clippy
+docker run --rm -v "$PWD:/work" -w /work "$SDK_IMAGE" make vpk
 ```
 
-Windows PowerShell:
+On Windows PowerShell with Docker Desktop using Linux containers:
 
 ```powershell
-$env:RUSTFLAGS = "-C target-feature=-neon"
-cargo +nightly vita build vpk --release
+$SdkImage = (Get-Content tools/sdk-image.txt).Trim()
+docker run --rm -v "${PWD}:/work" -w /work $SdkImage make vpk
 ```
 
-The repository contains platform wrappers under [`tools/`](tools/) so Cargo can
-find the Vita compiler, archiver, and pkg-config implementation on Unix and Windows.
+Inside that SDK, `make sdk-check` fails early for missing tools or a mismatched compiler. `make vpk` produces `target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk`. `make eboot` builds the executable. For a development build use `cargo build --locked -Zbuild-std=std,panic_abort` inside the same SDK. Do not assume generic host `cargo build` or `cargo run` builds/runs a Vita application. Native tests can be compiled here but require a Vita runner to execute; the host harnesses below cover testable Rust logic with explicitly documented native substitutes.
 
-</details>
+Install a locally built VPK through VitaShell. Existing `make upload-vpk VITA_IP=...` and `make update-run-vita VITA_IP=...` targets require an explicitly chosen device and network access. Treat the device address as private. Do not automatically deploy or publish a candidate that fails the checklist. The current test package ID remains `GRNVTEST1`; this pass does not rename the product or silently migrate runtime directories.
 
-## Develop On Hardware
+## Host development checks
 
-For the commands below, install
-[`vitacompanion`](https://github.com/devnoname120/vitacompanion) on the Vita and
-leave its FTP server running.
-
-### First installation
+Use Rust 1.98.1 with rustfmt/Clippy, Python 3, a C compiler and libopus development libraries. The root Cargo configuration targets Vita intentionally. Host tests specify the host target explicitly:
 
 ```sh
-make upload-vpk VITA_IP=192.168.0.103
+cargo fmt --all -- --check
+python3 tools/run_host_audit.py --output verification/host --clippy
+cargo test --locked --target x86_64-unknown-linux-gnu --manifest-path tests/release-hardening/Cargo.toml
 ```
 
-This uploads the package to `ux0:/data/GreenVita-540p-2000k-Test.vpk`; it does not install it.
-Open VitaShell and install that file once. To choose another upload directory:
+The runner records each command, exit status and duration. It exercises production Rust modules with local HTTP fixtures, deterministic timing, real host libopus and fake SDK/SDL boundaries where stated. Synthetic timing and queue tests are not a replay of Xbox packet payloads or a measurement of Vita playback. PR CI runs host formatting/tests/strict Clippy plus target checking/strict Clippy/release packaging in the pinned SDK. A failing gate blocks release; warnings are not globally disabled.
 
-```sh
-make upload-vpk VITA_IP=192.168.0.103 VITA_UPLOAD_DIR=ux0:/downloads/
-```
+## Sign-in, settings and privacy
 
-### Fast update and run
+Use the in-app Microsoft device-code flow. Enter the displayed code only at the validated Microsoft sign-in URL. No `.env`, embedded secret, private API key or manually copied token is required. Console discovery requires the signed-in account's Home Remote Play access. Offline devices, rejected credentials and network failures should show errors rather than require editing files.
 
-After the VPK is installed:
+Runtime data is under `ux0:data/green-vita-540-test/`: `settings.json`, encrypted `xcloud-tokens.json`, `cache/catalog-v1/`, and diagnostic exports. Refresh tokens use ChaCha20-Poly1305; the random key is held in AppUtil Safe Memory. Legacy plaintext-token migration fails closed if encryption fails: the app attempts removal and reports the failure. Sign-out attempts both file and key cleanup and reports inability to erase. Device Safe Memory and filesystem failure testing remains a security release gate; this is not a claim of guaranteed erasure. Never share that directory wholesale or include pairing codes, tokens, account names, console IDs, SDP or ICE addresses in bug reports.
 
-```sh
-make update-run-vita VITA_IP=192.168.0.103
-```
+Settings writes use temporary-file/flush/rename replacement. Invalid, oversized or unreadable settings remain on disk; in-memory defaults and a storage-error banner are used. Back up and repair that file deliberately before trying to save again. Host atomic-write tests do not establish Vita filesystem durability under power loss. Cache refusal at the count/byte budget is safe: artwork may be fetched without being saved. Cache clearing remains an explicit user action.
 
-This rebuilds `eboot.bin`, replaces `ux0:/app/GRNVTEST1/eboot.bin`, and starts
-the application. `make run-vita VITA_IP=...` is an alias for the same command.
+HTTP reads enforce named caps in `src/resource_limits.rs`, before accumulating whole responses; image dimensions/pixels and decode allocations are checked separately. Connection/read limits preserve the existing 10-second total request budget, including headers and body; individual reads do not restart that total deadline. C05 removes the premature five-second cutoffs introduced in C04. No implicit HTTP retries are enabled; credential destinations remain validated. Device-code polling uses server expiry/interval bounds and a bounded failure retry policy.
 
-> [!CAUTION]
-> The update command replaces only `eboot.bin`. Reinstall the complete VPK
-> whenever package metadata or files under `static/` change.
+## Reporting and device acceptance
 
-<details>
-<summary>FTP error 550: File not found</summary>
+Report the embedded build/revision, Home or Cloud mode, duration before failure, whether voice/diagnostics were enabled, and only the reviewed trace/status evidence. Logs can still contain sensitive data in paths under audit; review before sharing. A useful device test measures physical input-to-visible response and audio synchronization over at least 30 minutes per mode; receive-to-GPU timing alone is insufficient. Home refresh must preserve the running game. See the checklist for the consolidated matrix and `CANCELLATION_OWNERSHIP.md` for cleanup boundaries.
 
-The destination directory must already exist. Install the VPK before using
-`update-run-vita`, and make sure the upload directory passed through
-`VITA_UPLOAD_DIR` exists on the Vita memory card.
+## License and attribution
 
-</details>
+GreenVita remains licensed under [MPL-2.0](LICENSE). Preserve upstream Day-OS attribution and source notices when redistributing modified source. Bundled font license notices and the project license are copied into `static/licenses/` for packaging. Native/dependency redistribution review remains part of the release checklist. The decoder's existing reference-memory approach credits MattKC's Vanilla project in source. Xbox, PlayStation and related names belong to their respective owners.
+
 ## Credits
 
 - [Greenlight](https://github.com/unknownskl/greenlight), an open-source xCloud
@@ -206,7 +86,3 @@ The destination directory must already exist. Install the VPK before using
 
 GreenVita is an independent homebrew project and is not affiliated with or
 endorsed by Microsoft, Xbox, Sony, or PlayStation.
-
-## License
-
-GreenVita is licensed under the [Mozilla Public License 2.0](LICENSE).

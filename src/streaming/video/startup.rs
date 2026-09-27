@@ -9,9 +9,18 @@ pub(crate) struct VideoStartup {
 }
 
 impl VideoStartup {
-    pub(crate) fn new(now: Instant) -> Self { Self { started_at: now, picture_seen: false } }
-    pub(crate) fn observe_picture(&mut self, has_picture: bool) { self.picture_seen |= has_picture; }
-    pub(crate) fn picture_seen(&self) -> bool { self.picture_seen }
+    pub(crate) fn new(now: Instant) -> Self {
+        Self {
+            started_at: now,
+            picture_seen: false,
+        }
+    }
+    pub(crate) fn observe_picture(&mut self, has_picture: bool) {
+        self.picture_seen |= has_picture;
+    }
+    pub(crate) fn picture_seen(&self) -> bool {
+        self.picture_seen
+    }
     pub(crate) fn needs_help(&self, now: Instant) -> bool {
         !self.picture_seen && now.saturating_duration_since(self.started_at) >= HELP_AFTER
     }
@@ -26,18 +35,28 @@ pub(crate) struct VideoLagHelp {
 }
 impl VideoLagHelp {
     pub(crate) fn observe(&mut self, measured_at: Instant, delay_ms: u64) {
-        if self.latest.is_some_and(|last| measured_at <= last) { return; }
-        if self.latest.is_some_and(|last| measured_at.duration_since(last) > Duration::from_millis(1500)) {
+        if self.latest.is_some_and(|last| measured_at <= last) {
+            return;
+        }
+        if self
+            .latest
+            .is_some_and(|last| measured_at.duration_since(last) > Duration::from_millis(1500))
+        {
             self.since = None;
         }
         self.latest = Some(measured_at);
-        if delay_ms >= 500 { self.since.get_or_insert(measured_at); }
-        else { self.since = None; }
+        if delay_ms >= 500 {
+            self.since.get_or_insert(measured_at);
+        } else {
+            self.since = None;
+        }
     }
     pub(crate) fn needs_help(&self, now: Instant) -> bool {
         match (self.since, self.latest) {
-            (Some(since), Some(latest)) => latest.duration_since(since) >= Duration::from_secs(3)
-                && now.saturating_duration_since(latest) <= Duration::from_millis(1500),
+            (Some(since), Some(latest)) => {
+                latest.duration_since(since) >= Duration::from_secs(3)
+                    && now.saturating_duration_since(latest) <= Duration::from_millis(1500)
+            }
             _ => false,
         }
     }
@@ -53,7 +72,9 @@ mod tests {
         lag.observe(now, 1500);
         lag.observe(now, 1500);
         assert!(!lag.needs_help(now + Duration::from_secs(4)));
-        for sec in 1..=3 { lag.observe(now + Duration::from_secs(sec), 1400); }
+        for sec in 1..=3 {
+            lag.observe(now + Duration::from_secs(sec), 1400);
+        }
         assert!(lag.needs_help(now + Duration::from_secs(3)));
         assert!(!lag.needs_help(now + Duration::from_secs(5)));
         lag.observe(now + Duration::from_secs(4), 70);

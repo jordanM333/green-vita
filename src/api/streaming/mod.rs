@@ -4,11 +4,11 @@ pub(crate) mod rtc;
 
 use crate::Stream;
 use crate::api_xbox::streaming::backend::XboxStreamingBackend;
+use crate::streaming::audio_timing::TimedAudio;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
 use anyhow::Result;
 use bytes::Bytes;
-use crate::streaming::audio_timing::TimedAudio;
 use std::sync::Arc;
 
 pub(crate) enum PlaybackBackendEvent {
@@ -25,7 +25,10 @@ pub(crate) enum PlaybackBackend {
 }
 
 impl PlaybackBackend {
-    pub(crate) fn start_xbox(stream: Stream, microphone: crate::streaming::microphone::Microphone) -> Result<Self> {
+    pub(crate) fn start_xbox(
+        stream: Stream,
+        microphone: crate::streaming::microphone::Microphone,
+    ) -> Result<Self> {
         Ok(Self::Xbox(XboxStreamingBackend::start(stream, microphone)?))
     }
 
@@ -72,7 +75,9 @@ impl PlaybackBackend {
     }
 
     pub(crate) fn refresh_video(&self) {
-        match self { Self::Xbox(backend) => backend.refresh_video() }
+        match self {
+            Self::Xbox(backend) => backend.refresh_video(),
+        }
     }
 
     pub(crate) async fn maintain(&mut self) -> Option<String> {

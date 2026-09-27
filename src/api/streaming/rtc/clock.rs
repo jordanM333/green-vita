@@ -46,7 +46,7 @@ impl RtpClockProbe {
             return;
         }
         let fraction = i128::from(sr.ntp_time as u32);
-        let unix_ms = (seconds - NTP_UNIX_SECONDS) * 1_000 + (fraction * 1_000 >> 32);
+        let unix_ms = (seconds - NTP_UNIX_SECONDS) * 1_000 + ((fraction * 1_000) >> 32);
         self.report = Some((sr.rtp_time, unix_ms));
     }
 
@@ -106,16 +106,23 @@ impl RtpClockProbe {
             .map(|time| now.saturating_duration_since(time).as_secs())
             .unwrap_or_default();
         let Some(age_ms) = self.latest_age_ms else {
-            return format!("? SR:{}/{}s rel+{}ms", self.report_count, report_age, self.relative_delay_ms);
+            return format!(
+                "? SR:{}/{}s rel+{}ms",
+                self.report_count, report_age, self.relative_delay_ms
+            );
         };
         let drift = age_ms - self.baseline_age_ms.unwrap_or(age_ms);
         // Absolute age assumes Xbox and Vita have synchronized clocks. Drift does not.
-        format!("{age_ms}ms d{drift:+} rel+{}ms SR:{}/{}s", self.relative_delay_ms, self.report_count, report_age)
+        format!(
+            "{age_ms}ms d{drift:+} rel+{}ms SR:{}/{}s",
+            self.relative_delay_ms, self.report_count, report_age
+        )
     }
 
     pub(super) fn timing(&self) -> Option<crate::streaming::video::freshness::VideoTiming> {
         Some(crate::streaming::video::freshness::VideoTiming {
-            timestamp: self.last_timestamp?, received_at: self.last_frame_at?,
+            timestamp: self.last_timestamp?,
+            received_at: self.last_frame_at?,
             added_delay_ms: self.relative_delay_ms,
         })
     }
@@ -139,7 +146,10 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(clock.report, Some((u32::MAX - 44_999, 1_700_000_000_000)));
-        assert_eq!(i64::from(45_000_u32.wrapping_sub(u32::MAX - 44_999) as i32), 90_000);
+        assert_eq!(
+            i64::from(45_000_u32.wrapping_sub(u32::MAX - 44_999) as i32),
+            90_000
+        );
     }
 
     #[test]

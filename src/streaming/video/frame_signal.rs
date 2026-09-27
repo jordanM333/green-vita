@@ -43,7 +43,9 @@ mod tests {
         let signal = FrameSignal::default();
         signal.set_pending(true);
         signal.wake();
-        timeout(Duration::from_millis(100), signal.wait()).await.unwrap();
+        timeout(Duration::from_millis(100), signal.wait())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -52,7 +54,11 @@ mod tests {
         signal.set_pending(true);
         signal.wake();
         signal.set_pending(false);
-        assert!(timeout(Duration::from_millis(10), signal.wait()).await.is_err());
+        assert!(
+            timeout(Duration::from_millis(10), signal.wait())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -63,7 +69,10 @@ mod tests {
         tokio::task::yield_now().await;
         signal.set_pending(true);
         signal.wake();
-        timeout(Duration::from_millis(100), waiter).await.unwrap().unwrap();
+        timeout(Duration::from_millis(100), waiter)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]
@@ -76,6 +85,10 @@ mod tests {
         signal.wait().await;
         assert!(signal.is_pending());
         signal.set_pending(false);
-        assert!(timeout(Duration::from_millis(10), signal.wait()).await.is_err());
+        assert!(
+            timeout(Duration::from_millis(10), signal.wait())
+                .await
+                .is_err()
+        );
     }
 }

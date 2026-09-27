@@ -9,17 +9,26 @@ const RESULTS_PER_TICK: usize = 2;
 
 impl App {
     pub(crate) fn clear_account_collections(&mut self) {
-        if let Some(job) = self.catalog_collections_job.take() { job.abort(); }
+        if let Some(job) = self.catalog_collections_job.take() {
+            job.abort();
+        }
         self.catalog_collections = Default::default();
         self.catalog_section = crate::catalog_preferences::CatalogSection::All;
     }
 
     pub(crate) fn refresh_account_collections(&mut self) {
-        if let Some(job) = self.catalog_collections_job.take() { job.abort(); }
+        if let Some(job) = self.catalog_collections_job.take() {
+            job.abort();
+        }
         // Memory-only and replaced on every sign-in: never reuse another account's history.
         self.catalog_collections = Default::default();
         let api = self.service.api.clone();
-        let games = self.service.titles.iter().map(|g| (g.id.clone(), g.metadata_id.clone())).collect::<Vec<_>>();
+        let games = self
+            .service
+            .titles
+            .iter()
+            .map(|g| (g.id.clone(), g.metadata_id.clone()))
+            .collect::<Vec<_>>();
         let market = self.settings.locale.market().to_owned();
         let language = self.settings.locale.as_str().to_owned();
         self.catalog_collections_job = Some(tokio::spawn(async move {
@@ -100,17 +109,28 @@ impl App {
     }
 
     fn catalog_image_distances(&self) -> std::collections::HashMap<usize, usize> {
-        let AppState::TitleList { selected } = &self.state else { return Default::default(); };
+        let AppState::TitleList { selected } = &self.state else {
+            return Default::default();
+        };
         let order = super::ui::screens::title_list::filtered_title_indices(self);
-        let selected_row = order.iter().position(|index| index == selected).unwrap_or(0);
-        order.iter().enumerate().filter_map(|(row, index)| {
-            let distance = title_distance(row, selected_row, order.len());
-            (distance <= ICON_CACHE_RADIUS).then_some((*index, distance))
-        }).collect()
+        let selected_row = order
+            .iter()
+            .position(|index| index == selected)
+            .unwrap_or(0);
+        order
+            .iter()
+            .enumerate()
+            .filter_map(|(row, index)| {
+                let distance = title_distance(row, selected_row, order.len());
+                (distance <= ICON_CACHE_RADIUS).then_some((*index, distance))
+            })
+            .collect()
     }
 
     fn ensure_icon_prefetch_job(&mut self) {
-        if !matches!(self.state, AppState::TitleList { .. }) { return; }
+        if !matches!(self.state, AppState::TitleList { .. }) {
+            return;
+        }
         let nearby = self.catalog_image_distances();
         let missing_metadata = self
             .service
@@ -134,13 +154,12 @@ impl App {
             .filter(|(index, _)| nearby.contains_key(index))
             .filter_map(|(index, title)| {
                 if title.icon.is_none() && !icon_pending.contains(&title.id) {
-                    title.details.as_ref()?.icon_url.clone().map(|url| {
-                        (
-                            nearby[&index],
-                            title.id.clone(),
-                            url,
-                        )
-                    })
+                    title
+                        .details
+                        .as_ref()?
+                        .icon_url
+                        .clone()
+                        .map(|url| (nearby[&index], title.id.clone(), url))
                 } else {
                     None
                 }
@@ -152,7 +171,9 @@ impl App {
     }
 
     fn prune_title_images(&mut self) {
-        let AppState::TitleList { selected } = &self.state else { return; };
+        let AppState::TitleList { selected } = &self.state else {
+            return;
+        };
         let selected = *selected;
         let nearby = self.catalog_image_distances();
         for (index, title) in self.service.titles.iter_mut().enumerate() {
@@ -209,15 +230,21 @@ impl App {
     }
 
     pub(super) async fn pump_title_details(&mut self) -> anyhow::Result<()> {
-        if self.catalog_collections_job.as_ref().is_some_and(|job| job.is_finished()) {
+        if self
+            .catalog_collections_job
+            .as_ref()
+            .is_some_and(|job| job.is_finished())
+        {
             let job = self.catalog_collections_job.take().unwrap();
             match job.await {
                 Ok(collections) => self.catalog_collections = collections,
-                Err(_) => self.catalog_collections.errors = vec![
-                    crate::catalog_preferences::CatalogSection::RecentlyPlayed,
-                    crate::catalog_preferences::CatalogSection::RecentlyAdded,
-                    crate::catalog_preferences::CatalogSection::MostPopular,
-                ],
+                Err(_) => {
+                    self.catalog_collections.errors = vec![
+                        crate::catalog_preferences::CatalogSection::RecentlyPlayed,
+                        crate::catalog_preferences::CatalogSection::RecentlyAdded,
+                        crate::catalog_preferences::CatalogSection::MostPopular,
+                    ]
+                }
             }
         }
         self.normalize_catalog_selection();
@@ -269,10 +296,7 @@ impl App {
                         match kind {
                             ImageKind::Cover if index == selected => title.box_art = image,
                             ImageKind::Background if index == selected => title.background = image,
-                            ImageKind::Icon if nearby.contains_key(&index) =>
-                            {
-                                title.icon = image
-                            }
+                            ImageKind::Icon if nearby.contains_key(&index) => title.icon = image,
                             ImageKind::Cover | ImageKind::Background | ImageKind::Icon => {}
                             ImageKind::Avatar => unreachable!(),
                         }

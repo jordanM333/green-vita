@@ -24,20 +24,33 @@ pub(super) struct ReceiveBudget {
 
 impl ReceiveBudget {
     pub(super) fn new(maximum: u32) -> Self {
-        Self { maximum, target: maximum, start: None, bytes: 0,
-            last_change: None, healthy_since: None, delayed_windows: 0,
-            trend: None, sample_min_ms: u64::MAX,
-            reductions: 0, delay_ms: 0 }
+        Self {
+            maximum,
+            target: maximum,
+            start: None,
+            bytes: 0,
+            last_change: None,
+            healthy_since: None,
+            delayed_windows: 0,
+            trend: None,
+            sample_min_ms: u64::MAX,
+            reductions: 0,
+            delay_ms: 0,
+        }
     }
 
-    pub(super) fn target(&self) -> u32 { self.target }
+    pub(super) fn target(&self) -> u32 {
+        self.target
+    }
 
     pub(super) fn receive(&mut self, bytes: usize, delay_ms: u64, now: Instant) {
         self.bytes = self.bytes.saturating_add(bytes as u64);
         self.sample_min_ms = self.sample_min_ms.min(delay_ms);
         let start = *self.start.get_or_insert(now);
         let elapsed = now.saturating_duration_since(start);
-        if elapsed < SAMPLE { return; }
+        if elapsed < SAMPLE {
+            return;
+        }
         // A single late packet at a window boundary is not persistent backlog.
         let delay_ms = self.sample_min_ms;
         self.sample_min_ms = u64::MAX;
@@ -57,7 +70,9 @@ impl ReceiveBudget {
             self.trend = Some((now, delay_ms));
             return;
         };
-        if now.saturating_duration_since(trend_at) < DECREASE_INTERVAL { return; }
+        if now.saturating_duration_since(trend_at) < DECREASE_INTERVAL {
+            return;
+        }
         // Advance the sampling time, not the delay anchor. Small increases must
         // accumulate: forgiving 1-10ms each second allows unbounded slow drift.
         self.trend = Some((now, previous_delay));
@@ -68,12 +83,15 @@ impl ReceiveBudget {
             self.trend = Some((now, delay_ms));
             self.healthy_since = None;
             self.delayed_windows = self.delayed_windows.saturating_add(1);
-            if self.delayed_windows >= 2 && self.last_change.is_none_or(|at|
-                now.saturating_duration_since(at) >= DECREASE_INTERVAL)
+            if self.delayed_windows >= 2
+                && self
+                    .last_change
+                    .is_none_or(|at| now.saturating_duration_since(at) >= DECREASE_INTERVAL)
             {
                 // Leave capacity for audio, transport headers and clearing the
                 // upstream backlog. Never treat requested bitrate as delivered.
-                let next = ((u64::from(self.target) * 7 / 10) as u32).min((u64::from(received_bps) * 8 / 10) as u32)
+                let next = ((u64::from(self.target) * 7 / 10) as u32)
+                    .min((u64::from(received_bps) * 8 / 10) as u32)
                     .max(MIN_BPS.min(self.maximum));
                 if next < self.target {
                     self.target = next;
@@ -109,10 +127,16 @@ mod tests {
             let start = Instant::now();
             let mut budget = ReceiveBudget::new(2_000_000);
             for tick in 0..=3000 / ms_per_second {
-                budget.receive(25_000, tick * ms_per_second / 10,
-                    start + Duration::from_millis(tick * 100));
+                budget.receive(
+                    25_000,
+                    tick * ms_per_second / 10,
+                    start + Duration::from_millis(tick * 100),
+                );
             }
-            assert!(budget.reductions > 0, "{ms_per_second} ms/s growth was forgiven");
+            assert!(
+                budget.reductions > 0,
+                "{ms_per_second} ms/s growth was forgiven"
+            );
             assert!(budget.target() < 2_000_000);
         }
     }
@@ -158,7 +182,11 @@ mod tests {
         assert_eq!(budget.target(), MIN_BPS + 100_000);
         budget.receive(25_000, 70, start + Duration::from_secs(80));
         budget.receive(25_000, 70, start + Duration::from_secs(100));
-        assert_eq!(budget.target(), MIN_BPS + 100_000, "idle time cannot recover bandwidth");
+        assert_eq!(
+            budget.target(),
+            MIN_BPS + 100_000,
+            "idle time cannot recover bandwidth"
+        );
     }
 
     #[test]
@@ -166,8 +194,11 @@ mod tests {
         let start = Instant::now();
         let mut budget = ReceiveBudget::new(2_000_000);
         for tick in 0..=300 {
-            budget.receive(12_500, if tick % 2 == 0 { 160 } else { 10 },
-                start + Duration::from_millis(tick * 100));
+            budget.receive(
+                12_500,
+                if tick % 2 == 0 { 160 } else { 10 },
+                start + Duration::from_millis(tick * 100),
+            );
         }
         assert_eq!(budget.target(), 2_000_000);
         assert_eq!(budget.reductions, 0);
@@ -178,8 +209,7 @@ mod tests {
         let now = Instant::now();
         let mut budget = ReceiveBudget::new(2_000_000);
         for tick in 0..=30 {
-            budget.receive(10_000, tick * 4,
-                now + Duration::from_millis(tick * 100));
+            budget.receive(10_000, tick * 4, now + Duration::from_millis(tick * 100));
         }
         assert!(budget.target() < 1_000_000);
         assert_eq!(budget.reductions, 1);
@@ -190,12 +220,19 @@ mod tests {
         let now = Instant::now();
         let mut budget = ReceiveBudget::new(2_000_000);
         for tick in 0..=30 {
-            budget.receive(25_000, if tick == 2 { 150 } else { 5 },
-                now + Duration::from_millis(tick * 100));
+            budget.receive(
+                25_000,
+                if tick == 2 { 150 } else { 5 },
+                now + Duration::from_millis(tick * 100),
+            );
         }
         assert_eq!(budget.target(), 2_000_000);
         for tick in 31..=100 {
-            budget.receive(1_000, (tick - 30) * 10, now + Duration::from_millis(tick * 100));
+            budget.receive(
+                1_000,
+                (tick - 30) * 10,
+                now + Duration::from_millis(tick * 100),
+            );
         }
         assert_eq!(budget.target(), MIN_BPS);
         for tick in 101..=150 {
@@ -227,12 +264,18 @@ mod tests {
             queued_bits -= delivered;
             fixed_bits = (fixed_bits + 200_000.0 - capacity / 10.0).max(0.0);
             last_delay = (queued_bits / capacity * 1_000.0) as u64;
-            adaptive.receive((delivered / 8.0) as usize, last_delay,
-                start + Duration::from_millis(step * 100));
+            adaptive.receive(
+                (delivered / 8.0) as usize,
+                last_delay,
+                start + Duration::from_millis(step * 100),
+            );
             sender_bps = previous_target;
             previous_target = adaptive.target();
         }
-        assert!(fixed_bits / 1_000_000.0 > 50.0, "fixed budget must reproduce drift");
+        assert!(
+            fixed_bits / 1_000_000.0 > 50.0,
+            "fixed budget must reproduce drift"
+        );
         assert!(last_delay < 100, "adaptive budget must clear the queue");
         assert!(adaptive.reductions > 0);
     }

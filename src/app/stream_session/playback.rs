@@ -33,10 +33,15 @@ impl App {
     }
 
     pub(crate) fn refresh_home_stream(&mut self) {
-        if !self.state.streaming().is_some_and(|s| s.can_refresh()) { return; }
+        if !self.state.streaming().is_some_and(|s| s.can_refresh()) {
+            return;
+        }
         if let Some(streaming) = self.state.streaming_mut() {
-            crate::streaming::video::trace::record("manual_refresh", 0,
-                streaming.video_timing.map_or(0, |t| t.added_delay_ms));
+            crate::streaming::video::trace::record(
+                "manual_refresh",
+                0,
+                streaming.video_timing.map_or(0, |t| t.added_delay_ms),
+            );
             // Repair media in the existing peer/session. Never DELETE /sessions
             // or start /play here: either can end the user's running Home game.
             streaming.refresh_video();

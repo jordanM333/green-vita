@@ -62,7 +62,7 @@ pub(crate) fn show_header_row_with_action(
                 egui::Color32::from_rgb(0x26, 0x27, 0x2c)
             };
             let stroke = if action_selected {
-                egui::Stroke::new(2.0, egui::Color32::WHITE)
+                egui::Stroke::new(2.0_f32, egui::Color32::WHITE)
             } else {
                 egui::Stroke::NONE
             };
@@ -217,7 +217,7 @@ pub(crate) fn show_hamburger_menu(
 }
 
 impl App {
-    pub(crate) fn handle_menu_input(&mut self, command: InputCommand) -> Result<()> {
+    pub(crate) async fn handle_menu_input(&mut self, command: InputCommand) -> Result<()> {
         match command {
             InputCommand::MoveUp => {
                 self.menu.selected =
@@ -233,7 +233,7 @@ impl App {
                     .get(self.menu.selected)
                     .copied()
                     .unwrap_or(MenuItem::Logout);
-                self.activate_menu_item(item);
+                self.activate_menu_item(item).await;
             }
             InputCommand::Back => {
                 self.menu.open = false;
@@ -243,7 +243,7 @@ impl App {
         Ok(())
     }
 
-    pub(crate) fn handle_menu_command(&mut self, command: Command) -> Result<()> {
+    pub(crate) async fn handle_menu_command(&mut self, command: Command) -> Result<()> {
         match command {
             Command::Toggle
                 if matches!(
@@ -262,23 +262,30 @@ impl App {
                 self.menu.open = false;
             }
             Command::Select(item) => {
-                self.activate_menu_item(item);
+                self.activate_menu_item(item).await;
             }
         }
 
         Ok(())
     }
 
-    fn activate_menu_item(&mut self, item: MenuItem) {
+    async fn activate_menu_item(&mut self, item: MenuItem) {
         self.menu.open = false;
         match item {
             MenuItem::Settings => {
                 self.open_settings();
             }
             MenuItem::Logout => {
+                if let Err(error) = self.shutdown().await {
+                    eprintln!("Session cleanup failed during sign-out: {error}");
+                }
                 self.clear_account_collections();
-                self.service.logout();
-                self.set_state(AppState::InitializeAuthentication);
+                match self.service.logout() {
+                    Ok(()) => self.set_state(AppState::InitializeAuthentication),
+                    Err(error) => {
+                        self.set_localized_error_screen("error-login-storage", error.to_string())
+                    }
+                }
             }
         }
     }

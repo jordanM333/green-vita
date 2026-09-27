@@ -17,6 +17,8 @@ concurrency:
   group: latency-candidate
   cancel-in-progress: true
 jobs:
+  quality:
+    uses: ./.github/workflows/final-build.yml
   feedback-tests:
     runs-on: ubuntu-latest
     steps:
@@ -65,7 +67,7 @@ jobs:
         run: python3 -m unittest discover -s tests/audit-contracts -v
 
   build:
-    needs: feedback-tests
+    needs: [feedback-tests, quality]
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc
@@ -79,7 +81,7 @@ jobs:
           RUSTFLAGS: "-C target-feature=-neon"
           GREENVITA_BUILD_NUMBER: "38.${{ github.run_number }}"
           GREENVITA_BUILD_SHA: ${{ github.sha }}
-        run: cargo vita build vpk --release --locked
+        run: make vpk
       - name: Inspect executable segment layout
         if: always()
         run: |

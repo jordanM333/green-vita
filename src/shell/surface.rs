@@ -18,11 +18,23 @@ pub struct VitaSurface {
     video_output_buffers: Option<Vec<CdramBlock>>,
     displayed_video_texture: Option<usize>,
     // Output generation, not submission RTP timestamp: AVCDEC may buffer an input.
-    pending_video_present: Option<(u64, Instant, Option<crate::streaming::video::timing::FrameTiming>)>,
+    pending_video_present: Option<(
+        u64,
+        Instant,
+        Option<crate::streaming::video::timing::FrameTiming>,
+    )>,
     direct_video_output: Option<Arc<DirectVideoOutput>>,
     video_width: u32,
     video_height: u32,
     egui_painter: SdlEguiPainter,
+}
+
+impl Drop for VitaSurface {
+    fn drop(&mut self) {
+        // Revoke admission and wait for every native decode lease before CDRAM
+        // destruction, including render-error/early-return paths.
+        self.detach_direct_video_output();
+    }
 }
 
 impl VitaSurface {
@@ -87,12 +99,12 @@ impl VitaSurface {
         else {
             return Ok(());
         };
-        if index >= self.video_textures.as_ref().map_or(0, Vec::len) {
-            anyhow::bail!("decoder returned invalid direct texture index {index}");
-        }
-        // Copy a complete decoder output into the renderer's texture under its SDL lock.
-        // The decoder never writes to the texture that a queued GPU scene can still sample.
-        let texture = &mut self.video_textures.as_mut().expect("textures registered")[index];
+        // The displayed slot remains reserved until a later frame replaces it.
+        let texture = self
+            .video_textures
+            .as_mut()
+            .and_then(|textures| textures.get_mut(index))
+            .context("decoder returned an unregistered texture slot")?;
         let upload_started = Instant::now();
         texture
             .with_lock(None, |pixels, pitch| {
@@ -114,6 +126,9 @@ impl VitaSurface {
                 }
                 if source_pitch == pitch {
                     // A DMA copy keeps the non-cached decoder output off the CPU copy path.
+                    // SAFETY: this displayed slot is excluded from decoder writes;
+                    // CDRAM remains owned by this surface. Both initialized buffers
+                    // cover source_len, as checked above. DMA copy is synchronous.
                     let result = unsafe {
                         vitasdk_sys::sceDmacMemcpy(
                             pixels.as_mut_ptr().cast(),
@@ -125,13 +140,16 @@ impl VitaSurface {
                         return Ok(());
                     }
                 }
-                let source = unsafe {
-                    std::slice::from_raw_parts(target.ptr as *const u8, source_len)
-                };
+                // SAFETY: the displayed slot owns a live initialized CDRAM range;
+                // checked source_len fits its allocation and no decode lease can
+                // mutate the slot until the display reservation is released.
+                let source =
+                    unsafe { std::slice::from_raw_parts(target.ptr as *const u8, source_len) };
                 for row in 0..height {
                     let dst = &mut pixels[row * pitch..(row + 1) * pitch];
-                    dst[..width_bytes]
-                        .copy_from_slice(&source[row * source_pitch..row * source_pitch + width_bytes]);
+                    dst[..width_bytes].copy_from_slice(
+                        &source[row * source_pitch..row * source_pitch + width_bytes],
+                    );
                     dst[width_bytes..].fill(0);
                 }
                 Ok(())
@@ -140,9 +158,13 @@ impl VitaSurface {
             .context("failed to lock SDL video texture")??;
         let upload_us = upload_started.elapsed().as_micros() as u64;
         let metrics = &crate::streaming::video::metrics::METRICS;
-        metrics.video_upload_sum_us.fetch_add(upload_us, Ordering::Relaxed);
+        metrics
+            .video_upload_sum_us
+            .fetch_add(upload_us, Ordering::Relaxed);
         metrics.video_upload_count.fetch_add(1, Ordering::Relaxed);
-        metrics.video_upload_max_us.fetch_max(upload_us, Ordering::Relaxed);
+        metrics
+            .video_upload_max_us
+            .fetch_max(upload_us, Ordering::Relaxed);
         self.displayed_video_texture = Some(index);
         self.pending_video_present = Some((generation, decoded_at, timing));
         Ok(())
@@ -205,6 +227,8 @@ impl VitaSurface {
                 Err(error) => return Err(error),
             };
             // AVCDEC writes only the visible region; clear any padding before SDL uploads it.
+            // SAFETY: CdramBlock owns at least capacity writable bytes. Initialize
+            // the entire advertised length before publishing it to the decoder.
             unsafe { std::ptr::write_bytes(buffer.ptr, 0, capacity as usize) };
             targets.push(VideoTextureTarget {
                 ptr: buffer.ptr as usize,
@@ -273,15 +297,26 @@ impl VitaSurface {
         )?;
         let egui_us = paint_started.elapsed().as_micros() as u64;
         self.canvas.present();
-        crate::streaming::video::trace::record("present_return", 0,
-            paint_started.elapsed().as_micros() as u64);
+        crate::streaming::video::trace::record(
+            "present_return",
+            0,
+            paint_started.elapsed().as_micros() as u64,
+        );
         let paint_us = paint_started.elapsed().as_micros() as u64;
         let metrics = &crate::streaming::video::metrics::METRICS;
-        metrics.egui_draw_sum_us.fetch_add(egui_us, Ordering::Relaxed);
-        metrics.egui_draw_max_us.fetch_max(egui_us, Ordering::Relaxed);
+        metrics
+            .egui_draw_sum_us
+            .fetch_add(egui_us, Ordering::Relaxed);
+        metrics
+            .egui_draw_max_us
+            .fetch_max(egui_us, Ordering::Relaxed);
         let present_us = paint_us.saturating_sub(egui_us);
-        metrics.render_present_sum_us.fetch_add(present_us, Ordering::Relaxed);
-        metrics.render_present_max_us.fetch_max(present_us, Ordering::Relaxed);
+        metrics
+            .render_present_sum_us
+            .fetch_add(present_us, Ordering::Relaxed);
+        metrics
+            .render_present_max_us
+            .fetch_max(present_us, Ordering::Relaxed);
         metrics.paint_sum_us.fetch_add(paint_us, Ordering::Relaxed);
         metrics.paint_count.fetch_add(1, Ordering::Relaxed);
         metrics.paint_max_us.fetch_max(paint_us, Ordering::Relaxed);
@@ -292,6 +327,8 @@ impl VitaSurface {
             let gpu_started = Instant::now();
             #[cfg(target_os = "vita")]
             {
+                // SAFETY: GXM renderer and all submitted texture storage are live;
+                // this no-pointer call waits for previously queued display callbacks.
                 let result = unsafe { vitasdk_sys::sceGxmDisplayQueueFinish() };
                 if result < 0 {
                     anyhow::bail!("failed to finish Vita display queue: {result:#x}");
@@ -310,18 +347,32 @@ impl VitaSurface {
                     presentation.record(generation, timing, rendered_at);
                 }
                 if let Some(timing) = timing {
-                    let age = rendered_at.saturating_duration_since(timing.received_at).as_micros() as u64;
-                    crate::streaming::video::trace::record("receive_to_gpu_done_us", timing.rtp_timestamp, age);
-                    metrics.received_gpu_sum_us.fetch_add(age, Ordering::Relaxed);
+                    let age = rendered_at
+                        .saturating_duration_since(timing.received_at)
+                        .as_micros() as u64;
+                    crate::streaming::video::trace::record(
+                        "receive_to_gpu_done_us",
+                        timing.rtp_timestamp,
+                        age,
+                    );
+                    metrics
+                        .received_gpu_sum_us
+                        .fetch_add(age, Ordering::Relaxed);
                     metrics.received_gpu_count.fetch_add(1, Ordering::Relaxed);
-                    metrics.received_gpu_max_us.fetch_max(age, Ordering::Relaxed);
+                    metrics
+                        .received_gpu_max_us
+                        .fetch_max(age, Ordering::Relaxed);
                 }
                 crate::streaming::video::trace::record("present_generation", 0, generation);
                 let age_us = decoded_at.elapsed().as_micros() as u64;
                 crate::streaming::video::trace::record("decoded_to_gpu_done_us", 0, age_us);
-                metrics.gpu_frame_age_sum_us.fetch_add(age_us, Ordering::Relaxed);
+                metrics
+                    .gpu_frame_age_sum_us
+                    .fetch_add(age_us, Ordering::Relaxed);
                 metrics.gpu_frame_age_count.fetch_add(1, Ordering::Relaxed);
-                metrics.gpu_frame_age_max_us.fetch_max(age_us, Ordering::Relaxed);
+                metrics
+                    .gpu_frame_age_max_us
+                    .fetch_max(age_us, Ordering::Relaxed);
                 metrics.presented.fetch_add(1, Ordering::Relaxed);
             }
         }

@@ -37,7 +37,8 @@ pub struct App {
     pub(crate) title_search_requested: bool,
     pub(crate) catalog_section: crate::catalog_preferences::CatalogSection,
     pub(crate) catalog_collections: crate::catalog_preferences::CatalogCollections,
-    pub(crate) catalog_collections_job: Option<tokio::task::JoinHandle<crate::catalog_preferences::CatalogCollections>>,
+    pub(crate) catalog_collections_job:
+        Option<tokio::task::JoinHandle<crate::catalog_preferences::CatalogCollections>>,
 }
 
 impl App {
@@ -60,6 +61,7 @@ impl App {
     }
 
     fn set_state(&mut self, state: AppState) {
+        self.state.abort_read_only_jobs();
         self.state = state;
         self.menu.open = false;
     }

@@ -1,12 +1,12 @@
+use super::audio_timing::{MAX_LOCAL_AUDIO_AGE, TimedAudio};
+use crate::streaming::video::metrics::METRICS;
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
-use super::audio_timing::{TimedAudio, MAX_LOCAL_AUDIO_AGE};
-use std::time::{Duration, Instant};
 use sdl2::audio::{AudioQueue, AudioSpecDesired};
-use crate::streaming::video::metrics::METRICS;
 use std::ptr::NonNull;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
+use std::time::{Duration, Instant};
 
 pub const AUDIO_SAMPLE_RATE: i32 = 48_000;
 const AUDIO_CHANNELS: usize = 2;
@@ -54,6 +54,7 @@ struct NativeOpusDecoder {
     state: NonNull<OpusDecoderState>,
 }
 
+// SAFETY: this handle has one owner; moving ownership never permits concurrent libopus calls.
 unsafe impl Send for NativeOpusDecoder {}
 
 impl NativeOpusDecoder {
@@ -74,6 +75,10 @@ impl NativeOpusDecoder {
     }
 
     fn decode(&mut self, packet: &[u8], pcm: &mut [i16]) -> Result<usize> {
+        anyhow::ensure!(
+            pcm.len() >= MAX_OPUS_FRAME_SAMPLES_PER_CHANNEL * AUDIO_CHANNELS,
+            "Opus output buffer is too small"
+        );
         let packet_len = i32::try_from(packet.len()).context("Opus packet is too large")?;
         // SAFETY: `state` is a live decoder, and `pcm` has room for the maximum Opus frame.
         let decoded = unsafe {
@@ -189,8 +194,11 @@ impl AudioRenderer {
                         fresh_pcm.push(samples);
                     } else {
                         METRICS.audio_pcm_discarded.fetch_add(1, Ordering::Relaxed);
-                        crate::streaming::video::trace::record("audio_expired_us", 0,
-                            samples.received_at.elapsed().as_micros() as u64);
+                        crate::streaming::video::trace::record(
+                            "audio_expired_us",
+                            0,
+                            samples.received_at.elapsed().as_micros() as u64,
+                        );
                     }
                 }
                 Err(TryRecvError::Empty) => break,
@@ -202,11 +210,9 @@ impl AudioRenderer {
             }
         }
 
-        let mut fresh_bytes = fresh_pcm
-            .iter()
-            .fold(0u32, |total, samples| {
-                total.saturating_add((samples.data.len() * size_of::<i16>()) as u32)
-            });
+        let mut fresh_bytes = fresh_pcm.iter().fold(0u32, |total, samples| {
+            total.saturating_add((samples.data.len() * size_of::<i16>()) as u32)
+        });
         if fresh_bytes > 0
             && self.queue.size().saturating_add(fresh_bytes) > AUDIO_TRIM_THRESHOLD_BYTES
         {
@@ -226,8 +232,12 @@ impl AudioRenderer {
 
         for mut samples in fresh_pcm {
             let sample_bytes = (samples.data.len() * size_of::<i16>()) as u32;
-            let queued = Duration::from_secs_f64(f64::from(self.queue.size()) / f64::from(AUDIO_BYTES_PER_SECOND));
-            let duration = Duration::from_secs_f64(f64::from(sample_bytes) / f64::from(AUDIO_BYTES_PER_SECOND));
+            let queued = Duration::from_secs_f64(
+                f64::from(self.queue.size()) / f64::from(AUDIO_BYTES_PER_SECOND),
+            );
+            let duration = Duration::from_secs_f64(
+                f64::from(sample_bytes) / f64::from(AUDIO_BYTES_PER_SECOND),
+            );
             if !samples.fits_playback(Instant::now(), queued, duration) {
                 METRICS.audio_pcm_discarded.fetch_add(1, Ordering::Relaxed);
                 continue;
@@ -282,8 +292,10 @@ impl AudioRenderer {
         let (_, empty_rx) = sync_channel(0);
         drop(std::mem::replace(&mut self.packets_tx, empty_tx));
         drop(std::mem::replace(&mut self.samples_rx, empty_rx));
-        if let Some(thread) = self.thread.take() {
-            if thread.join().is_err() { eprintln!("Audio worker panicked during shutdown"); }
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            eprintln!("Audio worker panicked during shutdown");
         }
         // Reset only after the old worker can no longer decrement the gauges.
         METRICS.audio_opus_pending.store(0, Ordering::Relaxed);
@@ -293,10 +305,18 @@ impl AudioRenderer {
 }
 
 impl Drop for AudioRenderer {
-    fn drop(&mut self) { self.stop_decode_worker(); }
+    fn drop(&mut self) {
+        self.stop_decode_worker();
+    }
 }
 
-fn spawn_decode_worker() -> Result<(SyncSender<TimedAudio<Bytes>>, Receiver<TimedAudio<Vec<i16>>>, std::thread::JoinHandle<()>)> {
+type DecodeWorker = (
+    SyncSender<TimedAudio<Bytes>>,
+    Receiver<TimedAudio<Vec<i16>>>,
+    std::thread::JoinHandle<()>,
+);
+
+fn spawn_decode_worker() -> Result<DecodeWorker> {
     let (packets_tx, packets_rx) = sync_channel::<TimedAudio<Bytes>>(MAX_PENDING_OPUS_PACKETS);
     let (samples_tx, samples_rx) = sync_channel::<TimedAudio<Vec<i16>>>(MAX_PENDING_PCM_BUFFERS);
 
@@ -325,7 +345,7 @@ fn spawn_decode_worker() -> Result<(SyncSender<TimedAudio<Bytes>>, Receiver<Time
                 }
                 METRICS.audio_pcm_pending.fetch_add(1, Ordering::Relaxed);
                 match samples_tx.try_send(packet.map(decode_buf[..sample_count].to_vec())) {
-                    Ok(()) => {},
+                    Ok(()) => {}
                     Err(TrySendError::Full(_)) => {
                         // A stopped renderer must not stop Opus consumption
                         // and turn every upstream queue into an audio archive.

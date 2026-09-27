@@ -1,4 +1,5 @@
 use crate::api::streaming::rtc::peer;
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use crate::api_xbox::streaming::control::channel::{
     CHAT_CHANNEL, CONTROL_CHANNEL, INPUT_CHANNEL, MESSAGE_CHANNEL,
 };
@@ -6,7 +7,6 @@ use crate::api_xbox::streaming::rtc::AUDIO_PAYLOAD_TYPE;
 use crate::api_xbox::streaming::rtc::STUN_SERVER;
 use crate::api_xbox::streaming::rtc::protocol::{ChannelIds, XboxRtcProtocol};
 use anyhow::{Context, Result};
-use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use rtc::peer_connection::configuration::media_engine::{
     MIME_TYPE_H264, MIME_TYPE_OPUS, MediaEngine,
 };
@@ -15,7 +15,9 @@ use rtc::rtp_transceiver::rtp_sender::{
     RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RtpCodecKind,
 };
 
-pub(super) fn create(microphone: crate::streaming::microphone::Microphone) -> Result<(RTCPeerConnection, XboxRtcProtocol)> {
+pub(super) fn create(
+    microphone: crate::streaming::microphone::Microphone,
+) -> Result<(RTCPeerConnection, XboxRtcProtocol)> {
     let mut media_engine = MediaEngine::default();
     register_vita_codecs(&mut media_engine).context("failed to register Vita codecs")?;
 
@@ -44,7 +46,10 @@ pub(super) fn create(microphone: crate::streaming::microphone::Microphone) -> Re
     };
 
     let microphone = super::microphone::MicrophoneUplink::new(&mut peer_connection, microphone)?;
-    Ok((peer_connection, XboxRtcProtocol::new(channel_ids, microphone)))
+    Ok((
+        peer_connection,
+        XboxRtcProtocol::new(channel_ids, microphone),
+    ))
 }
 
 fn register_vita_codecs(media_engine: &mut MediaEngine) -> Result<()> {

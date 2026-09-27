@@ -1,6 +1,6 @@
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use anyhow::{Context, Result};
 use bytes::BytesMut;
-use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use rtc::peer_connection::transport::RTCIceCandidateInit;
 use rtc::sansio::Protocol;
 use rtc::shared::{TaggedBytesMut, TransportContext, TransportProtocol};

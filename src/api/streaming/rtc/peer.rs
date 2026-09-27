@@ -1,18 +1,17 @@
+use super::arrival_feedback::{self, ReceiveFeedback};
 use anyhow::{Context, Result};
 use rtc::data_channel::{RTCDataChannelId, RTCDataChannelInit};
+use rtc::peer_connection::RTCPeerConnectionBuilder;
 use rtc::peer_connection::configuration::RTCConfigurationBuilder;
 use rtc::peer_connection::configuration::media_engine::MediaEngine;
 use rtc::peer_connection::configuration::setting_engine::SettingEngine;
 use rtc::peer_connection::transport::RTCIceServer;
-use rtc::peer_connection::RTCPeerConnectionBuilder;
-use super::arrival_feedback::{self, ReceiveFeedback};
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use std::time::Duration;
 
 // The default peer uses NoopInterceptor: advertising RTCP feedback does not generate it.
 // Enable loss/jitter and negotiated arrival reports without adding media buffers.
-pub(crate) type RTCPeerConnection =
-    rtc::peer_connection::RTCPeerConnection<ReceiveFeedback>;
+pub(crate) type RTCPeerConnection = rtc::peer_connection::RTCPeerConnection<ReceiveFeedback>;
 
 pub(crate) struct RtcDataChannelConfig {
     pub label: &'static str,

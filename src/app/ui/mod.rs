@@ -47,5 +47,21 @@ pub fn build_ui(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) -> V
         }
     }
 
+    if app.settings.persistence_error {
+        egui::Area::new(egui::Id::new("settings_persistence_error"))
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 8.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::default()
+                    .fill(egui::Color32::from_black_alpha(230))
+                    .show(ui, |ui| {
+                        ui.set_max_width(400.0);
+                        ui.label(
+                            crate::i18n::I18n::new(app.settings.locale)
+                                .text("settings-storage-error"),
+                        );
+                    });
+            });
+    }
     commands
 }

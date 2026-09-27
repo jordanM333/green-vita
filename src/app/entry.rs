@@ -92,7 +92,7 @@ impl App {
                 self.set_state(AppState::WaitingForDeviceAuthorization { device_code, job });
             }
             PollJob::Done(Err(error)) => {
-                self.set_localized_error_screen("error-sign-in-request", format!("{error:#}"));
+                self.set_sign_in_error_screen(format!("{error:#}"));
             }
         }
     }
@@ -112,7 +112,7 @@ impl App {
             }
             PollJob::Done(Err(error)) => {
                 eprintln!("Sign-in check failed: {error:#}");
-                self.request_device_code();
+                self.set_sign_in_error_screen(error);
             }
         }
     }
@@ -126,6 +126,7 @@ impl App {
 
         tokio::spawn(async move {
             let mut retry_after = device_code.poll_interval;
+            let mut consecutive_failures = 0;
             loop {
                 tokio::time::sleep(retry_after).await;
                 if device_code.is_expired() {
@@ -134,11 +135,18 @@ impl App {
 
                 match auth.poll_device_code(&device_code).await {
                     Ok(DeviceCodePoll::Authorized) => return Ok(auth),
-                    Ok(DeviceCodePoll::Pending(next_retry)) => retry_after = next_retry,
+                    Ok(DeviceCodePoll::Pending(next_retry)) => {
+                        consecutive_failures = 0;
+                        retry_after = next_retry;
+                    }
                     Ok(DeviceCodePoll::Restart) => anyhow::bail!("device code expired"),
                     Err(error) => {
-                        eprintln!("Sign-in poll failed, retrying: {error:#}");
-                        retry_after = device_code.poll_interval;
+                        consecutive_failures += 1;
+                        if consecutive_failures >= 3 {
+                            return Err(error);
+                        }
+                        retry_after = (device_code.poll_interval * (1 << consecutive_failures))
+                            .min(std::time::Duration::from_secs(60));
                     }
                 }
             }

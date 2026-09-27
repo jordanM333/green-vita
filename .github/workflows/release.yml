@@ -14,6 +14,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  quality:
+    uses: ./.github/workflows/final-build.yml
   feedback-tests:
     runs-on: ubuntu-latest
     steps:
@@ -39,10 +41,10 @@ jobs:
         run: cargo test --target x86_64-unknown-linux-gnu
 
   build:
-    needs: feedback-tests
+    needs: [feedback-tests, quality]
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/vita-rust/vitasdk-rs:latest
+      image: ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -97,7 +99,7 @@ jobs:
           RUSTFLAGS: "-C target-feature=-neon"
           GREENVITA_BUILD_NUMBER: ${{ github.run_number }}
           GREENVITA_BUILD_SHA: ${{ github.sha }}
-        run: cargo vita build vpk --release
+        run: make vpk
 
       - name: Upload test VPK
         if: github.event_name == 'workflow_dispatch'

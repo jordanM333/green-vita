@@ -95,16 +95,20 @@ struct CatalogContentRating {
 
 /// Shared shape of the two HTTP fetches in this module.
 async fn get_bytes(client: &Client, url: &str, label: &str) -> Result<bytes::Bytes> {
-    client
-        .get(url)
-        .send()
-        .await
-        .with_context(|| format!("{label} request failed"))?
-        .error_for_status()
-        .with_context(|| format!("{label} request returned an error status"))?
-        .bytes()
-        .await
-        .with_context(|| format!("failed to read {label} response body"))
+    let _ = label;
+    let response = crate::http::send(client.get(url)).await?;
+    anyhow::ensure!(
+        response.status().is_success(),
+        "catalog request rejected (HTTP {})",
+        response.status().as_u16()
+    );
+    Ok(crate::http::body(
+        response,
+        crate::http::Payload::Metadata,
+        crate::resource_limits::ResourceLimits::default(),
+    )
+    .await?
+    .into())
 }
 
 /// Fetches display metadata for a single product by its Store `productId`, localized to

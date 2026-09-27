@@ -1,14 +1,15 @@
+mod buffer_contract;
+pub(crate) mod catch_up;
 mod decoder;
-pub(crate) mod timing;
 mod frame_signal;
 pub(crate) mod freshness;
-pub(crate) mod catch_up;
 mod memory;
 pub(crate) mod metrics;
-mod worker;
 pub(crate) mod policy;
-pub(crate) mod trace;
 pub(crate) mod startup;
+pub(crate) mod timing;
+pub(crate) mod trace;
+mod worker;
 
 pub const STREAM_WIDTH: u32 = 1280;
 pub const STREAM_HEIGHT: u32 = 720;
@@ -18,11 +19,12 @@ pub const HW_DECODER_HEIGHT: u32 = 720;
 pub const HW_OUTPUT_WIDTH: u32 = 960;
 pub const HW_OUTPUT_HEIGHT: u32 = 544;
 
-pub use memory::reserve_decoder_cdram;
 pub(crate) use memory::CdramBlock;
+pub(crate) use memory::release_reserved_decoder_cdram;
+pub use memory::reserve_decoder_cdram;
 pub use metrics::video_performance_summary;
-pub use worker::VideoDecodeWorker;
 pub(crate) use worker::SubmitResult;
+pub use worker::VideoDecodeWorker;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
@@ -83,14 +85,20 @@ impl DirectVideoOutput {
     }
 
     fn replace_targets(&self, targets: Option<Vec<VideoTextureTarget>>) {
-        if let Ok(mut state) = self.state.lock() {
+        {
+            // Teardown must revoke targets even after a panic. The mutex protects only
+            // Rust bookkeeping; the lease's Drop always clears decoding before wakeup.
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             // Close admission before waiting: no new lease can race destruction
             // of the CDRAM owned by StreamingSurface::drop.
             state.targets = None;
             state.pending = None;
             self.frame_signal.set_pending(false);
             while state.decoding.is_some() {
-                state = self.decode_idle.wait(state).unwrap();
+                state = self
+                    .decode_idle
+                    .wait(state)
+                    .unwrap_or_else(|error| error.into_inner());
             }
             state.targets = targets;
             state.displayed = None;
@@ -105,7 +113,9 @@ impl DirectVideoOutput {
     }
 
     pub(crate) fn has_produced_frame(&self) -> bool {
-        self.state.lock().is_ok_and(|state| state.next_generation != 0)
+        self.state
+            .lock()
+            .is_ok_and(|state| state.next_generation != 0)
     }
 
     pub(crate) async fn wait_for_frame(&self) {
@@ -116,7 +126,15 @@ impl DirectVideoOutput {
     /// Hardware calls retain an exclusive surface lease, never this mutex.
     /// Passing decoded-frame handles through the RTC and app mailboxes can make them stale
     /// before the UI reads them, causing it to skip a render even when a newer frame is ready.
-    pub(crate) fn take_latest_for_display(&self) -> Option<(usize, VideoTextureTarget, u64, Instant, Option<timing::FrameTiming>)> {
+    pub(crate) fn take_latest_for_display(
+        &self,
+    ) -> Option<(
+        usize,
+        VideoTextureTarget,
+        u64,
+        Instant,
+        Option<timing::FrameTiming>,
+    )> {
         let Ok(mut state) = self.state.lock() else {
             return None;
         };
@@ -127,15 +145,23 @@ impl DirectVideoOutput {
         let age_us = decoded_at.elapsed().as_micros() as u64;
         trace::record("texture_take_generation", 0, generation);
         trace::record("texture_wait_us", 0, age_us);
-        metrics::METRICS.display_age_sum_us.fetch_add(age_us, Ordering::Relaxed);
-        metrics::METRICS.display_age_count.fetch_add(1, Ordering::Relaxed);
-        metrics::METRICS.display_age_max_us.fetch_max(age_us, Ordering::Relaxed);
+        metrics::METRICS
+            .display_age_sum_us
+            .fetch_add(age_us, Ordering::Relaxed);
+        metrics::METRICS
+            .display_age_count
+            .fetch_add(1, Ordering::Relaxed);
+        metrics::METRICS
+            .display_age_max_us
+            .fetch_max(age_us, Ordering::Relaxed);
         Some((index, target, generation, decoded_at, timing))
     }
 
     pub(super) fn lock_decode_target(&self) -> Option<DirectVideoTargetGuard<'_>> {
         let mut state = self.state.lock().ok()?;
-        if state.decoding.is_some() { return None; }
+        if state.decoding.is_some() {
+            return None;
+        }
         let targets = state.targets.as_ref()?;
         let pending_index = state.pending.map(|(index, ..)| index);
         // Decoder reference state must advance even when the UI cannot show every frame.
@@ -150,7 +176,9 @@ impl DirectVideoOutput {
             // over it, including calls that eventually return no picture.
             state.pending = None;
             self.frame_signal.set_pending(false);
-            metrics::METRICS.texture_superseded.fetch_add(1, Ordering::Relaxed);
+            metrics::METRICS
+                .texture_superseded
+                .fetch_add(1, Ordering::Relaxed);
         }
         state.decoding = Some(index);
         drop(state);
@@ -170,9 +198,15 @@ pub(super) struct DirectVideoTargetGuard<'a> {
 
 impl DirectVideoTargetGuard<'_> {
     pub(super) fn publish(self, timing: Option<timing::FrameTiming>) -> (usize, u64) {
-        let mut state = self.output.state.lock().unwrap();
+        let mut state = self
+            .output
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if state.pending.is_some() {
-            metrics::METRICS.texture_superseded.fetch_add(1, Ordering::Relaxed);
+            metrics::METRICS
+                .texture_superseded
+                .fetch_add(1, Ordering::Relaxed);
         }
         state.next_generation = state.next_generation.wrapping_add(1);
         let generation = state.next_generation;
@@ -189,7 +223,12 @@ impl DirectVideoTargetGuard<'_> {
 
 impl Drop for DirectVideoTargetGuard<'_> {
     fn drop(&mut self) {
-        let mut state = self.output.state.lock().unwrap();
+        // Releasing a lease cannot skip wakeup on a poisoned bookkeeping mutex.
+        let mut state = self
+            .output
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         state.decoding = None;
         self.output.decode_idle.notify_all();
     }
@@ -215,34 +254,49 @@ mod tests {
     #[test]
     fn renderer_takes_newest_completed_frame_without_waiting_for_rtc_handoff() {
         let output = DirectVideoOutput::new(HW_OUTPUT_WIDTH, HW_OUTPUT_HEIGHT);
-        output.set_targets(vec![VideoTextureTarget {
-            ptr: 0,
-            pitch: 1920,
-            capacity: 960 * 544 * 2,
-        }; 3]);
+        output.set_targets(vec![
+            VideoTextureTarget {
+                ptr: 0,
+                pitch: 1920,
+                capacity: 960 * 544 * 2,
+            };
+            3
+        ]);
 
         let (first, _) = output.lock_decode_target().unwrap().publish(None);
         let (second, _) = output.lock_decode_target().unwrap().publish(None);
         assert_ne!(first, second);
-        assert_eq!(output.take_latest_for_display().map(|(index, ..)| index), Some(second));
+        assert_eq!(
+            output.take_latest_for_display().map(|(index, ..)| index),
+            Some(second)
+        );
         assert!(output.take_latest_for_display().is_none());
 
         let (third, _) = output.lock_decode_target().unwrap().publish(None);
         assert_ne!(second, third);
-        assert_eq!(output.take_latest_for_display().map(|(index, ..)| index), Some(third));
+        assert_eq!(
+            output.take_latest_for_display().map(|(index, ..)| index),
+            Some(third)
+        );
     }
 
     #[test]
     fn a_two_texture_fallback_never_decodes_into_the_displayed_texture() {
         let output = DirectVideoOutput::new(HW_OUTPUT_WIDTH, HW_OUTPUT_HEIGHT);
-        output.set_targets(vec![VideoTextureTarget {
-            ptr: 0,
-            pitch: 1920,
-            capacity: 960 * 544 * 2,
-        }; 2]);
+        output.set_targets(vec![
+            VideoTextureTarget {
+                ptr: 0,
+                pitch: 1920,
+                capacity: 960 * 544 * 2,
+            };
+            2
+        ]);
 
         let (displayed, _) = output.lock_decode_target().unwrap().publish(None);
-        assert_eq!(output.take_latest_for_display().map(|(index, ..)| index), Some(displayed));
+        assert_eq!(
+            output.take_latest_for_display().map(|(index, ..)| index),
+            Some(displayed)
+        );
         for _ in 0..4 {
             let (next, _) = output.lock_decode_target().unwrap().publish(None);
             assert_ne!(next, displayed);

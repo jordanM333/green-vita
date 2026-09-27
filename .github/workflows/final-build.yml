@@ -1,0 +1,44 @@
+name: Final build quality gates
+on:
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install host prerequisites
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+          rustup default 1.98.1
+          sudo apt-get update && sudo apt-get install -y libopus-dev
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Host tests and strict Clippy
+        run: python3 tools/run_host_audit.py --output verification/host --clippy
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: host-gate-evidence
+          path: verification/host
+  vita:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check target and test compilation
+        run: make native-check
+      - name: Strict target Clippy
+        run: make native-clippy
+      - name: Build target release package
+        env:
+          RUSTFLAGS: '-C target-feature=-neon'
+          GREENVITA_BUILD_SHA: ${{ github.sha }}
+          GREENVITA_BUILD_NUMBER: ${{ github.run_number }}
+        run: make vpk
+      - name: Validate native ELF layout
+        run: python3 tools/check_vita_elf.py target/armv7-sony-vita-newlibeabihf/release/green-vita.elf

@@ -39,15 +39,33 @@ mod tests {
     use serde_json::json;
     #[test]
     fn history_keeps_server_order_and_continuation() {
-        let page=recent_page(json!({"results":[{"titleId":"z"},{"titleId":"a"}],"continuationToken":"next+/="})).unwrap();
-        assert_eq!(page.results.iter().map(|r|r.title_id.as_str()).collect::<Vec<_>>(),["z","a"]);
-        assert_eq!(page.continuation_token.as_deref(),Some("next+/="));
+        let page = recent_page(
+            json!({"results":[{"titleId":"z"},{"titleId":"a"}],"continuationToken":"next+/="}),
+        )
+        .unwrap();
+        assert_eq!(
+            page.results
+                .iter()
+                .map(|r| r.title_id.as_str())
+                .collect::<Vec<_>>(),
+            ["z", "a"]
+        );
+        assert_eq!(page.continuation_token.as_deref(), Some("next+/="));
         assert!(recent_page(json!({"error":"expired"})).is_err());
-        assert!(recent_page(json!({"results":[]})).unwrap().results.is_empty());
+        assert!(
+            recent_page(json!({"results":[]}))
+                .unwrap()
+                .results
+                .is_empty()
+        );
     }
     #[test]
     fn gallery_order_is_not_release_date_or_alphabetical_order() {
-        assert_eq!(gallery_products(json!([{"siglId":"feed","title":"New"},{"id":"Z"},{"id":"A"}])).unwrap(),["Z","A"]);
+        assert_eq!(
+            gallery_products(json!([{"siglId":"feed","title":"New"},{"id":"Z"},{"id":"A"}]))
+                .unwrap(),
+            ["Z", "A"]
+        );
         assert!(gallery_products(json!({"error":"unavailable"})).is_err());
         assert!(gallery_products(json!([{"unexpected":true}])).is_err());
     }

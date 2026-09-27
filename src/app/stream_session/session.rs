@@ -1,11 +1,11 @@
 use crate::api::streaming::{PlaybackBackend, PlaybackBackendEvent};
 use crate::settings::Settings;
+use crate::streaming::audio_timing::TimedAudio;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
 use crate::{Stream, StreamKind};
 use anyhow::Result;
 use bytes::Bytes;
-use crate::streaming::audio_timing::TimedAudio;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -70,13 +70,17 @@ impl StreamingSession {
         })
     }
 
-    pub(crate) fn refresh_video(&self) { self.backend.refresh_video(); }
+    pub(crate) fn refresh_video(&self) {
+        self.backend.refresh_video();
+    }
 
-    pub(crate) fn can_refresh(&self) -> bool { matches!(self.restart_target.kind, StreamKind::Home) }
+    pub(crate) fn can_refresh(&self) -> bool {
+        matches!(self.restart_target.kind, StreamKind::Home)
+    }
 
     pub(crate) fn measured_delay_ms(&self) -> Option<u64> {
-        self.video_timing.filter(|timing|
-            timing.received_at.elapsed() <= std::time::Duration::from_millis(1500))
+        self.video_timing
+            .filter(|timing| timing.received_at.elapsed() <= std::time::Duration::from_millis(1500))
             .map(|timing| timing.added_delay_ms)
     }
 
@@ -162,8 +166,10 @@ impl StreamingSession {
         }
 
         if !self.video_startup.picture_seen() {
-            self.video_startup.observe_picture(self.latest_video_frame.is_some()
-                || self.backend.direct_video_output().has_produced_frame());
+            self.video_startup.observe_picture(
+                self.latest_video_frame.is_some()
+                    || self.backend.direct_video_output().has_produced_frame(),
+            );
         }
 
         let mut closed = false;
@@ -175,7 +181,8 @@ impl StreamingSession {
                     self.stream_video_size = Some((width, height));
                 }
                 PlaybackBackendEvent::VideoTiming(timing) => {
-                    self.video_lag.observe(timing.received_at, timing.added_delay_ms);
+                    self.video_lag
+                        .observe(timing.received_at, timing.added_delay_ms);
                     self.video_timing = Some(timing);
                 }
                 PlaybackBackendEvent::Closed => closed = true,
@@ -194,7 +201,7 @@ impl StreamingSession {
         self.backend.description()
     }
 
-    pub(super) async fn stop(self) -> Result<()> {
+    pub(crate) async fn stop(self) -> Result<()> {
         self.microphone.set_ready(false);
         self.backend.stop().await
     }

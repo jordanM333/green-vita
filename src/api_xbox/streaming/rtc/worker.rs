@@ -1,4 +1,5 @@
 use crate::Stream;
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use crate::api::streaming::rtc::session::RtcSessionConfig;
 use crate::api::streaming::rtc::worker::{RtcWorker, RtcWorkerProvider};
 use crate::api_xbox::streaming::rtc::protocol::XboxRtcProtocol;
@@ -9,7 +10,6 @@ use crate::streaming::video::{
     STREAM_HEIGHT, STREAM_WIDTH,
 };
 use anyhow::Result;
-use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use rtc::peer_connection::sdp::RTCSessionDescription;
 
 struct XboxRtcWorkerProvider {
@@ -53,6 +53,9 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
     }
 }
 
-pub(crate) fn spawn(stream: Stream, microphone: crate::streaming::microphone::Microphone) -> Result<RtcWorker> {
+pub(crate) fn spawn(
+    stream: Stream,
+    microphone: crate::streaming::microphone::Microphone,
+) -> Result<RtcWorker> {
     RtcWorker::spawn(XboxRtcWorkerProvider { stream, microphone })
 }

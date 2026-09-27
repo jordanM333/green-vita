@@ -1,13 +1,13 @@
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use crate::api::streaming::rtc::session::RtcSessionBackend;
+use crate::api_xbox::streaming::control::admission::{FEEDBACK_INGRESS_LIMIT, INPUT_INGRESS_LIMIT};
 use crate::api_xbox::streaming::control::channel::{self, HandshakeStage};
 use crate::api_xbox::streaming::control::input::{InputQueue, PointerFrame};
-use crate::api_xbox::streaming::control::admission::{INPUT_INGRESS_LIMIT, FEEDBACK_INGRESS_LIMIT};
-use crate::streaming::video::metrics::METRICS;
-use std::sync::atomic::Ordering;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
+use crate::streaming::video::metrics::METRICS;
 use bytes::BytesMut;
 use rtc::data_channel::RTCDataChannelId;
-use crate::api::streaming::rtc::peer::RTCPeerConnection;
+use std::sync::atomic::Ordering;
 
 #[derive(Clone, Copy)]
 pub(in crate::api_xbox::streaming) struct ChannelIds {
@@ -26,7 +26,10 @@ pub(super) struct XboxRtcProtocol {
 }
 
 impl XboxRtcProtocol {
-    pub(super) fn new(channel_ids: ChannelIds, microphone: super::microphone::MicrophoneUplink) -> Self {
+    pub(super) fn new(
+        channel_ids: ChannelIds,
+        microphone: super::microphone::MicrophoneUplink,
+    ) -> Self {
         Self {
             handshake_stage: HandshakeStage::WaitingForChannels,
             input_queue: InputQueue::default(),
@@ -120,18 +123,26 @@ impl XboxRtcProtocol {
             match input_channel.try_send_when_writable(BytesMut::from(bytes), limit) {
                 Ok(accepted) => {
                     if let Ok(pending) = input_channel.outstanding_payload_bytes() {
-                        METRICS.input_outstanding_bytes.store(pending as u64, Ordering::Relaxed);
-                        METRICS.input_outstanding_max.fetch_max(pending as u64, Ordering::Relaxed);
+                        METRICS
+                            .input_outstanding_bytes
+                            .store(pending as u64, Ordering::Relaxed);
+                        METRICS
+                            .input_outstanding_max
+                            .fetch_max(pending as u64, Ordering::Relaxed);
                     }
                     if !accepted {
                         // The worker retries current controller state; frame feedback is
                         // replaced by the next presentation. Never retain rejected bytes.
-                        METRICS.input_admission_deferred.fetch_add(1, Ordering::Relaxed);
+                        METRICS
+                            .input_admission_deferred
+                            .fetch_add(1, Ordering::Relaxed);
                     }
                     accepted
                 }
                 Err(_) => {
-                    METRICS.input_admission_errors.fetch_add(1, Ordering::Relaxed);
+                    METRICS
+                        .input_admission_errors
+                        .fetch_add(1, Ordering::Relaxed);
                     false
                 }
             }
@@ -142,23 +153,41 @@ impl XboxRtcProtocol {
 }
 
 impl RtcSessionBackend for XboxRtcProtocol {
-    fn begin_chat_negotiation(&mut self, peer: &mut RTCPeerConnection) -> Option<rtc::peer_connection::sdp::RTCSessionDescription> {
+    fn begin_chat_negotiation(
+        &mut self,
+        peer: &mut RTCPeerConnection,
+    ) -> Option<rtc::peer_connection::sdp::RTCSessionDescription> {
         self.microphone.begin_negotiation(peer)
     }
 
-    fn finish_chat_negotiation(&mut self, peer: &mut RTCPeerConnection, answer: anyhow::Result<String>) -> bool {
+    fn finish_chat_negotiation(
+        &mut self,
+        peer: &mut RTCPeerConnection,
+        answer: anyhow::Result<String>,
+    ) -> bool {
         self.microphone.finish_negotiation(peer, answer)
     }
 
-    fn microphone_status(&self) -> String { self.microphone.status() }
+    fn microphone_status(&self) -> String {
+        self.microphone.status()
+    }
 
     fn pump_microphone(&mut self, peer: &mut RTCPeerConnection, connected: bool) {
         self.microphone.pump(peer, connected);
     }
 
-    fn send_rendered_frame(&mut self, peer: &mut RTCPeerConnection, frame: crate::streaming::video::timing::PresentedFrame) -> bool {
-        if !self.input_channel_ready { return false; }
-        let Some(bytes) = self.input_queue.rendered_frame_packet(frame, std::time::Instant::now()) else {
+    fn send_rendered_frame(
+        &mut self,
+        peer: &mut RTCPeerConnection,
+        frame: crate::streaming::video::timing::PresentedFrame,
+    ) -> bool {
+        if !self.input_channel_ready {
+            return false;
+        }
+        let Some(bytes) = self
+            .input_queue
+            .rendered_frame_packet(frame, std::time::Instant::now())
+        else {
             return false;
         };
         self.send_input_bytes(peer, &bytes, FEEDBACK_INGRESS_LIMIT)

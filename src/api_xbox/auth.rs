@@ -9,7 +9,6 @@ const CLIENT_ID: &str = "1f907974-e22b-4810-a9de-d9647380c97e";
 const OAUTH_SCOPE: &str = "xboxlive.signin openid profile offline_access";
 const TOKEN_STORE_DIR: &str = "ux0:data/green-vita-540-test";
 const TOKEN_STORE_PATH: &str = "ux0:data/green-vita-540-test/xcloud-tokens.json";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const TOKEN_STORE_VERSION: u8 = 1;
 const TOKEN_KEY_MAGIC: &[u8; 8] = b"GVTKEY01";
 const TOKEN_KEY_SIZE: usize = 32;
@@ -18,7 +17,7 @@ const TOKEN_KEY_OFFSET: i64 = 0;
 const TOKEN_NONCE_SIZE: usize = 12;
 const TOKEN_AAD: &[u8] = b"green-vita/xcloud-refresh-token/v1";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EndpointCredentials {
     pub host: String,
     pub token: String,
@@ -31,7 +30,7 @@ pub struct StreamingCredentials {
     pub cloud_f2p: Option<EndpointCredentials>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 struct DeviceCodeResponse {
     user_code: String,
     device_code: String,
@@ -41,7 +40,7 @@ struct DeviceCodeResponse {
     message: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DeviceCodeAuth {
     pub user_code: String,
     pub verification_uri: String,
@@ -57,22 +56,15 @@ impl DeviceCodeAuth {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 struct UserTokenResponse {
     access_token: String,
     refresh_token: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct DeviceCodeErrorResponse {
     error: String,
-    error_description: Option<String>,
-}
-
-impl DeviceCodeErrorResponse {
-    fn description(self) -> String {
-        self.error_description.unwrap_or(self.error)
-    }
 }
 
 pub enum DeviceCodePoll {
@@ -81,26 +73,26 @@ pub enum DeviceCodePoll {
     Restart,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct TokenStoreData {
     version: u8,
     nonce: String,
     ciphertext: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 struct LegacyTokenStoreData {
     refresh_token: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(untagged)]
 enum StoredTokenData {
     Encrypted(TokenStoreData),
     Legacy(LegacyTokenStoreData),
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 struct XstsTokenResponse {
     #[serde(rename = "Token")]
     token: String,
@@ -108,12 +100,12 @@ struct XstsTokenResponse {
     display_claims: XstsDisplayClaims,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 struct XstsDisplayClaims {
     xui: Vec<XstsUserClaim>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 struct XstsUserClaim {
     uhs: String,
 }
@@ -124,24 +116,24 @@ pub struct XboxProfile {
     pub avatar_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 struct ProfileResponse {
     #[serde(rename = "profileUsers")]
     profile_users: Vec<ProfileUser>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 struct ProfileUser {
     settings: Vec<ProfileSetting>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 struct ProfileSetting {
     id: String,
     value: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 struct StreamingTokenResponse {
     #[serde(rename = "gsToken")]
     gs_token: String,
@@ -149,12 +141,12 @@ struct StreamingTokenResponse {
     offering_settings: OfferingSettings,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 struct OfferingSettings {
     regions: Vec<StreamingRegion>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 struct StreamingRegion {
     #[serde(rename = "baseUri")]
     base_uri: String,
@@ -180,46 +172,68 @@ impl StreamingTokenResponse {
 
 #[derive(Clone)]
 pub struct MsalAuth {
-    client: Client,
+    client: Option<Client>,
     refresh_token: Option<String>,
+    storage_error: Option<String>,
+}
+
+impl Default for MsalAuth {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MsalAuth {
     pub fn new() -> Self {
         let _ = ensure_token_store_dir();
+        let mut storage_error = None;
         let refresh_token = match load_saved_refresh_token() {
             Ok(Some(SavedRefreshToken::Encrypted(token))) => Some(token),
             Ok(Some(SavedRefreshToken::Legacy(token))) => {
-                // Never leave the old plaintext token behind, even if Safe Memory is unavailable.
-                let _ = std::fs::remove_file(TOKEN_STORE_PATH);
-                if let Err(error) = persist_refresh_token(&token) {
-                    eprintln!("Could not migrate saved xCloud login encryption: {error:#}");
+                match migrate_legacy_token(token, persist_refresh_token, || {
+                    clear_saved_login_at(std::path::Path::new(TOKEN_STORE_PATH), clear_token_key)
+                }) {
+                    Ok(token) => Some(token),
+                    Err(error) => {
+                        storage_error = Some(error.to_string());
+                        None
+                    }
                 }
-                Some(token)
             }
             Ok(None) => None,
-            Err(error) => {
-                eprintln!("Could not load encrypted xCloud login; clearing it: {error:#}");
-                let _ = std::fs::remove_file(TOKEN_STORE_PATH);
+            Err(_) => {
+                storage_error = Some(
+                    "Saved login could not be read. Sign out to clear it, then sign in again."
+                        .into(),
+                );
                 None
             }
         };
 
         Self {
-            client: Client::builder()
-                .timeout(REQUEST_TIMEOUT)
-                .build()
-                .unwrap_or_default(),
+            client: crate::http::client().ok(),
             refresh_token,
+            storage_error,
         }
+    }
+
+    fn client(&self) -> Result<&Client> {
+        self.client
+            .as_ref()
+            .context("secure HTTP client unavailable")
     }
 
     pub fn has_saved_login(&self) -> bool {
         self.refresh_token.is_some()
     }
 
-    pub fn logout(&mut self) {
-        self.clear_saved_login();
+    pub fn take_storage_error(&mut self) -> Option<String> {
+        self.storage_error.take()
+    }
+
+    pub fn logout(&mut self) -> Result<()> {
+        self.storage_error = None;
+        self.clear_saved_login()
     }
 
     fn save_refresh_token(&mut self, refresh_token: String) {
@@ -231,12 +245,9 @@ impl MsalAuth {
         }
     }
 
-    fn clear_saved_login(&mut self) {
+    fn clear_saved_login(&mut self) -> Result<()> {
         self.refresh_token = None;
-        let _ = std::fs::remove_file(TOKEN_STORE_PATH);
-        if let Err(error) = clear_token_key() {
-            eprintln!("Could not clear xCloud login key from Safe Memory: {error:#}");
-        }
+        clear_saved_login_at(std::path::Path::new(TOKEN_STORE_PATH), clear_token_key)
     }
 
     async fn post_form(
@@ -245,28 +256,39 @@ impl MsalAuth {
         body: String,
         context_label: &str,
     ) -> Result<reqwest::Response> {
-        self.client
+        self.client()?
             .post(url)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(body)
             .send()
             .await
+            .map_err(crate::http::network_error)
             .with_context(|| format!("{context_label} failed"))
     }
 
     pub async fn request_device_code(&self) -> Result<DeviceCodeAuth> {
-        let response: DeviceCodeResponse = self
-            .post_form(
+        let response: DeviceCodeResponse = crate::http::json(
+            self.post_form(
                 "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode",
                 format!("client_id={CLIENT_ID}&scope={}", urlencode(OAUTH_SCOPE)),
                 "device code request",
             )
-            .await?
-            .error_for_status()
-            .context("device code request rejected")?
-            .json()
-            .await
-            .context("failed to decode device code response")?;
+            .await?,
+        )
+        .await?;
+        anyhow::ensure!(
+            (1..=3600).contains(&response.expires_in) && (1..=60).contains(&response.interval),
+            "invalid device authorization timing"
+        );
+        let verification =
+            reqwest::Url::parse(&response.verification_uri).context("invalid verification URL")?;
+        anyhow::ensure!(
+            verification.scheme() == "https"
+                && verification.host_str().is_some_and(|h| h == "microsoft.com"
+                    || h.ends_with(".microsoft.com")
+                    || h == "aka.ms"),
+            "untrusted verification URL"
+        );
 
         Ok(DeviceCodeAuth {
             user_code: response.user_code,
@@ -274,7 +296,9 @@ impl MsalAuth {
             message: response.message,
             device_code: response.device_code,
             poll_interval: Duration::from_secs(response.interval.max(1)),
-            deadline: Instant::now() + Duration::from_secs(response.expires_in),
+            deadline: Instant::now()
+                .checked_add(Duration::from_secs(response.expires_in))
+                .context("invalid authorization deadline")?,
         })
     }
 
@@ -284,7 +308,7 @@ impl MsalAuth {
                 "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
                 format!(
                     "grant_type=urn:ietf:params:oauth:grant-type:device_code&client_id={CLIENT_ID}&device_code={}",
-                    auth.device_code
+                    urlencode(&auth.device_code)
                 ),
                 "device code poll request",
             )
@@ -292,30 +316,27 @@ impl MsalAuth {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response
-                .text()
-                .await
-                .context("failed to read device code poll response")?;
-            let error: DeviceCodeErrorResponse = serde_json::from_str(&body)
-                .with_context(|| format!("device code poll rejected with {status}: {body}"))?;
+            let body =
+                crate::http::body(response, crate::http::Payload::Metadata, Default::default())
+                    .await?;
+            let error: DeviceCodeErrorResponse = serde_json::from_slice(&body).map_err(|_| {
+                anyhow::anyhow!(
+                    "malformed authorization response (HTTP {})",
+                    status.as_u16()
+                )
+            })?;
 
             return match error.error.as_str() {
                 "authorization_pending" => Ok(DeviceCodePoll::Pending(auth.poll_interval)),
                 "slow_down" => Ok(DeviceCodePoll::Pending(
-                    auth.poll_interval + Duration::from_secs(5),
+                    (auth.poll_interval + Duration::from_secs(5)).min(Duration::from_secs(60)),
                 )),
                 "expired_token" | "bad_verification_code" => Ok(DeviceCodePoll::Restart),
-                _ => bail!(
-                    "device code poll rejected: {}",
-                    error.error_description.unwrap_or(error.error)
-                ),
+                _ => bail!("device authorization rejected; please sign in again"),
             };
         }
 
-        let token: UserTokenResponse = response
-            .json()
-            .await
-            .context("failed to decode device code token response")?;
+        let token: UserTokenResponse = crate::http::json(response).await?;
         self.save_refresh_token(token.refresh_token);
         Ok(DeviceCodePoll::Authorized)
     }
@@ -329,42 +350,35 @@ impl MsalAuth {
             .post_form(
                 "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
                 format!(
-                "client_id={CLIENT_ID}&grant_type=refresh_token&refresh_token={refresh_token}&scope={}",
-                urlencode(OAUTH_SCOPE)
-            ),
+                    "client_id={CLIENT_ID}&grant_type=refresh_token&refresh_token={}&scope={}",
+                    urlencode(&refresh_token),
+                    urlencode(OAUTH_SCOPE)
+                ),
                 "token refresh request",
             )
             .await?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response
-                .text()
-                .await
-                .context("failed to read token refresh error response")?;
-            let oauth_error = serde_json::from_str::<DeviceCodeErrorResponse>(&body).ok();
+            let body =
+                crate::http::body(response, crate::http::Payload::Metadata, Default::default())
+                    .await?;
+            let oauth_error = serde_json::from_slice::<DeviceCodeErrorResponse>(&body).ok();
 
             if oauth_error
                 .as_ref()
                 .is_some_and(|error| error.error == "invalid_grant")
             {
-                self.clear_saved_login();
-                let description = oauth_error
-                    .map(DeviceCodeErrorResponse::description)
-                    .unwrap_or(body);
-                bail!("saved xCloud login expired; please sign in again: {description}");
+                self.clear_saved_login()?;
+                bail!("saved xCloud login expired; please sign in again");
             }
-
-            let details = oauth_error
-                .map(DeviceCodeErrorResponse::description)
-                .unwrap_or(body);
-            bail!("token refresh rejected with {status}: {details}");
+            bail!(
+                "token refresh rejected (HTTP {}); please sign in again",
+                status.as_u16()
+            );
         }
 
-        let token: UserTokenResponse = response
-            .json()
-            .await
-            .context("failed to decode token refresh response")?;
+        let token: UserTokenResponse = crate::http::json(response).await?;
 
         self.save_refresh_token(token.refresh_token.clone());
         Ok(token.access_token)
@@ -380,18 +394,14 @@ impl MsalAuth {
             .post_form(
                 "https://login.live.com/oauth20_token.srf",
                 format!(
-                    "client_id={CLIENT_ID}&scope=service::http://Passport.NET/purpose::PURPOSE_XBOX_CLOUD_CONSOLE_TRANSFER_TOKEN&grant_type=refresh_token&refresh_token={refresh_token}"
+                    "client_id={CLIENT_ID}&scope=service::http://Passport.NET/purpose::PURPOSE_XBOX_CLOUD_CONSOLE_TRANSFER_TOKEN&grant_type=refresh_token&refresh_token={}", urlencode(&refresh_token)
                 ),
                 "passport token request",
             )
             .await?
-            .error_for_status()
-            .context("passport token request rejected")?;
+            ;
 
-        let token: UserTokenResponse = response
-            .json()
-            .await
-            .context("failed to decode passport token response")?;
+        let token: UserTokenResponse = crate::http::json(response).await?;
 
         Ok(token.access_token)
     }
@@ -404,27 +414,16 @@ impl MsalAuth {
         body: &serde_json::Value,
         context_label: &str,
     ) -> Result<T> {
-        let mut request = self.client.post(url).json(body);
+        let mut request = self.client()?.post(url).json(body);
         for (key, value) in headers {
             request = request.header(*key, *value);
         }
         let response = request
             .send()
             .await
+            .map_err(crate::http::network_error)
             .with_context(|| format!("{context_label} request failed"))?;
-        let status = response.status();
-        if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .with_context(|| format!("failed to read {context_label} error response"))?;
-            bail!("{context_label} rejected with {status}: {body}");
-        }
-
-        response
-            .json()
-            .await
-            .with_context(|| format!("failed to decode {context_label} response"))
+        crate::http::json(response).await
     }
 
     async fn xsts_user_authenticate(&self, access_token: &str) -> Result<String> {
@@ -536,8 +535,8 @@ impl MsalAuth {
             .map(|xui| xui.uhs.as_str())
             .context("XSTS response had no user hash (uhs)")?;
 
-        let response: ProfileResponse = self
-            .client
+        let response: ProfileResponse = crate::http::json(self
+            .client()?
             .get(
                 "https://profile.xboxlive.com/users/me/profile/settings?settings=GameDisplayPicRaw,Gamertag,Gamerscore",
             )
@@ -545,12 +544,7 @@ impl MsalAuth {
             .header("Authorization", format!("XBL3.0 x={uhs};{}", xbl.token))
             .send()
             .await
-            .context("Xbox profile request failed")?
-            .error_for_status()
-            .context("Xbox profile request rejected")?
-            .json()
-            .await
-            .context("failed to decode Xbox profile response")?;
+            .map_err(crate::http::network_error)?).await?;
 
         let settings = response
             .profile_users
@@ -588,14 +582,50 @@ fn load_saved_refresh_token() -> Result<Option<SavedRefreshToken>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error).context("failed to open xCloud token store"),
     };
-    match serde_json::from_reader::<_, StoredTokenData>(file)
-        .context("failed to parse xCloud token store")?
+    match serde_json::from_slice::<StoredTokenData>(&{
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        file.take(65537).read_to_end(&mut bytes)?;
+        anyhow::ensure!(bytes.len() <= 65536, "saved token exceeds size limit");
+        bytes
+    })
+    .map_err(|_| anyhow::anyhow!("malformed saved login data"))?
     {
         StoredTokenData::Encrypted(data) => decrypt_refresh_token(&data)
             .map(SavedRefreshToken::Encrypted)
             .map(Some),
         StoredTokenData::Legacy(data) => Ok(Some(SavedRefreshToken::Legacy(data.refresh_token))),
     }
+}
+
+// A legacy credential is usable only after an encrypted replacement succeeds.
+fn migrate_legacy_token(
+    token: String,
+    persist: impl FnOnce(&str) -> Result<()>,
+    clear: impl FnOnce() -> Result<()>,
+) -> Result<String> {
+    if persist(&token).is_ok() {
+        return Ok(token);
+    }
+    clear().map_err(|_| anyhow::anyhow!("Could not secure or remove saved login. Check storage access and sign out before sharing this device."))?;
+    bail!("Old saved login was removed because encryption failed. Sign in again.")
+}
+
+fn clear_saved_login_at(
+    path: &std::path::Path,
+    clear_key: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let removed = match std::fs::remove_file(path) {
+        Ok(()) => true,
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    };
+    // Always try both independent cleanup operations, even if the first fails.
+    let key_cleared = clear_key().is_ok();
+    anyhow::ensure!(
+        removed && key_cleared,
+        "Saved login cleanup failed. Check storage access and retry sign-out before sharing this device."
+    );
+    Ok(())
 }
 
 fn persist_refresh_token(refresh_token: &str) -> Result<()> {
@@ -665,9 +695,16 @@ fn load_token_key() -> Result<[u8; TOKEN_KEY_SIZE]> {
 }
 
 fn load_or_create_token_key() -> Result<[u8; TOKEN_KEY_SIZE]> {
-    if let Ok(key) = load_token_key() {
+    let existing = crate::safe_memory::load::<TOKEN_KEY_RECORD_SIZE>(TOKEN_KEY_OFFSET)?;
+    if &existing[..TOKEN_KEY_MAGIC.len()] == TOKEN_KEY_MAGIC {
+        let mut key = [0u8; TOKEN_KEY_SIZE];
+        key.copy_from_slice(&existing[TOKEN_KEY_MAGIC.len()..]);
         return Ok(key);
     }
+    anyhow::ensure!(
+        existing.iter().all(|byte| *byte == 0),
+        "unrecognized token key record; preserved without replacement"
+    );
     let mut key = [0u8; TOKEN_KEY_SIZE];
     SystemRandom::new()
         .fill(&mut key)
@@ -699,7 +736,9 @@ fn decode_hex(encoded: &str) -> Result<Vec<u8>> {
     }
     encoded
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let high = decode_hex_digit(pair[0])?;
             let low = decode_hex_digit(pair[1])?;
@@ -718,5 +757,96 @@ fn decode_hex_digit(digit: u8) -> Result<u8> {
 }
 
 fn urlencode(value: &str) -> String {
-    value.replace(' ', "%20")
+    reqwest::Url::parse_with_params("https://form.invalid/", &[("v", value)])
+        .ok()
+        .and_then(|url| {
+            url.query()
+                .map(|query| query.trim_start_matches("v=").to_owned())
+        })
+        .unwrap_or_default()
+}
+
+impl std::fmt::Debug for EndpointCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EndpointCredentials { [redacted] }")
+    }
+}
+
+impl std::fmt::Debug for DeviceCodeAuth {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("DeviceCodeAuth([redacted])")
+    }
+}
+
+#[cfg(test)]
+mod release_tests {
+    use super::*;
+    #[test]
+    fn legacy_migration_fails_closed_and_logout_attempts_both_resources() {
+        use std::cell::Cell;
+        let cleared = Cell::new(false);
+        let result = migrate_legacy_token(
+            "private-token".into(),
+            |_| anyhow::bail!("private-endpoint"),
+            || {
+                cleared.set(true);
+                Ok(())
+            },
+        );
+        assert!(cleared.get());
+        assert!(!result.unwrap_err().to_string().contains("private-"));
+        let result = migrate_legacy_token(
+            "private-token".into(),
+            |_| anyhow::bail!("encryption"),
+            || anyhow::bail!("unlink"),
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Could not secure or remove")
+        );
+        assert_eq!(
+            migrate_legacy_token(
+                "token".into(),
+                |_| Ok(()),
+                || panic!("successful migration must not erase login")
+            )
+            .unwrap(),
+            "token"
+        );
+        let folder = std::env::temp_dir().join(format!("greenvita-logout-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let key_attempted = Cell::new(false);
+        assert!(
+            clear_saved_login_at(&folder, || {
+                key_attempted.set(true);
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(key_attempted.get());
+        let token = folder.join("token");
+        std::fs::write(&token, b"secret").unwrap();
+        assert!(clear_saved_login_at(&token, || anyhow::bail!("key cleanup")).is_err());
+        assert!(!token.exists());
+        assert!(clear_saved_login_at(&token, || Ok(())).is_ok());
+    }
+
+    #[test]
+    fn form_encoding_and_secret_debug_do_not_expose_tokens() {
+        assert_eq!(urlencode("a&b=c+%"), "a%26b%3Dc%2B%25");
+        let credentials = EndpointCredentials {
+            host: "private-endpoint".into(),
+            token: "secret-token".into(),
+        };
+        let debug = format!("{credentials:?}");
+        assert!(!debug.contains("private-endpoint") && !debug.contains("secret-token"));
+        assert!(decode_hex("00g1").is_err());
+        assert!(decode_hex("0").is_err());
+        assert_eq!(
+            decode_hex(&encode_hex(&[0, 128, 255])).unwrap(),
+            [0, 128, 255]
+        );
+    }
 }

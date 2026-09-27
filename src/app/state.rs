@@ -44,7 +44,7 @@ pub(crate) enum AppState {
         poll_job: Option<JoinHandle<Result<(Stream, StreamState)>>>,
         wait_estimate_job: Option<JoinHandle<Result<WaitTimeResponse>>>,
     },
-    Streaming(StreamingSession),
+    Streaming(Box<StreamingSession>),
     Settings {
         return_to: Box<AppState>,
         selected: usize,
@@ -59,6 +59,17 @@ pub(crate) enum AppState {
 }
 
 impl AppState {
+    pub(super) fn abort_read_only_jobs(&self) {
+        match self {
+            Self::RequestingDeviceCode(job) => job.abort(),
+            Self::WaitingForDeviceAuthorization { job, .. } => job.abort(),
+            Self::LoadingCredentials(job) => job.abort(),
+            Self::LoadingTitles(job) => job.abort(),
+            Self::LoadingConsoles(job) => job.abort(),
+            _ => {}
+        }
+    }
+
     fn keeps_stream_alive(&self) -> bool {
         match self {
             Self::Streaming(_) => true,
@@ -95,7 +106,7 @@ impl AppState {
 
     pub(super) fn into_streaming(self) -> Option<StreamingSession> {
         match self {
-            Self::Streaming(streaming) => Some(streaming),
+            Self::Streaming(streaming) => Some(*streaming),
             Self::Settings { return_to, .. } => return_to.into_streaming(),
             _ => None,
         }
@@ -106,7 +117,9 @@ impl App {
     pub async fn tick(&mut self) -> Result<()> {
         match &self.state {
             AppState::InitializeAuthentication => {
-                if self.service.auth.has_saved_login() {
+                if let Some(error) = self.service.auth.take_storage_error() {
+                    self.set_localized_error_screen("error-login-storage", error);
+                } else if self.service.auth.has_saved_login() {
                     self.load_credentials();
                 } else {
                     let selected = crate::Locale::ALL
@@ -136,5 +149,56 @@ impl App {
             | AppState::Error { .. } => {}
         }
         Ok(())
+    }
+}
+
+impl AppState {
+    /// A session creation POST must finish before cleanup can know its session ID.
+    /// Home cleanup deliberately never terminates the console's game session.
+    pub(crate) async fn shutdown(mut self) -> Result<()> {
+        loop {
+            match self {
+                Self::Settings { return_to, .. } => {
+                    self = *return_to;
+                    continue;
+                }
+                Self::RequestingDeviceCode(job) => crate::jobs::cancel(job).await,
+                Self::WaitingForDeviceAuthorization { job, .. } => crate::jobs::cancel(job).await,
+                Self::LoadingCredentials(job) => crate::jobs::cancel(job).await,
+                Self::LoadingTitles(job) => crate::jobs::cancel(job).await,
+                Self::LoadingConsoles(job) => crate::jobs::cancel(job).await,
+                Self::StartingStream { job: Some(job), .. } => {
+                    if let Ok(Ok(stream)) = job.await {
+                        stream.stop().await?;
+                    }
+                }
+                Self::Connecting {
+                    session,
+                    poll_job,
+                    wait_estimate_job,
+                } => {
+                    if let Some(job) = poll_job {
+                        crate::jobs::cancel(job).await;
+                    }
+                    if let Some(job) = wait_estimate_job {
+                        crate::jobs::cancel(job).await;
+                    }
+                    session.stream.stop().await?;
+                }
+                Self::Streaming(streaming) => (*streaming).stop().await?,
+                _ => {}
+            }
+            return Ok(());
+        }
+    }
+}
+
+impl App {
+    pub(crate) async fn shutdown(&mut self) -> Result<()> {
+        if let Some(job) = self.catalog_collections_job.take() {
+            crate::jobs::cancel(job).await;
+        }
+        let state = std::mem::replace(&mut self.state, AppState::InitializeAuthentication);
+        state.shutdown().await
     }
 }

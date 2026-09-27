@@ -7,6 +7,64 @@ fn config()->DecoderConfig { DecoderConfig{decode_width:1280,decode_height:720,o
 fn reset() { *FAKE.lock().unwrap()=Default::default(); }
 
 #[test]
+fn undersized_output_is_rejected_before_native_decode() {
+    reset();
+    let (output, _pixels) = surfaces();
+    let mut hw = decoder::HwVideoDecoder::new(config()).unwrap();
+    let lease = output.lock_decode_target().unwrap();
+    let mut target = lease.target;
+    target.capacity = 1; // Allocation remains valid, so the old code is safe to test.
+    assert!(hw.poll(target).is_err());
+    assert!(FAKE.lock().unwrap().calls.is_empty(), "validation happened after native invocation");
+}
+
+#[test]
+fn invalid_video_contracts_never_reach_native_code() {
+    reset();
+    for value in [0, 1281, u32::MAX, i32::MIN as u32] {
+        let mut cfg = config();
+        cfg.decode_width = value;
+        assert!(decoder::HwVideoDecoder::new(cfg).is_err());
+    }
+    assert_eq!(FAKE.lock().unwrap().created, 0);
+    let (output, _pixels) = surfaces();
+    let mut hw = decoder::HwVideoDecoder::new(config()).unwrap();
+    let lease = output.lock_decode_target().unwrap();
+    for (ptr, pitch, capacity) in [
+        (0, 1920, 960 * 544 * 2), (1, 1920, 960 * 544 * 2),
+        (lease.target.ptr, 1919, 960 * 544 * 2),
+        (lease.target.ptr, u32::MAX, u32::MAX),
+        (usize::MAX - 1, 1920, 960 * 544 * 2),
+    ] {
+        assert!(hw.poll(VideoTextureTarget { ptr, pitch, capacity }).is_err());
+    }
+    assert!(FAKE.lock().unwrap().calls.is_empty());
+    for size in [0, u32::MAX, 64 * 1024 * 1024 + 1] {
+        assert!(memory::CdramBlock::allocate("invalid", size).is_err());
+    }
+    assert!(memory::CdramBlock::allocate("bad\0name", 1).is_err());
+}
+
+#[test]
+fn native_error_releases_leases_and_decoder_resources_on_every_cycle() {
+    for _ in 0..20 {
+        reset();
+        let (output, _pixels) = surfaces();
+        {
+            let mut hw = decoder::HwVideoDecoder::new(config()).unwrap();
+            FAKE.lock().unwrap().reject_poll = true;
+            let lease = output.lock_decode_target().unwrap();
+            assert!(hw.poll(lease.target).err().unwrap().to_string().contains("sceAvcdecDecode"));
+        }
+        output.clear_targets();
+        let fake = FAKE.lock().unwrap();
+        assert!(fake.memory.is_empty());
+        assert!(fake.decoders.is_empty());
+        assert_eq!(fake.created, fake.deletes);
+    }
+}
+
+#[test]
 fn unknown_picture_identity_never_borrows_the_submitted_inputs_epoch() {
     reset();
     let (output, _pixels) = surfaces();

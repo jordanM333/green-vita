@@ -1,3 +1,18 @@
 /target
 /tests/*/target/
 __pycache__/
+
+# Runtime data and local credentials; intentional examples remain tracked.
+/ux0:*/
+/.env
+/.env.*
+!/.env.example
+/*tokens*.json
+/*credentials*.json
+/settings.json
+*.log
+*.vpk
+*.elf
+*.self
+/verification/host/
+/final-build-evidence/

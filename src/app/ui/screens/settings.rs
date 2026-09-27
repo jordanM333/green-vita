@@ -138,12 +138,25 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
-                ui.heading(egui::RichText::new(i18n.text("settings-audio")).color(theme.text_bright));
+                ui.heading(
+                    egui::RichText::new(i18n.text("settings-audio")).color(theme.text_bright),
+                );
                 let mut volume = app.settings.stream_volume_percent.min(100);
                 let selected = selected_index == row_index;
                 // This label marks the D-pad row; touch adjusts the slider directly.
-                let _ = focus_row(ui, selected, format!("{}: {}%  ◀ / ▶", i18n.text("settings-stream-volume"), volume));
-                if ui.add(egui::Slider::new(&mut volume, 0..=100).suffix("%")).changed() {
+                let _ = focus_row(
+                    ui,
+                    selected,
+                    format!(
+                        "{}: {}%  ◀ / ▶",
+                        i18n.text("settings-stream-volume"),
+                        volume
+                    ),
+                );
+                if ui
+                    .add(egui::Slider::new(&mut volume, 0..=100).suffix("%"))
+                    .changed()
+                {
                     commands.push(Command::SetStreamVolume(volume).into());
                 }
                 ui.label(egui::RichText::new(i18n.text("settings-stream-volume-help")).size(12.0));
@@ -334,7 +347,7 @@ fn checkbox_row(ui: &mut egui::Ui, selected: bool, checked: bool, label: String)
         ui.painter().rect_stroke(
             box_rect,
             3.0,
-            egui::Stroke::new(1.5, outline),
+            egui::Stroke::new(1.5_f32, outline),
             egui::StrokeKind::Inside,
         );
 
@@ -344,7 +357,7 @@ fn checkbox_row(ui: &mut egui::Ui, selected: bool, checked: bool, label: String)
             } else {
                 egui::Color32::WHITE
             };
-            let check_stroke = egui::Stroke::new(2.5, check_color);
+            let check_stroke = egui::Stroke::new(2.5_f32, check_color);
             let first = egui::pos2(box_rect.left() + 3.5, box_rect.center().y);
             let middle = egui::pos2(box_rect.left() + 7.5, box_rect.bottom() - 4.0);
             let last = egui::pos2(box_rect.right() - 3.0, box_rect.top() + 4.0);
@@ -394,8 +407,11 @@ impl App {
                     && matches!(rows.get(*selected), Some(SettingsRow::StreamVolume))
                 {
                     let current = self.settings.stream_volume_percent.min(100);
-                    let next = if command == InputCommand::MoveLeft { current.saturating_sub(5) }
-                        else { current.saturating_add(5).min(100) };
+                    let next = if command == InputCommand::MoveLeft {
+                        current.saturating_sub(5)
+                    } else {
+                        current.saturating_add(5).min(100)
+                    };
                     self.handle_settings_command(Command::SetStreamVolume(next))?;
                 }
             }
@@ -424,9 +440,8 @@ impl App {
                 return self.handle_settings_command(Command::SetLocale(*locale));
             }
             SettingsRow::RearTouchLayout(enabled) => {
-                return self.handle_settings_command(Command::SetSwapRearTouchTriggerStick(
-                    !enabled,
-                ));
+                return self
+                    .handle_settings_command(Command::SetSwapRearTouchTriggerStick(!enabled));
             }
             SettingsRow::GameSwap { title_id, enabled } => {
                 return self.handle_settings_command(Command::SetSwapShouldersAndTriggers {

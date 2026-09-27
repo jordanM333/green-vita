@@ -20,19 +20,32 @@ pub(crate) fn poll_before_input(queued: usize, pending: usize) -> bool {
     pending != 0 && (queued == 0 || pending >= OUTPUT_DEBT_WATERMARK)
 }
 
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
-pub(crate) struct QueueReservation { used: Arc<AtomicUsize>, bytes: usize }
+pub(crate) struct QueueReservation {
+    used: Arc<AtomicUsize>,
+    bytes: usize,
+}
 impl QueueReservation {
     pub(crate) fn acquire(used: &Arc<AtomicUsize>, bytes: usize) -> Option<Self> {
         used.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-            n.checked_add(bytes).filter(|total| *total <= AU_QUEUE_BYTES)
-        }).ok()?;
-        Some(Self { used: used.clone(), bytes })
+            n.checked_add(bytes)
+                .filter(|total| *total <= AU_QUEUE_BYTES)
+        })
+        .ok()?;
+        Some(Self {
+            used: used.clone(),
+            bytes,
+        })
     }
 }
 impl Drop for QueueReservation {
-    fn drop(&mut self) { self.used.fetch_sub(self.bytes, Ordering::AcqRel); }
+    fn drop(&mut self) {
+        self.used.fetch_sub(self.bytes, Ordering::AcqRel);
+    }
 }
 
 #[derive(Default)]
@@ -48,21 +61,33 @@ impl Recovery {
     pub(crate) fn damage(&mut self) -> bool {
         let changed = !self.waiting;
         self.waiting = true;
-        if changed { self.started = Some(Instant::now()); }
+        if changed {
+            self.started = Some(Instant::now());
+        }
         changed
     }
 
-    pub(crate) fn waiting(&self) -> bool { self.waiting }
-    pub(crate) fn accepts(&self, idr: bool) -> bool { !self.waiting || idr }
+    pub(crate) fn waiting(&self) -> bool {
+        self.waiting
+    }
+    pub(crate) fn accepts(&self, idr: bool) -> bool {
+        !self.waiting || idr
+    }
 
     pub(crate) fn wait_ms(&self, now: Instant) -> u64 {
-        self.started.map(|at| now.saturating_duration_since(at).as_millis() as u64).unwrap_or(0)
+        self.started
+            .map(|at| now.saturating_duration_since(at).as_millis() as u64)
+            .unwrap_or(0)
     }
 
     pub(crate) fn summary(&self, now: Instant) -> String {
         let current = self.wait_ms(now);
-        format!("Recovery wait:{}ms max:{}ms completed:{}", current,
-            current.max(self.longest_wait.as_millis() as u64), self.completed)
+        format!(
+            "Recovery wait:{}ms max:{}ms completed:{}",
+            current,
+            current.max(self.longest_wait.as_millis() as u64),
+            self.completed
+        )
     }
 
     /// Seeing an IDR is insufficient: it must actually enter the decoder queue.

@@ -25,7 +25,9 @@ pub const MENU_ITEMS: [Command; 4] = [
 
 fn menu_items(app: &App) -> Vec<Command> {
     let mut items = MENU_ITEMS.to_vec();
-    if app.state.streaming().is_some_and(|s| s.can_refresh()) { items.insert(1, Command::RefreshStream); }
+    if app.state.streaming().is_some_and(|s| s.can_refresh()) {
+        items.insert(1, Command::RefreshStream);
+    }
     items.insert(1, Command::ToggleMicrophone);
     items
 }
@@ -157,10 +159,7 @@ impl App {
             }
             InputCommand::MoveLeft | InputCommand::MoveRight => {}
             InputCommand::Confirm => {
-                let command = items
-                    .get(selected)
-                    .copied()
-                    .unwrap_or(Command::ExitGame);
+                let command = items.get(selected).copied().unwrap_or(Command::ExitGame);
                 self.handle_paused_overlay_command(command).await?;
             }
             // Only the Resume row / pause toggle resumes; Back is sent through to the game while

@@ -3,8 +3,8 @@ use crate::app::ui::header::show_header_row;
 use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::{draw_title_image, draw_title_image_cover, show_selectable_list};
 use crate::app::{AppState, StreamStartTarget, TitleImage, TitleInitialOverlay};
-use crate::i18n::I18n;
 use crate::catalog_preferences::CatalogSection;
+use crate::i18n::I18n;
 use crate::{App, AppCommand, InputCommand, StreamKind};
 use anyhow::Result;
 use std::sync::Arc;
@@ -22,8 +22,14 @@ pub enum Command {
 
 pub(crate) fn filtered_title_indices(app: &App) -> Vec<usize> {
     let query = app.title_search_query.trim();
-    let ids: Vec<_> = app.service.titles.iter().map(|title| title.id.as_str()).collect();
-    app.catalog_collections.indices(&ids, app.catalog_section, &app.settings.catalog)
+    let ids: Vec<_> = app
+        .service
+        .titles
+        .iter()
+        .map(|title| title.id.as_str())
+        .collect();
+    app.catalog_collections
+        .indices(&ids, app.catalog_section, &app.settings.catalog)
         .into_iter()
         .filter(|index| {
             let title = &app.service.titles[*index];
@@ -125,24 +131,50 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     .show_ui(ui, |ui| {
                         for section in CatalogSection::ALL {
                             let available = app.catalog_collections.supports(section);
-                            let label = if available { i18n.text(section.label_key()) } else {
-                                format!("{} · {}", i18n.text(section.label_key()), i18n.text("catalog-coming-soon"))
+                            let label = if available {
+                                i18n.text(section.label_key())
+                            } else {
+                                format!(
+                                    "{} · {}",
+                                    i18n.text(section.label_key()),
+                                    i18n.text("catalog-coming-soon")
+                                )
                             };
-                            if ui.add_enabled(available, egui::Button::new(label)
-                                .selected(app.catalog_section == section)).clicked() {
+                            if ui
+                                .add_enabled(
+                                    available,
+                                    egui::Button::new(label)
+                                        .selected(app.catalog_section == section),
+                                )
+                                .clicked()
+                            {
                                 commands.push(Command::SetSection(section).into());
                             }
                         }
                     });
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(app.catalog_collections_job.is_none(), egui::Button::new(i18n.text("catalog-refresh"))).clicked() {
+                    if ui
+                        .add_enabled(
+                            app.catalog_collections_job.is_none(),
+                            egui::Button::new(i18n.text("catalog-refresh")),
+                        )
+                        .clicked()
+                    {
                         commands.push(Command::RefreshCollections.into());
                     }
-                    if app.catalog_collections_job.is_some() { ui.spinner(); }
+                    if app.catalog_collections_job.is_some() {
+                        ui.spinner();
+                    }
                 });
-                if app.catalog_collections.errors.contains(&app.catalog_section) {
+                if app
+                    .catalog_collections
+                    .errors
+                    .contains(&app.catalog_section)
+                {
                     ui.colored_label(theme.text, i18n.text("catalog-load-failed"));
-                } else if app.catalog_collections_job.is_some() && app.catalog_section != CatalogSection::All {
+                } else if app.catalog_collections_job.is_some()
+                    && app.catalog_section != CatalogSection::All
+                {
                     ui.label(i18n.text("catalog-loading-account"));
                 }
                 ui.add_space(4.0);
@@ -180,16 +212,30 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 });
                 ui.add_space(4.0);
 
-                if filtered.is_empty() && !app.service.titles.is_empty() && app.catalog_collections_job.is_none() && !app.catalog_collections.errors.contains(&app.catalog_section) {
+                if filtered.is_empty()
+                    && !app.service.titles.is_empty()
+                    && app.catalog_collections_job.is_none()
+                    && !app
+                        .catalog_collections
+                        .errors
+                        .contains(&app.catalog_section)
+                {
                     ui.centered_and_justified(|ui| {
-                        ui.colored_label(theme.text, i18n.text(if !app.title_search_query.is_empty() {
-                            "title-search-empty"
-                        } else { match app.catalog_section {
-                            CatalogSection::Favorites => "catalog-favorites-empty",
-                            CatalogSection::RecentlyPlayed => "catalog-recent-empty",
-                            CatalogSection::RecentlyAdded | CatalogSection::MostPopular => "catalog-collection-empty",
-                            _ => "title-search-empty",
-                        }}));
+                        ui.colored_label(
+                            theme.text,
+                            i18n.text(if !app.title_search_query.is_empty() {
+                                "title-search-empty"
+                            } else {
+                                match app.catalog_section {
+                                    CatalogSection::Favorites => "catalog-favorites-empty",
+                                    CatalogSection::RecentlyPlayed => "catalog-recent-empty",
+                                    CatalogSection::RecentlyAdded | CatalogSection::MostPopular => {
+                                        "catalog-collection-empty"
+                                    }
+                                    _ => "title-search-empty",
+                                }
+                            }),
+                        );
                     });
                 } else {
                     let rows = title_rows(app, &filtered, &i18n);
@@ -340,7 +386,11 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 });
 
                 ui.add_space(8.0);
-                ui.label(egui::RichText::new(i18n.text("catalog-account-history")).size(11.0).color(theme.text));
+                ui.label(
+                    egui::RichText::new(i18n.text("catalog-account-history"))
+                        .size(11.0)
+                        .color(theme.text),
+                );
                 ui.add_space(6.0);
 
                 egui::ScrollArea::vertical()
@@ -598,10 +648,17 @@ impl App {
                 let Some(current) = current else {
                     return Ok(());
                 };
-                if matches!(self.catalog_section, CatalogSection::RecentlyPlayed | CatalogSection::RecentlyAdded | CatalogSection::MostPopular) {
+                if matches!(
+                    self.catalog_section,
+                    CatalogSection::RecentlyPlayed
+                        | CatalogSection::RecentlyAdded
+                        | CatalogSection::MostPopular
+                ) {
                     let target_position = if command == InputCommand::MoveRight {
                         (current + 8).min(filtered.len().saturating_sub(1))
-                    } else { current.saturating_sub(8) };
+                    } else {
+                        current.saturating_sub(8)
+                    };
                     if let AppState::TitleList { selected } = &mut self.state {
                         *selected = filtered[target_position];
                     }
@@ -672,7 +729,9 @@ impl App {
     }
 
     pub(crate) fn normalize_catalog_selection(&mut self) {
-        if !matches!(self.state, AppState::TitleList { .. }) { return; }
+        if !matches!(self.state, AppState::TitleList { .. }) {
+            return;
+        }
         let filtered = filtered_title_indices(self);
         if let Some(first) = filtered.first()
             && let AppState::TitleList { selected } = &mut self.state

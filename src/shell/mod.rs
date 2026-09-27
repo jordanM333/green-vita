@@ -1,4 +1,5 @@
 #[link(name = "SDL2", kind = "static")]
+unsafe extern "C" {}
 #[link(name = "SceAudio_stub", kind = "static")]
 unsafe extern "C" {}
 
@@ -32,6 +33,13 @@ const STREAM_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const TARGET_FRAME_TIME: Duration = Duration::from_millis(16);
 
 pub async fn run(mut app: App) -> Result<()> {
+    let result = run_inner(&mut app).await;
+    let cleanup = app.shutdown().await;
+    crate::streaming::video::release_reserved_decoder_cdram();
+    result.and(cleanup)
+}
+
+async fn run_inner(app: &mut App) -> Result<()> {
     crate::streaming::video::reserve_decoder_cdram();
 
     let sdl = sdl2::init().map_err(anyhow::Error::msg)?;
@@ -41,7 +49,7 @@ pub async fn run(mut app: App) -> Result<()> {
     let game_controller_subsystem = sdl.game_controller().map_err(anyhow::Error::msg)?;
     let mut controller = open_first_controller(&game_controller_subsystem);
     let joystick_subsystem = sdl.joystick().map_err(anyhow::Error::msg)?;
-    let raw_joystick = joystick_subsystem.open(0).ok();
+    let mut raw_joystick = joystick_subsystem.open(0).ok();
     let mut event_pump = sdl.event_pump().map_err(anyhow::Error::msg)?;
     let mut surface = VitaSurface::new(&video)?;
     let mut audio_renderer =
@@ -60,6 +68,7 @@ pub async fn run(mut app: App) -> Result<()> {
     let mut vita_ime_active = false;
     let mut vita_ime_pending = None;
     let mut last_ui_presented_at = Instant::now();
+    let mut input_focused = true;
 
     loop {
         let loop_started_at = Instant::now();
@@ -73,38 +82,132 @@ pub async fn run(mut app: App) -> Result<()> {
         }
 
         for event in event_pump.poll_iter() {
-            if matches!(&event,
-                Event::AppWillEnterBackground { .. } | Event::AppDidEnterBackground { .. }
-                | Event::Window { win_event: sdl2::event::WindowEvent::FocusLost, .. }
-                | Event::Quit { .. })
-                && let Some(streaming) = app.state.streaming()
-            {
-                streaming.microphone.set_on(false);
+            if matches!(event, Event::Quit { .. }) {
+                return Ok(());
+            }
+            if matches!(
+                &event,
+                Event::AppDidEnterForeground { .. }
+                    | Event::Window {
+                        win_event: sdl2::event::WindowEvent::FocusGained,
+                        ..
+                    }
+            ) {
+                input_focused = true;
+            }
+            if matches!(
+                &event,
+                Event::AppWillEnterBackground { .. }
+                    | Event::AppDidEnterBackground { .. }
+                    | Event::Window {
+                        win_event: sdl2::event::WindowEvent::FocusLost,
+                        ..
+                    }
+                    | Event::Quit { .. }
+            ) {
+                input_focused = false;
+                back_hold_since = None;
+                held_direction = None;
+                if let Some(streaming) = app.state.streaming() {
+                    streaming.microphone.set_on(false);
+                }
                 mic_touch = Default::default();
                 rear_touch_buttons = Default::default();
                 egui_events.push(egui::Event::PointerGone);
             }
             // SDL can synthesize mouse events for an already handled touch.
             // Processing both would toggle the mic twice for one tap.
-            if matches!(&event,
-                Event::MouseMotion { which: u32::MAX, .. }
-                | Event::MouseButtonDown { which: u32::MAX, .. }
-                | Event::MouseButtonUp { which: u32::MAX, .. }) { continue; }
+            if matches!(
+                &event,
+                Event::MouseMotion {
+                    which: u32::MAX,
+                    ..
+                } | Event::MouseButtonDown {
+                    which: u32::MAX,
+                    ..
+                } | Event::MouseButtonUp {
+                    which: u32::MAX,
+                    ..
+                }
+            ) {
+                continue;
+            }
             use crate::streaming::mic_button::{self, Phase, Pointer, Route};
             let live_overlay = matches!(&app.state, AppState::Streaming(s) if !s.paused);
             let pointer = match &event {
-                Event::FingerDown { touch_id: 1, finger_id, x, y, .. } => Some((Pointer::Finger(*finger_id), Phase::Down, *x * WIDTH as f32 / UI_SCALE, *y * HEIGHT as f32 / UI_SCALE)),
-                Event::FingerMotion { touch_id: 1, finger_id, x, y, .. } => Some((Pointer::Finger(*finger_id), Phase::Move, *x * WIDTH as f32 / UI_SCALE, *y * HEIGHT as f32 / UI_SCALE)),
-                Event::FingerUp { touch_id: 1, finger_id, x, y, .. } => Some((Pointer::Finger(*finger_id), Phase::Up, *x * WIDTH as f32 / UI_SCALE, *y * HEIGHT as f32 / UI_SCALE)),
-                Event::MouseButtonDown { x, y, .. } => Some((Pointer::Mouse, Phase::Down, *x as f32 / UI_SCALE, *y as f32 / UI_SCALE)),
-                Event::MouseMotion { x, y, .. } => Some((Pointer::Mouse, Phase::Move, *x as f32 / UI_SCALE, *y as f32 / UI_SCALE)),
-                Event::MouseButtonUp { x, y, .. } => Some((Pointer::Mouse, Phase::Up, *x as f32 / UI_SCALE, *y as f32 / UI_SCALE)),
+                Event::FingerDown {
+                    touch_id: 1,
+                    finger_id,
+                    x,
+                    y,
+                    ..
+                } => Some((
+                    Pointer::Finger(*finger_id),
+                    Phase::Down,
+                    *x * WIDTH as f32 / UI_SCALE,
+                    *y * HEIGHT as f32 / UI_SCALE,
+                )),
+                Event::FingerMotion {
+                    touch_id: 1,
+                    finger_id,
+                    x,
+                    y,
+                    ..
+                } => Some((
+                    Pointer::Finger(*finger_id),
+                    Phase::Move,
+                    *x * WIDTH as f32 / UI_SCALE,
+                    *y * HEIGHT as f32 / UI_SCALE,
+                )),
+                Event::FingerUp {
+                    touch_id: 1,
+                    finger_id,
+                    x,
+                    y,
+                    ..
+                } => Some((
+                    Pointer::Finger(*finger_id),
+                    Phase::Up,
+                    *x * WIDTH as f32 / UI_SCALE,
+                    *y * HEIGHT as f32 / UI_SCALE,
+                )),
+                Event::MouseButtonDown { x, y, .. } => Some((
+                    Pointer::Mouse,
+                    Phase::Down,
+                    *x as f32 / UI_SCALE,
+                    *y as f32 / UI_SCALE,
+                )),
+                Event::MouseMotion { x, y, .. } => Some((
+                    Pointer::Mouse,
+                    Phase::Move,
+                    *x as f32 / UI_SCALE,
+                    *y as f32 / UI_SCALE,
+                )),
+                Event::MouseButtonUp { x, y, .. } => Some((
+                    Pointer::Mouse,
+                    Phase::Up,
+                    *x as f32 / UI_SCALE,
+                    *y as f32 / UI_SCALE,
+                )),
                 _ => None,
             };
-            let route = pointer.map(|(id, phase, x, y)| mic_touch.route(id, phase,
-                live_overlay && mic_button::contains(x, y,
-                    (WIDTH as f32 / UI_SCALE, HEIGHT as f32 / UI_SCALE)))).unwrap_or(Route::Game);
-            if route == Route::Game { rear_touch_buttons.handle_event(&event); }
+            let route = pointer
+                .map(|(id, phase, x, y)| {
+                    mic_touch.route(
+                        id,
+                        phase,
+                        live_overlay
+                            && mic_button::contains(
+                                x,
+                                y,
+                                (WIDTH as f32 / UI_SCALE, HEIGHT as f32 / UI_SCALE),
+                            ),
+                    )
+                })
+                .unwrap_or(Route::Game);
+            if route == Route::Game {
+                rear_touch_buttons.handle_event(&event);
+            }
             let ime_owned_event = vita_ime_active;
             if ime_owned_event {
                 match &event {
@@ -135,13 +238,15 @@ pub async fn run(mut app: App) -> Result<()> {
             {
                 direct_commands.push(command);
             }
-            if route != Route::Consumed && (!live_overlay || route == Route::Ui)
+            if route != Route::Consumed
+                && (!live_overlay || route == Route::Ui)
                 && let Some(egui_event) = map_pointer_event(
-                &event,
-                (WIDTH as f32 / UI_SCALE, HEIGHT as f32 / UI_SCALE),
-                UI_SCALE,
-                &mut pointer_pos,
-            ) {
+                    &event,
+                    (WIDTH as f32 / UI_SCALE, HEIGHT as f32 / UI_SCALE),
+                    UI_SCALE,
+                    &mut pointer_pos,
+                )
+            {
                 egui_events.push(egui_event);
             }
             if let AppState::Streaming(streaming) = &app.state
@@ -164,9 +269,16 @@ pub async fn run(mut app: App) -> Result<()> {
                 && controller.is_none()
             {
                 controller = open_first_controller(&game_controller_subsystem);
+                raw_joystick = joystick_subsystem.open(0).ok();
             }
-            if let Event::ControllerDeviceRemoved { .. } = event {
+            if let Event::ControllerDeviceRemoved { which, .. } = event
+                && controller
+                    .as_ref()
+                    .is_some_and(|c| c.instance_id() == which)
+            {
                 controller = None;
+                raw_joystick = None;
+                rear_touch_buttons = Default::default();
             }
         }
 
@@ -229,11 +341,12 @@ pub async fn run(mut app: App) -> Result<()> {
         }
 
         send_stream_gamepad_state(
-            &mut app,
+            app,
             controller.as_ref(),
             raw_joystick.as_ref(),
             &rear_touch_buttons,
             relay_back_as_view,
+            input_focused,
         );
 
         app.tick().await?;
@@ -250,7 +363,10 @@ pub async fn run(mut app: App) -> Result<()> {
             egui_events.push(egui::Event::PointerGone);
         }
         if let Some(streaming) = app.state.streaming_mut() {
-            audio_renderer.submit_packets(streaming.take_audio_packets(), app.settings.stream_volume_percent);
+            audio_renderer.submit_packets(
+                streaming.take_audio_packets(),
+                app.settings.stream_volume_percent,
+            );
         }
         // Painting an unchanged picture costs about 14 ms in the on-device trace.
         // Keep polling input, audio, and the stream, but save that GPU work
@@ -285,7 +401,7 @@ pub async fn run(mut app: App) -> Result<()> {
 
             let mut ui_commands = Vec::new();
             let full_output = egui_ctx.run(raw_input, |ctx| {
-                ui_commands = build_ui(ctx, &app, hold_progress);
+                ui_commands = build_ui(ctx, app, hold_progress);
             });
 
             for command in ui_commands {
@@ -313,9 +429,15 @@ pub async fn run(mut app: App) -> Result<()> {
         let metrics = &crate::streaming::video::metrics::METRICS;
         if !skip_unchanged_stream {
             let loop_us = loop_started_at.elapsed().as_micros() as u64;
-            metrics.ui_loop_sum_us.fetch_add(loop_us, std::sync::atomic::Ordering::Relaxed);
-            metrics.ui_loop_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            metrics.ui_loop_max_us.fetch_max(loop_us, std::sync::atomic::Ordering::Relaxed);
+            metrics
+                .ui_loop_sum_us
+                .fetch_add(loop_us, std::sync::atomic::Ordering::Relaxed);
+            metrics
+                .ui_loop_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            metrics
+                .ui_loop_max_us
+                .fetch_max(loop_us, std::sync::atomic::Ordering::Relaxed);
         }
         let frame_deadline = loop_started_at
             + if skip_unchanged_stream {
@@ -323,7 +445,9 @@ pub async fn run(mut app: App) -> Result<()> {
             } else {
                 TARGET_FRAME_TIME
             };
-        let display_output = app.state.streaming()
+        let display_output = app
+            .state
+            .streaming()
             .filter(|streaming| !streaming.paused)
             .map(|streaming| streaming.direct_video_output());
         if Instant::now() < frame_deadline {
@@ -347,11 +471,12 @@ pub async fn run(mut app: App) -> Result<()> {
                 // queued for the normal UI pass at the start of the next frame.
                 event_pump.pump_events();
                 send_stream_gamepad_state(
-                    &mut app,
+                    app,
                     controller.as_ref(),
                     raw_joystick.as_ref(),
                     &rear_touch_buttons,
                     false,
+                    input_focused,
                 );
             }
         } else {
@@ -366,6 +491,7 @@ fn send_stream_gamepad_state(
     raw_joystick: Option<&sdl2::joystick::Joystick>,
     rear_touch_buttons: &RearTouchButtons,
     relay_back_as_view: bool,
+    input_focused: bool,
 ) {
     let settings = &app.settings;
     let (rear_touch_enabled, front_touch_auxiliary_buttons) = match &app.state {
@@ -378,28 +504,37 @@ fn send_stream_gamepad_state(
     let AppState::Streaming(streaming) = &mut app.state else {
         return;
     };
-    let Some(mut frame) = read_gamepad_frame(
-        controller,
-        raw_joystick,
-        rear_touch_buttons,
-        rear_touch_enabled,
-        front_touch_auxiliary_buttons,
-        settings.swap_rear_touch_trigger_stick,
-    ) else {
-        return;
+    let mut frame = if input_focused {
+        read_gamepad_frame(
+            controller,
+            raw_joystick,
+            rear_touch_buttons,
+            rear_touch_enabled,
+            front_touch_auxiliary_buttons,
+            settings.swap_rear_touch_trigger_stick,
+        )
+        .unwrap_or_default()
+    } else {
+        Default::default()
     };
 
     // Back is relayed separately after the hold gesture resolves.
-    frame.view = f32::from(relay_back_as_view);
+    frame.view = f32::from(input_focused && relay_back_as_view);
     // Keep a local, per-render-frame marker so a phone recording can compare the physical
     // input with the first corresponding movement in Xbox's video. No stream settings change.
     let mask = u64::from(frame.a > 0.0)
         | (u64::from(frame.b > 0.0) << 1)
         | (u64::from(frame.right_trigger > 0.2) << 2);
-    let lx = (frame.left_thumb_x_axis * 100.0).round().clamp(-100.0, 100.0) as i16;
-    let ly = (frame.left_thumb_y_axis * 100.0).round().clamp(-100.0, 100.0) as i16;
+    let lx = (frame.left_thumb_x_axis * 100.0)
+        .round()
+        .clamp(-100.0, 100.0) as i16;
+    let ly = (frame.left_thumb_y_axis * 100.0)
+        .round()
+        .clamp(-100.0, 100.0) as i16;
     let metrics = &crate::streaming::video::metrics::METRICS;
-    metrics.local_button_mask.store(mask, std::sync::atomic::Ordering::Relaxed);
+    metrics
+        .local_button_mask
+        .store(mask, std::sync::atomic::Ordering::Relaxed);
     metrics.local_left_stick.store(
         (lx as u16 as u64) | ((ly as u16 as u64) << 16),
         std::sync::atomic::Ordering::Relaxed,

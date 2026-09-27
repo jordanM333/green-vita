@@ -3,12 +3,12 @@ use crate::api::streaming::PlaybackBackendEvent;
 use crate::api::streaming::rtc::worker::{RtcWorker, RtcWorkerEvent};
 use crate::api_xbox::streaming::rtc::worker;
 use crate::jobs::{PollJob, poll_job};
+use crate::streaming::audio_timing::TimedAudio;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
-use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
 use crate::streaming::video::metrics::METRICS;
+use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
 use anyhow::Result;
 use bytes::Bytes;
-use crate::streaming::audio_timing::TimedAudio;
 use rtc::peer_connection::transport::RTCIceCandidateInit;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -31,7 +31,10 @@ pub(crate) struct XboxStreamingBackend {
 }
 
 impl XboxStreamingBackend {
-    pub(crate) fn start(stream: Stream, microphone: crate::streaming::microphone::Microphone) -> Result<Self> {
+    pub(crate) fn start(
+        stream: Stream,
+        microphone: crate::streaming::microphone::Microphone,
+    ) -> Result<Self> {
         let worker = worker::spawn(stream.clone(), microphone)?;
         Ok(Self {
             stream,
@@ -58,7 +61,9 @@ impl XboxStreamingBackend {
                 RtcWorkerEvent::VideoResolution(width, height) => {
                     return Some(PlaybackBackendEvent::VideoResolution(width, height));
                 }
-                RtcWorkerEvent::VideoTiming(timing) => return Some(PlaybackBackendEvent::VideoTiming(timing)),
+                RtcWorkerEvent::VideoTiming(timing) => {
+                    return Some(PlaybackBackendEvent::VideoTiming(timing));
+                }
                 RtcWorkerEvent::Closed => return Some(PlaybackBackendEvent::Closed),
                 RtcWorkerEvent::Error(message) => {
                     return Some(PlaybackBackendEvent::Error(message));
@@ -70,9 +75,15 @@ impl XboxStreamingBackend {
     pub(crate) fn try_recv_audio_packets(&self) -> Option<Vec<TimedAudio<Bytes>>> {
         let batch = self.worker.audio_rx.try_recv().ok()?;
         let age_us = batch.queued_at.elapsed().as_micros() as u64;
-        METRICS.audio_batch_age_sum_us.fetch_add(age_us, Ordering::Relaxed);
-        METRICS.audio_batch_age_count.fetch_add(1, Ordering::Relaxed);
-        METRICS.audio_batch_age_max_us.fetch_max(age_us, Ordering::Relaxed);
+        METRICS
+            .audio_batch_age_sum_us
+            .fetch_add(age_us, Ordering::Relaxed);
+        METRICS
+            .audio_batch_age_count
+            .fetch_add(1, Ordering::Relaxed);
+        METRICS
+            .audio_batch_age_max_us
+            .fetch_max(age_us, Ordering::Relaxed);
         Some(batch.packets)
     }
 
@@ -96,7 +107,9 @@ impl XboxStreamingBackend {
         self.worker.send_pointer_event(event);
     }
 
-    pub(crate) fn refresh_video(&self) { self.worker.refresh_video(); }
+    pub(crate) fn refresh_video(&self) {
+        self.worker.refresh_video();
+    }
 
     pub(crate) async fn maintain(&mut self) -> Option<String> {
         self.post_local_ice().await;
@@ -105,19 +118,31 @@ impl XboxStreamingBackend {
     }
 
     pub(crate) fn description(&self) -> String {
-        format!("xCloud session {}", self.stream.session_id)
+        "Xbox streaming session".to_owned()
     }
 
     pub(crate) async fn stop(self) -> Result<()> {
-        let Self { stream, worker, ice_post_job, ice_poll_job, keepalive_job, .. } = self;
-        if let Some(job) = ice_post_job { job.abort(); }
-        if let Some(job) = ice_poll_job { job.abort(); }
-        if let Some(job) = keepalive_job { job.abort(); }
+        let Self {
+            stream,
+            worker,
+            ice_post_job,
+            ice_poll_job,
+            keepalive_job,
+            ..
+        } = self;
+        if let Some(job) = ice_post_job {
+            crate::jobs::cancel(job).await;
+        }
+        if let Some(job) = ice_poll_job {
+            crate::jobs::cancel(job).await;
+        }
+        if let Some(job) = keepalive_job {
+            crate::jobs::cancel(job).await;
+        }
         let stopped = worker.shutdown().await;
-        let session_id = stream.session_id.clone();
-        let response = stream.stop().await?;
+        stream.stop().await?;
         stopped?;
-        eprintln!("Stopped xCloud session {session_id}: {response}");
+        eprintln!("Streaming resources released");
         Ok(())
     }
 

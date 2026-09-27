@@ -5,7 +5,8 @@ use anyhow::{Context, Result};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select_biased};
 use reqwest::Client;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::time::Duration;
+use std::sync::Arc;
+use tokio::sync::Notify;
 
 const MAX_PENDING_CATALOG_JOBS: usize = 4;
 const MAX_PENDING_PREFETCH_JOBS: usize = 4;
@@ -55,7 +56,7 @@ impl CatalogJob {
                     .fetch_details(client, &metadata_id, &market, &language)
                     .await;
                 if let Err(error) = &result {
-                    eprintln!("Catalog worker: metadata for {game_id} failed: {error:#}");
+                    eprintln!("Catalog worker: metadata failed: {error:#}");
                 } else if let Ok(details) = &result
                     && let Err(error) = save_cached_metadata(
                         backend.cache_namespace(),
@@ -64,7 +65,7 @@ impl CatalogJob {
                         details,
                     )
                 {
-                    eprintln!("Catalog worker: failed to cache metadata for {game_id}: {error:#}");
+                    eprintln!("Catalog worker: failed to cache metadata: {error:#}");
                 }
                 CatalogResult::Metadata {
                     game_id,
@@ -87,7 +88,7 @@ impl CatalogJob {
                 )
                 .await;
                 if let Err(error) = &result {
-                    eprintln!("Catalog worker: {kind:?} image for {game_id} failed: {error:#}");
+                    eprintln!("Catalog worker: {kind:?} image failed: {error:#}");
                 }
                 CatalogResult::Image {
                     game_id,
@@ -115,6 +116,9 @@ pub struct CatalogWorker {
     jobs: Sender<CatalogJob>,
     prefetch_jobs: Sender<CatalogJob>,
     results: Receiver<CatalogResult>,
+    stop: Sender<()>,
+    cancel: Arc<Notify>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl CatalogWorker {
@@ -123,7 +127,10 @@ impl CatalogWorker {
         let (prefetch_tx, prefetch_rx) = bounded::<CatalogJob>(MAX_PENDING_PREFETCH_JOBS);
         let (result_tx, result_rx) = bounded::<CatalogResult>(MAX_PENDING_CATALOG_RESULTS);
 
-        std::thread::spawn(move || {
+        let (stop_tx, stop_rx) = bounded::<()>(1);
+        let cancel = Arc::new(Notify::new());
+        let worker_cancel = Arc::clone(&cancel);
+        let thread = std::thread::spawn(move || {
             let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -131,13 +138,14 @@ impl CatalogWorker {
                 eprintln!("Catalog worker: failed to build tokio runtime, thread exiting");
                 return;
             };
-            let client = Client::builder()
-                .timeout(Duration::from_secs(8))
-                .build()
-                .unwrap_or_default();
+            let Ok(client) = crate::http::client() else {
+                eprintln!("Catalog worker: secure HTTP client unavailable");
+                return;
+            };
 
             loop {
                 let job = select_biased! {
+                    recv(stop_rx) -> _ => break,
                     recv(job_rx) -> job => job,
                     recv(prefetch_rx) -> job => job,
                 };
@@ -145,17 +153,25 @@ impl CatalogWorker {
                     break;
                 };
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
-                    runtime.block_on(job.run(&client, &backend))
+                    runtime.block_on(async {
+                        tokio::select! {
+                            biased;
+                            _ = worker_cancel.notified() => None,
+                            result = job.run(&client, &backend) => Some(result),
+                        }
+                    })
                 }));
                 let result = match outcome {
-                    Ok(result) => result,
+                    Ok(Some(result)) => result,
+                    Ok(None) => break,
                     Err(_) => {
                         eprintln!("Catalog worker: job panicked; continuing");
                         continue;
                     }
                 };
-                if result_tx.send(result).is_err() {
-                    break;
+                select_biased! {
+                    recv(stop_rx) -> _ => break,
+                    send(result_tx, result) -> sent => if sent.is_err() { break; },
                 }
             }
         });
@@ -164,6 +180,9 @@ impl CatalogWorker {
             jobs: job_tx,
             prefetch_jobs: prefetch_tx,
             results: result_rx,
+            stop: stop_tx,
+            cancel,
+            thread: Some(thread),
         }
     }
 
@@ -247,6 +266,19 @@ impl CatalogWorker {
     }
 }
 
+impl Drop for CatalogWorker {
+    fn drop(&mut self) {
+        let _ = self.stop.try_send(());
+        // notify_one retains a permit if cancellation precedes the next select.
+        self.cancel.notify_one();
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            eprintln!("Catalog worker stopped after panic");
+        }
+    }
+}
+
 impl ImageKind {
     fn dimensions(self) -> (u32, u32, bool) {
         match self {
@@ -285,28 +317,35 @@ async fn load_or_fetch_image(
         match decode_image_rgba(&bytes, max_width, max_height, pad_to_bounds) {
             Ok(art) => return Ok(art),
             Err(error) => {
-                eprintln!("Catalog worker: invalid cached {kind:?} for {game_id}: {error:#}");
+                eprintln!("Catalog worker: invalid cached {kind:?}: {error:#}");
                 let _ = std::fs::remove_file(path);
             }
         }
     }
 
-    let bytes = client
-        .get(url)
-        .send()
-        .await
-        .context("catalog image request failed")?
-        .error_for_status()
-        .context("catalog image request returned an error status")?
-        .bytes()
-        .await
-        .context("failed to read catalog image response body")?;
+    let parsed = reqwest::Url::parse(url).context("invalid image URL")?;
+    anyhow::ensure!(
+        parsed.scheme() == "https" && parsed.username().is_empty() && parsed.password().is_none(),
+        "untrusted image URL"
+    );
+    let response = crate::http::send(client.get(parsed)).await?;
+    anyhow::ensure!(
+        response.status().is_success(),
+        "image request rejected (HTTP {})",
+        response.status().as_u16()
+    );
+    let bytes = crate::http::body(
+        response,
+        crate::http::Payload::Image,
+        crate::resource_limits::ResourceLimits::default(),
+    )
+    .await?;
     let (max_width, max_height, pad_to_bounds) = kind.dimensions();
     let art = decode_image_rgba(&bytes, max_width, max_height, pad_to_bounds)?;
     if let Some(path) = cache_path.as_deref()
         && let Err(error) = cache::write(path, &bytes)
     {
-        eprintln!("Catalog worker: failed to cache {kind:?} for {game_id}: {error:#}");
+        eprintln!("Catalog worker: failed to cache {kind:?}: {error:#}");
     }
     Ok(art)
 }
@@ -317,7 +356,12 @@ fn decode_image_rgba(
     max_height: u32,
     pad_to_bounds: bool,
 ) -> Result<(Vec<u8>, u32, u32)> {
-    let image = image::load_from_memory(bytes).context("failed to decode catalog image")?;
+    let image =
+        crate::http::decode_image(bytes, crate::resource_limits::ResourceLimits::default())?;
+    anyhow::ensure!(
+        max_width > 0 && max_height > 0 && max_width <= 512 && max_height <= 512,
+        "invalid thumbnail dimensions"
+    );
     let rgba = image.to_rgba8();
     let (width, height) = rgba.dimensions();
     let scale = (max_width as f32 / width as f32)
@@ -358,8 +402,8 @@ fn load_cached_metadata(namespace: &str, locale: &str, game_id: &str) -> Option<
     let bytes = cache::read(&path)?;
     match serde_json::from_slice(&bytes) {
         Ok(details) => Some(details),
-        Err(error) => {
-            eprintln!("Catalog worker: invalid cached metadata for {game_id}: {error}");
+        Err(_) => {
+            eprintln!("Catalog worker: invalid cached metadata");
             let _ = std::fs::remove_file(path);
             None
         }

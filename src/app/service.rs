@@ -47,14 +47,20 @@ impl Service {
         }
     }
 
-    pub(super) fn logout(&mut self) {
-        self.auth.logout();
+    pub(super) fn logout(&mut self) -> anyhow::Result<()> {
+        let result = self.auth.logout();
         self.titles.clear();
         self.consoles.clear();
         self.avatar = None;
         self.gamertag = None;
         self.gamerscore = None;
-        self.restart_catalog_worker();
+        let locale = self.api.config.locale.clone();
+        self.api = ApiClient::new(ApiClientConfig {
+            locale,
+            ..Default::default()
+        });
+        self.refresh_xcloud_catalog_backend();
+        result
     }
 
     pub(super) fn title_name_or_id(&self, title_id: &str) -> String {

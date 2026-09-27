@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 mod congestion;
 
 #[path = "bandwidth.rs"]
-mod bandwidth;
+pub(crate) mod bandwidth;
 pub(crate) use bandwidth::VIDEO_CEILING_BPS;
 const FEEDBACK_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -22,18 +22,29 @@ pub(crate) fn feedback_payloads(sdp: &str, feedback: &str) -> Vec<u8> {
         if line.starts_with("m=") {
             let fields: Vec<_> = line.split_whitespace().collect();
             video = fields.first() == Some(&"m=video")
-                && fields.get(1).and_then(|port| port.split('/').next())
-                    .and_then(|port| port.parse::<u16>().ok()).is_some_and(|port| port != 0);
+                && fields
+                    .get(1)
+                    .and_then(|port| port.split('/').next())
+                    .and_then(|port| port.parse::<u16>().ok())
+                    .is_some_and(|port| port != 0);
             accepted = if video {
-                fields.iter().skip(3).filter_map(|s| s.parse::<u8>().ok()).collect()
-            } else { Vec::new() };
+                fields
+                    .iter()
+                    .skip(3)
+                    .filter_map(|s| s.parse::<u8>().ok())
+                    .collect()
+            } else {
+                Vec::new()
+            };
         } else if video && let Some(value) = line.strip_prefix("a=rtcp-fb:") {
             let fields: Vec<_> = value.split_whitespace().collect();
             if fields.get(1) == Some(&feedback) && fields.len() == 2 {
                 if fields.first() == Some(&"*") {
                     result.extend(accepted.iter().copied());
-                } else if let Some(pt) = fields.first().and_then(|s| s.parse::<u8>().ok()) {
-                    if accepted.contains(&pt) { result.push(pt); }
+                } else if let Some(pt) = fields.first().and_then(|s| s.parse::<u8>().ok())
+                    && accepted.contains(&pt)
+                {
+                    result.push(pt);
                 }
             }
         }
@@ -68,23 +79,37 @@ struct ArrivalFeedback {
 
 impl ArrivalFeedback {
     fn update(&mut self, packets: u64, reports: u64, now: Instant) {
-        if packets < self.packets || reports < self.reports { *self = Self::default(); }
-        if packets > self.packets { self.packet_at = Some(now); }
-        if reports > self.reports { self.report_at = Some(now); }
+        if packets < self.packets || reports < self.reports {
+            *self = Self::default();
+        }
+        if packets > self.packets {
+            self.packet_at = Some(now);
+        }
+        if reports > self.reports {
+            self.report_at = Some(now);
+        }
         self.packets = packets;
         self.reports = reports;
-        let recent = |at: Option<Instant>| at.is_some_and(|at|
-            now.saturating_duration_since(at) < Duration::from_secs(2));
+        let recent = |at: Option<Instant>| {
+            at.is_some_and(|at| now.saturating_duration_since(at) < Duration::from_secs(2))
+        };
         self.active = recent(self.packet_at) && recent(self.report_at);
     }
 }
 
 impl Default for VideoCeiling {
     fn default() -> Self {
-        Self { budget: congestion::ReceiveBudget::new(VIDEO_CEILING_BPS),
-            supported_payloads: Vec::new(), active: false, last_attempt: None,
-            queued: 0, failed: 0, over_windows: 0,
-            arrival: Default::default(), delay_ms: 0 }
+        Self {
+            budget: congestion::ReceiveBudget::new(VIDEO_CEILING_BPS),
+            supported_payloads: Vec::new(),
+            active: false,
+            last_attempt: None,
+            queued: 0,
+            failed: 0,
+            over_windows: 0,
+            arrival: Default::default(),
+            delay_ms: 0,
+        }
     }
 }
 
@@ -104,8 +129,11 @@ impl VideoCeiling {
     pub(crate) fn answer(&mut self, sdp: &str) {
         // Transport counters are cumulative across renegotiation. Retain their
         // last observed values, but require fresh RX and TX before reactivation.
-        let arrival = ArrivalFeedback { packets: self.arrival.packets,
-            reports: self.arrival.reports, ..Default::default() };
+        let arrival = ArrivalFeedback {
+            packets: self.arrival.packets,
+            reports: self.arrival.reports,
+            ..Default::default()
+        };
         let supported_payloads = remb_payloads(sdp);
         if self.supported_payloads == supported_payloads {
             // Chat-only SDP does not create a fresh video path. Preserve the
@@ -113,18 +141,29 @@ impl VideoCeiling {
             self.arrival = arrival;
             self.last_attempt = None;
         } else {
-            *self = Self { supported_payloads, arrival, ..Default::default() };
+            *self = Self {
+                supported_payloads,
+                arrival,
+                ..Default::default()
+            };
         }
     }
     pub(crate) fn observe_payload(&mut self, payload: u8) {
         self.active = self.supported_payloads.contains(&payload);
     }
     pub(crate) fn due(&self, now: Instant) -> bool {
-        self.active && self.last_attempt.is_none_or(|at| now.duration_since(at) >= FEEDBACK_INTERVAL)
+        self.active
+            && self
+                .last_attempt
+                .is_none_or(|at| now.duration_since(at) >= FEEDBACK_INTERVAL)
     }
     pub(crate) fn attempted(&mut self, now: Instant, success: bool) {
         self.last_attempt = Some(now);
-        if success { self.queued += 1; } else { self.failed += 1; }
+        if success {
+            self.queued += 1;
+        } else {
+            self.failed += 1;
+        }
     }
     pub(crate) fn summary(&mut self, measured_kbps: u64) -> String {
         // This is an observation, not a server acknowledgement or hard wire cap.
@@ -132,11 +171,24 @@ impl VideoCeiling {
         if self.queued >= 4 && measured_kbps > u64::from(self.target_bps()) / 800 {
             self.over_windows += 1;
         }
-        let state = if self.active && self.arrival.active { "twcc+adaptive" }
-            else if self.active { "adaptive" }
-            else if self.supported_payloads.is_empty() { "unsupported" }
-            else { "waiting-video" };
-        format!("REMB:{state} target:{}k delay:{}ms cuts:{} queued:{} fail:{} over-windows:{}", self.target_bps() / 1000, self.delay_ms, self.budget.reductions, self.queued, self.failed, self.over_windows)
+        let state = if self.active && self.arrival.active {
+            "twcc+adaptive"
+        } else if self.active {
+            "adaptive"
+        } else if self.supported_payloads.is_empty() {
+            "unsupported"
+        } else {
+            "waiting-video"
+        };
+        format!(
+            "REMB:{state} target:{}k delay:{}ms cuts:{} queued:{} fail:{} over-windows:{}",
+            self.target_bps() / 1000,
+            self.delay_ms,
+            self.budget.reductions,
+            self.queued,
+            self.failed,
+            self.over_windows
+        )
     }
 }
 
@@ -154,8 +206,16 @@ pub(crate) struct ReceiveRate {
 impl ReceiveRate {
     pub(crate) fn new() -> Self {
         let now = Instant::now();
-        Self { started: now, bytes: 0, bucket_start: now, bucket_bytes: 0,
-            peak_kbps: 0, last_packet: None, max_gap_ms: 0, latest_kbps: 0 }
+        Self {
+            started: now,
+            bytes: 0,
+            bucket_start: now,
+            bucket_bytes: 0,
+            peak_kbps: 0,
+            last_packet: None,
+            max_gap_ms: 0,
+            latest_kbps: 0,
+        }
     }
 
     fn close_bucket(&mut self, now: Instant) {
@@ -182,8 +242,16 @@ impl ReceiveRate {
         let elapsed = now.duration_since(self.started).as_millis().max(1);
         let kbps = self.bytes * 8 / elapsed as u64;
         self.latest_kbps = kbps;
-        let idle = self.last_packet.map(|last| now.duration_since(last).as_millis()).unwrap_or(0);
-        let text = format!("{kbps}/{}k gap:{}/{}ms", self.peak_kbps, idle, self.max_gap_ms.max(idle));
+        let idle = self
+            .last_packet
+            .map(|last| now.duration_since(last).as_millis())
+            .unwrap_or(0);
+        let text = format!(
+            "{kbps}/{}k gap:{}/{}ms",
+            self.peak_kbps,
+            idle,
+            self.max_gap_ms.max(idle)
+        );
         self.started = now;
         self.bytes = 0;
         self.peak_kbps = 0;
@@ -238,12 +306,21 @@ mod tests {
             let now = start + Duration::from_millis(tick * 100);
             cap.update_arrival_feedback(tick * 10, tick, now);
             cap.receive((delivered / 8.0) as usize, delay, now);
-            sender_bps = previous; previous = cap.target_bps();
-            if tick >= 600 { worst_after_minute = worst_after_minute.max(delay); }
+            sender_bps = previous;
+            previous = cap.target_bps();
+            if tick >= 600 {
+                worst_after_minute = worst_after_minute.max(delay);
+            }
         }
-        eprintln!("30min fluid model: fixed backlog {}ms, adaptive post-60s max {worst_after_minute}ms", fixed / 1000.0);
+        eprintln!(
+            "30min fluid model: fixed backlog {}ms, adaptive post-60s max {worst_after_minute}ms",
+            fixed / 1000.0
+        );
         assert!(fixed > 1_000_000_000.0);
-        assert!(worst_after_minute < 1000, "persistent simulated backlog: {worst_after_minute}ms");
+        assert!(
+            worst_after_minute < 1000,
+            "persistent simulated backlog: {worst_after_minute}ms"
+        );
         assert!(cap.budget.reductions > 0);
     }
 
@@ -258,13 +335,23 @@ mod tests {
             cap.update_arrival_feedback(tick * 10, tick, now);
             // Busy video, a low-complexity paused scene, then busy again.
             // A persistent offset alone must not trigger repeated reductions.
-            let bytes = if (2000..4000).contains(&tick) { 500 } else { 50_000 };
+            let bytes = if (2000..4000).contains(&tick) {
+                500
+            } else {
+                50_000
+            };
             cap.receive(bytes, if tick < 100 { 5 } else { 1991 }, now);
             assert_eq!(cap.target_bps(), VIDEO_CEILING_BPS);
         }
         assert_eq!(cap.budget.reductions, 0);
-        assert!(cap.summary(980).starts_with("REMB:twcc+adaptive target:2000k"));
-        assert!(cap.summary(980).contains("delay:1991ms"), "do not hide latency");
+        assert!(
+            cap.summary(980)
+                .starts_with("REMB:twcc+adaptive target:2000k")
+        );
+        assert!(
+            cap.summary(980).contains("delay:1991ms"),
+            "do not hide latency"
+        );
     }
 
     #[test]
@@ -276,12 +363,19 @@ mod tests {
         for tick in 0..=100 {
             cap.receive(25_000, tick * 10, start + Duration::from_millis(tick * 100));
         }
-        assert_eq!(cap.target_bps(), 500_000, "sustained growth exercised fallback");
+        assert_eq!(
+            cap.target_bps(),
+            500_000,
+            "sustained growth exercised fallback"
+        );
         let now = start + Duration::from_secs(11);
         cap.attempted(now, true);
         cap.update_arrival_feedback(10, 1, now);
         assert_eq!(cap.target_bps(), 500_000);
-        assert!(!cap.due(now), "counter transitions do not change feedback pacing");
+        assert!(
+            !cap.due(now),
+            "counter transitions do not change feedback pacing"
+        );
     }
 
     #[test]
@@ -321,9 +415,15 @@ mod tests {
         assert!(!cap.arrival.active);
         assert!(!cap.due(start + Duration::from_secs(12)));
         cap.update_arrival_feedback(20, 2, start + Duration::from_secs(12));
-        assert!(!cap.arrival.active, "old transport counters are not new feedback");
+        assert!(
+            !cap.arrival.active,
+            "old transport counters are not new feedback"
+        );
         cap.update_arrival_feedback(20, 3, start + Duration::from_secs(13));
-        assert!(!cap.arrival.active, "audio-only sends cannot reactivate video");
+        assert!(
+            !cap.arrival.active,
+            "audio-only sends cannot reactivate video"
+        );
         cap.update_arrival_feedback(21, 4, start + Duration::from_secs(13));
         assert!(cap.arrival.active);
     }
@@ -334,25 +434,49 @@ mod tests {
         let start = rate.started;
         rate.receive(25_000, start);
         rate.receive(25_000, start + Duration::from_millis(100));
-        assert_eq!(rate.summary(start + Duration::from_millis(200)), "2000/2000k gap:100/100ms");
-        assert_eq!(rate.summary(start + Duration::from_millis(1200)), "0/0k gap:1100/1100ms");
+        assert_eq!(
+            rate.summary(start + Duration::from_millis(200)),
+            "2000/2000k gap:100/100ms"
+        );
+        assert_eq!(
+            rate.summary(start + Duration::from_millis(1200)),
+            "0/0k gap:1100/1100ms"
+        );
     }
 
     #[test]
     fn remb_requires_accepted_video_payload_and_does_not_leak_across_media() {
-        assert_eq!(remb_payloads("m=audio 9 UDP/TLS/RTP/SAVPF 111\na=rtcp-fb:* goog-remb\nm=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 goog-remb\na=rtcp-fb:103 goog-remb"), vec![102]);
+        assert_eq!(
+            remb_payloads(
+                "m=audio 9 UDP/TLS/RTP/SAVPF 111\na=rtcp-fb:* goog-remb\nm=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 goog-remb\na=rtcp-fb:103 goog-remb"
+            ),
+            vec![102]
+        );
         for port in ["0", "0/2", "bad"] {
-            assert!(remb_payloads(&format!("m=video {port} UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:* goog-remb")).is_empty());
+            assert!(
+                remb_payloads(&format!(
+                    "m=video {port} UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:* goog-remb"
+                ))
+                .is_empty()
+            );
         }
-        assert!(remb_payloads("m=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 nack pli").is_empty());
-        assert_eq!(remb_payloads("m=video 9 UDP/TLS/RTP/SAVPF 102 103\na=rtcp-fb:* goog-remb"), vec![102, 103]);
+        assert!(
+            remb_payloads("m=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 nack pli").is_empty()
+        );
+        assert_eq!(
+            remb_payloads("m=video 9 UDP/TLS/RTP/SAVPF 102 103\na=rtcp-fb:* goog-remb"),
+            vec![102, 103]
+        );
     }
 
     #[test]
     fn generic_nack_requires_its_own_negotiated_video_feedback() {
         let sdp = "m=audio 9 UDP/TLS/RTP/SAVPF 111\na=rtcp-fb:* nack\nm=video 9 UDP/TLS/RTP/SAVPF 102 103\na=rtcp-fb:102 nack pli\na=rtcp-fb:103 nack";
         assert_eq!(feedback_payloads(sdp, "nack"), vec![103]);
-        assert!(feedback_payloads("m=video 0 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:* nack", "nack").is_empty());
+        assert!(
+            feedback_payloads("m=video 0 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:* nack", "nack")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -368,7 +492,9 @@ mod tests {
         cap.attempted(now, false);
         assert!(!cap.due(now + Duration::from_millis(499)));
         assert!(cap.due(now + FEEDBACK_INTERVAL));
-        for i in 1..=4 { cap.attempted(now + FEEDBACK_INTERVAL * i, true); }
+        for i in 1..=4 {
+            cap.attempted(now + FEEDBACK_INTERVAL * i, true);
+        }
         assert!(cap.summary(7291).ends_with("over-windows:1"));
         assert!(cap.summary(2000).ends_with("over-windows:1"));
         cap.answer("m=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 nack pli");

@@ -1,7 +1,7 @@
 use super::ice;
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use anyhow::{Context, Result};
 use bytes::BytesMut;
-use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use rtc::sansio::Protocol;
 use rtc::shared::{TaggedBytesMut, TransportContext, TransportProtocol};
 use std::net::SocketAddr;
@@ -31,7 +31,9 @@ pub(crate) struct RtcTransport {
 }
 
 impl RtcTransport {
-    pub(crate) fn twcc_sent(&self) -> u64 { self.twcc_sent }
+    pub(crate) fn twcc_sent(&self) -> u64 {
+        self.twcc_sent
+    }
     pub(crate) async fn bind(
         peer: &mut RTCPeerConnection,
         stun_server: &str,
@@ -48,10 +50,10 @@ impl RtcTransport {
 
         match ice::discover_server_reflexive_candidate(&socket, local_addr, stun_server).await {
             Ok(Some(public_addr)) => {
-                if let Err(error) =
+                if let Err(_error) =
                     ice::add_srflx_candidate(peer, public_addr, local_addr, stun_server)
                 {
-                    eprintln!("Failed to add server-reflexive ICE candidate: {error:#}");
+                    eprintln!("Failed to add server-reflexive ICE candidate");
                 }
             }
             Ok(None) => eprintln!("STUN request produced no usable response"),
@@ -80,16 +82,13 @@ impl RtcTransport {
 
     pub(crate) async fn flush(&mut self, peer: &mut RTCPeerConnection) {
         while let Some(outgoing) = peer.poll_write() {
-            if let Err(error) = self
+            if let Err(_error) = self
                 .socket
                 .send_to(&outgoing.message, outgoing.transport.peer_addr)
                 .await
             {
                 self.send_errors += 1;
-                eprintln!(
-                    "Failed to send WebRTC UDP packet to {}: {error}",
-                    outgoing.transport.peer_addr
-                );
+                eprintln!("Failed to send WebRTC UDP packet");
             } else {
                 self.traffic.sent(&outgoing.message);
                 if outgoing.message.len() >= 8 && outgoing.message[0] >> 6 == 2 {
@@ -115,7 +114,7 @@ impl RtcTransport {
                     let arrived = Instant::now();
                     self.receive_rate.receive(n, arrived);
                     received += 1;
-                    if let Err(error) = peer.handle_read(TaggedBytesMut {
+                    if let Err(_error) = peer.handle_read(TaggedBytesMut {
                         now: arrived,
                         transport: TransportContext {
                             local_addr: self.local_addr,
@@ -125,9 +124,10 @@ impl RtcTransport {
                         },
                         message: BytesMut::from(&self.recv_buf[..n]),
                     }) {
-                        eprintln!("Failed to handle WebRTC UDP packet from {peer_addr}: {error}");
+                        eprintln!("Failed to handle WebRTC UDP packet");
                     }
-                    self.traffic.received(&self.recv_buf[..n], arrived.elapsed());
+                    self.traffic
+                        .received(&self.recv_buf[..n], arrived.elapsed());
                     if received >= RECEIVE_PASS_PACKETS || started.elapsed() >= RECEIVE_PASS_TIME {
                         self.receive_budget_hits += 1;
                         break;
@@ -148,10 +148,16 @@ impl RtcTransport {
     pub(crate) fn take_receive_summary(&mut self) -> String {
         let summary = format!(
             "RX passes:{} budget:{} maxPk:{} max:{}us\nUDP:{} RRsent:{} PSFB:{} txErr:{} TWCCsent:{}\n{}",
-            self.receive_passes, self.receive_budget_hits,
-            self.receive_packets_max, self.receive_pass_max_us,
-            self.receive_rate.summary(Instant::now()), self.rr_sent, self.feedback_sent, self.send_errors,
-            self.twcc_sent, self.traffic.take_summary(Instant::now()),
+            self.receive_passes,
+            self.receive_budget_hits,
+            self.receive_packets_max,
+            self.receive_pass_max_us,
+            self.receive_rate.summary(Instant::now()),
+            self.rr_sent,
+            self.feedback_sent,
+            self.send_errors,
+            self.twcc_sent,
+            self.traffic.take_summary(Instant::now()),
         );
         self.receive_passes = 0;
         self.receive_budget_hits = 0;

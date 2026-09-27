@@ -6,11 +6,14 @@ use crate::api_xbox::catalog;
 use anyhow::Result;
 use reqwest::Client;
 
-pub(crate) async fn load_collections(api: &ApiClient, games: &[(String, Option<String>)], market: &str, language: &str)
-    -> crate::catalog_preferences::CatalogCollections
-{
+pub(crate) async fn load_collections(
+    api: &ApiClient,
+    games: &[(String, Option<String>)],
+    market: &str,
+    language: &str,
+) -> crate::catalog_preferences::CatalogCollections {
+    use super::collection_order::{gallery_products, recent_page};
     use crate::catalog_preferences::{CatalogCollections, CatalogSection};
-    use super::collection_order::{recent_page, gallery_products};
     // IDs observed in xbox.com/play's current client bundle. Keep provider order.
     let recent = async {
         let mut order = Vec::new();
@@ -22,22 +25,38 @@ pub(crate) async fn load_collections(api: &ApiClient, games: &[(String, Option<S
             continuation = page.continuation_token.filter(|token| !token.is_empty());
             match continuation.as_ref() {
                 None => return Ok::<_, anyhow::Error>(order),
-                Some(token) => anyhow::ensure!(tokens.insert(token.clone()), "repeated history continuation token"),
+                Some(token) => anyhow::ensure!(
+                    tokens.insert(token.clone()),
+                    "repeated history continuation token"
+                ),
             }
         }
         anyhow::bail!("Xbox history exceeded pagination limit")
     };
     let gallery = |id| async move {
         let products = gallery_products(api.get_gallery(id, market, language).await?)?;
-        let lookup: std::collections::HashMap<_,_> = games.iter()
-            .filter_map(|(id, product)| Some((product.as_deref()?, id.as_str()))).collect();
-        Ok::<_, anyhow::Error>(products.iter().filter_map(|id| lookup.get(id.as_str()).map(|id| (*id).to_owned())).collect::<Vec<_>>())
+        let lookup: std::collections::HashMap<_, _> = games
+            .iter()
+            .filter_map(|(id, product)| Some((product.as_deref()?, id.as_str())))
+            .collect();
+        Ok::<_, anyhow::Error>(
+            products
+                .iter()
+                .filter_map(|id| lookup.get(id.as_str()).map(|id| (*id).to_owned()))
+                .collect::<Vec<_>>(),
+        )
     };
-    let (recent, added, popular) = tokio::join!(recent,
+    let (recent, added, popular) = tokio::join!(
+        recent,
         gallery("06323672-b8c8-43cc-b0de-32d5a9834749"),
-        gallery("6a589fa0-d493-472b-8e20-3813699d7056"));
+        gallery("6a589fa0-d493-472b-8e20-3813699d7056")
+    );
     let mut result = CatalogCollections::default();
-    for (section, response) in [(CatalogSection::RecentlyPlayed, recent), (CatalogSection::RecentlyAdded, added), (CatalogSection::MostPopular, popular)] {
+    for (section, response) in [
+        (CatalogSection::RecentlyPlayed, recent),
+        (CatalogSection::RecentlyAdded, added),
+        (CatalogSection::MostPopular, popular),
+    ] {
         match response {
             Ok(ids) => match section {
                 CatalogSection::RecentlyPlayed => result.recently_played = Some(ids),
@@ -45,7 +64,9 @@ pub(crate) async fn load_collections(api: &ApiClient, games: &[(String, Option<S
                 CatalogSection::MostPopular => result.most_popular = Some(ids),
                 _ => unreachable!(),
             },
-            Err(_) => { result.errors.push(section); } // No account tokens or response bodies in logs.
+            Err(_) => {
+                result.errors.push(section);
+            } // No account tokens or response bodies in logs.
         }
     }
     result

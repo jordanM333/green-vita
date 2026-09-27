@@ -39,14 +39,21 @@ pub(crate) struct PacketOrder<T> {
 
 impl<T> Default for PacketOrder<T> {
     fn default() -> Self {
-        Self { next: None, arrival_high: None,
-            held: Vec::with_capacity(MAX_HELD_PACKETS), stats: OrderStats::default(),
-            repair: false, last_nack: None }
+        Self {
+            next: None,
+            arrival_high: None,
+            held: Vec::with_capacity(MAX_HELD_PACKETS),
+            stats: OrderStats::default(),
+            repair: false,
+            last_nack: None,
+        }
     }
 }
 
 impl<T> PacketOrder<T> {
-    pub(crate) fn enable_repair(&mut self, enabled: bool) { self.repair = enabled; }
+    pub(crate) fn enable_repair(&mut self, enabled: bool) {
+        self.repair = enabled;
+    }
 
     pub(crate) fn clear(&mut self) {
         self.next = None;
@@ -59,17 +66,39 @@ impl<T> PacketOrder<T> {
     /// Two milliseconds absorbs ordinary reordering; retries are 20ms apart.
     /// The 60ms absolute deadline and 64-packet cap never extend on retries.
     pub(crate) fn missing_for_nack(&mut self, now: Instant) -> Vec<u16> {
-        if !self.repair || self.last_nack.is_some_and(|at|
-            now.saturating_duration_since(at) < Duration::from_millis(20)) { return Vec::new(); }
-        let Some(next) = self.next else { return Vec::new(); };
-        let Some(oldest) = self.held.iter().map(|p| p.arrived).min() else { return Vec::new(); };
+        if !self.repair
+            || self
+                .last_nack
+                .is_some_and(|at| now.saturating_duration_since(at) < Duration::from_millis(20))
+        {
+            return Vec::new();
+        }
+        let Some(next) = self.next else {
+            return Vec::new();
+        };
+        let Some(oldest) = self.held.iter().map(|p| p.arrived).min() else {
+            return Vec::new();
+        };
         let age = now.saturating_duration_since(oldest);
-        if age < Duration::from_millis(2) || age >= REPAIR_GRACE { return Vec::new(); }
-        let distance = self.held.iter().map(|p| p.sequence.wrapping_sub(next)).max().unwrap_or(0);
-        if usize::from(distance) > REPAIR_PACKETS { return Vec::new(); }
-        let missing: Vec<_> = (0..distance).map(|offset| next.wrapping_add(offset))
-            .filter(|seq| !self.held.iter().any(|p| p.sequence == *seq)).collect();
-        if !missing.is_empty() { self.last_nack = Some(now); }
+        if age < Duration::from_millis(2) || age >= REPAIR_GRACE {
+            return Vec::new();
+        }
+        let distance = self
+            .held
+            .iter()
+            .map(|p| p.sequence.wrapping_sub(next))
+            .max()
+            .unwrap_or(0);
+        if usize::from(distance) > REPAIR_PACKETS {
+            return Vec::new();
+        }
+        let missing: Vec<_> = (0..distance)
+            .map(|offset| next.wrapping_add(offset))
+            .filter(|seq| !self.held.iter().any(|p| p.sequence == *seq))
+            .collect();
+        if !missing.is_empty() {
+            self.last_nack = Some(now);
+        }
         missing
     }
 
@@ -114,7 +143,11 @@ impl<T> PacketOrder<T> {
             self.stats.duplicates += 1;
             return None;
         }
-        self.held.push(Held { sequence, value, arrived: now });
+        self.held.push(Held {
+            sequence,
+            value,
+            arrived: now,
+        });
         self.stats.max_depth = self.stats.max_depth.max(self.held.len());
         // Even a stalled consumer cannot grow the queue beyond its fixed bound.
         self.pop_ready(now)
@@ -135,12 +168,24 @@ impl<T> PacketOrder<T> {
 
     fn take(&mut self, now: Instant, expire_gaps: bool) -> Option<T> {
         let next = self.next?;
-        let (index, first) = self.held.iter().enumerate()
+        let (index, first) = self
+            .held
+            .iter()
+            .enumerate()
             .min_by_key(|(_, p)| p.sequence.wrapping_sub(next))?;
         let missing = first.sequence.wrapping_sub(next);
         if missing != 0 {
-            let full = self.held.len() >= if self.repair { REPAIR_PACKETS } else { MAX_HELD_PACKETS };
-            let expired = expire_gaps && self.held.iter().any(|p| now.duration_since(p.arrived) >= if self.repair { REPAIR_GRACE } else { GAP_GRACE });
+            let full = self.held.len()
+                >= if self.repair {
+                    REPAIR_PACKETS
+                } else {
+                    MAX_HELD_PACKETS
+                };
+            let expired = expire_gaps
+                && self.held.iter().any(|p| {
+                    now.duration_since(p.arrived)
+                        >= if self.repair { REPAIR_GRACE } else { GAP_GRACE }
+                });
             if !full && !expired {
                 return None;
             }
@@ -148,17 +193,30 @@ impl<T> PacketOrder<T> {
             self.stats.capacity_releases += u64::from(full);
         }
         let packet = self.held.remove(index);
-        self.stats.max_wait_us = self.stats.max_wait_us.max(now.duration_since(packet.arrived).as_micros());
+        self.stats.max_wait_us = self
+            .stats
+            .max_wait_us
+            .max(now.duration_since(packet.arrived).as_micros());
         self.next = Some(packet.sequence.wrapping_add(1));
         Some(packet.value)
     }
 
     pub(crate) fn summary(&self) -> String {
-        format!("Order {}ms fill:{} lost:{} late:{} q:{}/{} cap:{} wait:{}ms",
-            if self.repair { REPAIR_GRACE.as_millis() } else { GAP_GRACE.as_millis() },
-            self.stats.filled, self.stats.missing, self.stats.too_late,
-            self.held.len(), self.stats.max_depth, self.stats.capacity_releases,
-            self.stats.max_wait_us / 1000)
+        format!(
+            "Order {}ms fill:{} lost:{} late:{} q:{}/{} cap:{} wait:{}ms",
+            if self.repair {
+                REPAIR_GRACE.as_millis()
+            } else {
+                GAP_GRACE.as_millis()
+            },
+            self.stats.filled,
+            self.stats.missing,
+            self.stats.too_late,
+            self.held.len(),
+            self.stats.max_depth,
+            self.stats.capacity_releases,
+            self.stats.max_wait_us / 1000
+        )
     }
 }
 
@@ -184,7 +242,10 @@ mod tests {
         assert_eq!(order.push(65534, 65534, now), Some(65534));
         assert_eq!(order.push(0, 0, now), None);
         assert_eq!(order.push(0, 0, now), None);
-        assert_eq!(order.push(65535, 65535, now + Duration::from_millis(1)), Some(65535));
+        assert_eq!(
+            order.push(65535, 65535, now + Duration::from_millis(1)),
+            Some(65535)
+        );
         assert_eq!(order.pop(now + Duration::from_millis(1)), Some(0));
         assert_eq!(order.pop(now + Duration::from_millis(1)), None);
         assert_eq!(order.stats.filled, 1);
@@ -229,13 +290,23 @@ mod repair_tests {
     use super::*;
     #[test]
     fn nack_repairs_a_wrapped_hole_at_44ms_without_delaying_ordered_packets() {
-        let mut q = PacketOrder::default(); q.enable_repair(true);
+        let mut q = PacketOrder::default();
+        q.enable_repair(true);
         let start = Instant::now();
         assert_eq!(q.push(65534, 65534, start), Some(65534));
         assert_eq!(q.push(0, 0, start), None);
-        assert!(q.missing_for_nack(start + Duration::from_millis(1)).is_empty());
-        assert_eq!(q.missing_for_nack(start + Duration::from_millis(2)), vec![65535]);
-        assert!(q.missing_for_nack(start + Duration::from_millis(21)).is_empty());
+        assert!(
+            q.missing_for_nack(start + Duration::from_millis(1))
+                .is_empty()
+        );
+        assert_eq!(
+            q.missing_for_nack(start + Duration::from_millis(2)),
+            vec![65535]
+        );
+        assert!(
+            q.missing_for_nack(start + Duration::from_millis(21))
+                .is_empty()
+        );
         assert!(q.pop(start + Duration::from_millis(30)).is_none());
         let repaired = start + Duration::from_millis(46);
         assert_eq!(q.push(65535, 65535, repaired), Some(65535));
@@ -246,24 +317,41 @@ mod repair_tests {
     }
     #[test]
     fn nack_retry_never_extends_deadline_or_requests_unretained_packets() {
-        let mut q = PacketOrder::default(); q.enable_repair(true);
-        let t = Instant::now(); q.push(10, 10, t); q.push(13, 13, t);
+        let mut q = PacketOrder::default();
+        q.enable_repair(true);
+        let t = Instant::now();
+        q.push(10, 10, t);
+        q.push(13, 13, t);
         for ms in [2, 22, 42] {
-            assert_eq!(q.missing_for_nack(t + Duration::from_millis(ms)), vec![11, 12]);
+            assert_eq!(
+                q.missing_for_nack(t + Duration::from_millis(ms)),
+                vec![11, 12]
+            );
         }
         assert!(q.missing_for_nack(t + REPAIR_GRACE).is_empty());
         assert_eq!(q.pop(t + REPAIR_GRACE), Some(13));
         assert_eq!(q.stats.missing, 2);
-        assert!(q.missing_for_nack(t + Duration::from_millis(100)).is_empty());
-        q.push(15, 15, t + Duration::from_millis(100)); q.clear();
-        assert!(q.missing_for_nack(t + Duration::from_millis(150)).is_empty());
+        assert!(
+            q.missing_for_nack(t + Duration::from_millis(100))
+                .is_empty()
+        );
+        q.push(15, 15, t + Duration::from_millis(100));
+        q.clear();
+        assert!(
+            q.missing_for_nack(t + Duration::from_millis(150))
+                .is_empty()
+        );
         assert_eq!(q.push(200, 200, t + Duration::from_millis(150)), Some(200));
     }
     #[test]
     fn repair_queue_stays_bounded_on_a_large_burst() {
-        let mut q = PacketOrder::default(); q.enable_repair(true);
-        let t = Instant::now(); q.push(0, 0, t);
-        for seq in 2..=65 { q.push(seq, seq, t); }
+        let mut q = PacketOrder::default();
+        q.enable_repair(true);
+        let t = Instant::now();
+        q.push(0, 0, t);
+        for seq in 2..=65 {
+            q.push(seq, seq, t);
+        }
         assert_eq!(q.stats.max_depth, 64);
         assert_eq!(q.stats.capacity_releases, 1);
         assert!(q.missing_for_nack(t + Duration::from_millis(2)).is_empty());

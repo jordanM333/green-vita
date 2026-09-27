@@ -1,7 +1,7 @@
-use crate::streaming::video::{SubmitResult, VideoDecodeWorker};
-use crate::streaming::video::policy::Recovery;
-use bytes::Bytes;
 use crate::streaming::audio_timing::TimedAudio;
+use crate::streaming::video::policy::Recovery;
+use crate::streaming::video::{SubmitResult, VideoDecodeWorker};
+use bytes::Bytes;
 use h264_reader::annexb::AnnexBReader;
 use h264_reader::nal::sps::SeqParameterSet;
 use h264_reader::nal::{Nal, RefNal, UnitType};
@@ -92,7 +92,12 @@ impl AudioRtp {
         }
     }
 
-    pub(super) fn receive(&mut self, packet: Packet, received_at: Instant, audio_packets: &mut Vec<TimedAudio<Bytes>>) {
+    pub(super) fn receive(
+        &mut self,
+        packet: Packet,
+        received_at: Instant,
+        audio_packets: &mut Vec<TimedAudio<Bytes>>,
+    ) {
         if packet.header.payload_type != self.payload_type {
             return;
         }
@@ -102,13 +107,14 @@ impl AudioRtp {
             let forward = sequence.wrapping_sub(previous);
             if forward > 0 && forward < (1 << 15) {
                 if forward > 1 {
-                    crate::streaming::video::metrics::METRICS.audio_rtp_gaps.fetch_add(
-                        u64::from(forward - 1), Ordering::Relaxed,
-                    );
+                    crate::streaming::video::metrics::METRICS
+                        .audio_rtp_gaps
+                        .fetch_add(u64::from(forward - 1), Ordering::Relaxed);
                 }
                 self.last_sequence = Some(sequence);
             } else if forward >= (1 << 15) {
-                crate::streaming::video::metrics::METRICS.audio_rtp_late
+                crate::streaming::video::metrics::METRICS
+                    .audio_rtp_late
                     .fetch_add(1, Ordering::Relaxed);
             }
         } else {
@@ -120,7 +126,9 @@ impl AudioRtp {
         // SampleBuilder. Never assign a new age when an old sample is released.
         if !self.arrivals.iter().any(|(ts, _)| *ts == timestamp) {
             self.arrivals.push_back((timestamp, received_at));
-            if self.arrivals.len() > 128 { self.arrivals.pop_front(); }
+            if self.arrivals.len() > 128 {
+                self.arrivals.pop_front();
+            }
         }
         if self.latest_timestamp.is_none_or(|latest| {
             let forward = timestamp.wrapping_sub(latest);
@@ -137,24 +145,33 @@ impl AudioRtp {
             if let Some(latest) = self.latest_timestamp {
                 let lead = latest.wrapping_sub(sample.packet_timestamp);
                 if lead < (1 << 31) && self.sample_rate > 0 {
-                    crate::streaming::video::metrics::METRICS.audio_rtp_backlog_ms.store(
-                        u64::from(lead) * 1_000 / u64::from(self.sample_rate),
-                        Ordering::Relaxed,
-                    );
+                    crate::streaming::video::metrics::METRICS
+                        .audio_rtp_backlog_ms
+                        .store(
+                            u64::from(lead) * 1_000 / u64::from(self.sample_rate),
+                            Ordering::Relaxed,
+                        );
                 }
             }
             let dropped = sample
                 .prev_dropped_packets
                 .saturating_sub(sample.prev_padding_packets);
-            crate::streaming::video::metrics::METRICS.audio_rtp_lost.fetch_add(
-                u64::from(dropped), Ordering::Relaxed,
-            );
-            let Some(index) = self.arrivals.iter().position(|(ts, _)| *ts == sample.packet_timestamp) else {
+            crate::streaming::video::metrics::METRICS
+                .audio_rtp_lost
+                .fetch_add(u64::from(dropped), Ordering::Relaxed);
+            let Some(index) = self
+                .arrivals
+                .iter()
+                .position(|(ts, _)| *ts == sample.packet_timestamp)
+            else {
                 // Unattributable samples cannot pass the local age contract.
                 continue;
             };
             let (_, received_at) = self.arrivals.remove(index).expect("index found above");
-            audio_packets.push(TimedAudio { data: sample.data, received_at });
+            audio_packets.push(TimedAudio {
+                data: sample.data,
+                received_at,
+            });
         }
     }
 }
@@ -193,7 +210,10 @@ enum FrameAssembly {
 
 impl PendingVideoFrame {
     fn new(packet: Packet) -> Self {
-        let marker = packet.header.marker.then_some(packet.header.sequence_number);
+        let marker = packet
+            .header
+            .marker
+            .then_some(packet.header.sequence_number);
         let bytes = packet.payload.len();
         Self {
             timestamp: packet.header.timestamp,
@@ -208,7 +228,10 @@ impl PendingVideoFrame {
         // PacketOrder has already emitted strictly increasing sequence numbers.
         // Do not scan and sort an ever-growing AU on every arriving fragment.
         if self.packets.last().is_none_or(|previous| {
-            let forward = packet.header.sequence_number.wrapping_sub(previous.header.sequence_number);
+            let forward = packet
+                .header
+                .sequence_number
+                .wrapping_sub(previous.header.sequence_number);
             forward > 0 && forward < (1 << 15)
         }) {
             self.bytes = self.bytes.saturating_add(packet.payload.len());
@@ -245,17 +268,26 @@ impl PendingVideoFrame {
             }
         }
         let fu_start = self.packets.iter().any(|packet| {
-            packet.payload.first().is_some_and(|header| header & 0x1f == 28)
+            packet
+                .payload
+                .first()
+                .is_some_and(|header| header & 0x1f == 28)
                 && packet.payload.get(1).is_some_and(|flags| flags & 0x80 != 0)
         });
         let fu_end = self.packets.iter().any(|packet| {
-            packet.payload.first().is_some_and(|header| header & 0x1f == 28)
+            packet
+                .payload
+                .first()
+                .is_some_and(|header| header & 0x1f == 28)
                 && packet.payload.get(1).is_some_and(|flags| flags & 0x40 != 0)
         });
         if (fu_start && !fu_end)
             || (!fu_start
                 && self.packets.iter().any(|packet| {
-                    packet.payload.first().is_some_and(|header| header & 0x1f == 28)
+                    packet
+                        .payload
+                        .first()
+                        .is_some_and(|header| header & 0x1f == 28)
                 }))
         {
             DropReason::IncompleteFuA
@@ -294,7 +326,9 @@ impl PendingVideoFrame {
         *depacketizer = H264Packet::default();
         let mut data = Vec::new();
         for packet in packets {
-            if packet.payload.is_empty() { continue; }
+            if packet.payload.is_empty() {
+                continue;
+            }
             let Ok(nalu) = depacketizer.depacketize(&packet.payload) else {
                 *depacketizer = H264Packet::default();
                 return FrameAssembly::Invalid(DropReason::Malformed);
@@ -321,7 +355,9 @@ fn validate_h264_rtp_fragments(packets: &[&Packet]) -> Result<(), DropReason> {
         let payload = &packet.payload;
         // Known padding occupies an RTP sequence number, but is not a NAL/FU.
         // Sequence continuity was verified before reaching this validator.
-        if payload.is_empty() { continue; }
+        if payload.is_empty() {
+            continue;
+        }
         if payload.len() < 2 {
             return Err(DropReason::Malformed);
         }
@@ -340,8 +376,8 @@ fn validate_h264_rtp_fragments(packets: &[&Packet]) -> Result<(), DropReason> {
                     if offset + 2 > payload.len() {
                         return Err(DropReason::Malformed);
                     }
-                    let size = (usize::from(payload[offset]) << 8)
-                        | usize::from(payload[offset + 1]);
+                    let size =
+                        (usize::from(payload[offset]) << 8) | usize::from(payload[offset + 1]);
                     offset += 2;
                     if size == 0
                         || offset + size > payload.len()
@@ -417,12 +453,18 @@ impl VideoRtp {
     }
 
     pub(super) fn buffering_summary(&self) -> &str {
-        self.sps_buffering.as_deref().unwrap_or("H264: waiting for SPS")
+        self.sps_buffering
+            .as_deref()
+            .unwrap_or("H264: waiting for SPS")
     }
 
     pub(super) fn recovery_summary(&self, now: Instant) -> String {
-        format!("{}\nRefresh pending:{} completed:{}", self.recovery.summary(now),
-            u8::from(self.refresh_pending), self.refresh_completed)
+        format!(
+            "{}\nRefresh pending:{} completed:{}",
+            self.recovery.summary(now),
+            u8::from(self.refresh_pending),
+            self.refresh_completed
+        )
     }
 
     pub(super) fn recover_decoder(&mut self, worker: &VideoDecodeWorker) -> bool {
@@ -512,7 +554,11 @@ impl VideoRtp {
             }
             if let Some(incomplete) = self.pending.take() {
                 let reason = incomplete.abandonment_reason(self.next_sequence);
-                crate::streaming::video::trace::record("au_abandon", incomplete.timestamp, reason as u64);
+                crate::streaming::video::trace::record(
+                    "au_abandon",
+                    incomplete.timestamp,
+                    reason as u64,
+                );
                 self.last_frame_timestamp = Some(incomplete.timestamp);
                 self.next_sequence = incomplete
                     .marker_sequence()
@@ -548,9 +594,11 @@ impl VideoRtp {
 
         // Bound an AU even if its marker never arrives. The old byte limit ran
         // only after complete assembly, allowing an unlimited pending packet list.
-        if self.pending.as_ref().is_some_and(|p| {
-            p.bytes > MAX_H264_ACCESS_UNIT_BYTES || p.packets.len() > 2048
-        }) {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.bytes > MAX_H264_ACCESS_UNIT_BYTES || p.packets.len() > 2048)
+        {
             if let Some(pending) = self.pending.take() {
                 self.last_frame_timestamp = Some(pending.timestamp);
             }
@@ -591,9 +639,16 @@ impl VideoRtp {
         };
         stats.assembled = 1;
         let completed = self.pending.take().expect("assembled pending video frame");
-        crate::streaming::video::trace::record("au_complete", completed.timestamp,
-            completed.first_packet_at.elapsed().as_micros() as u64);
-        crate::streaming::video::trace::record("au_complete_bytes", completed.timestamp, data.len() as u64);
+        crate::streaming::video::trace::record(
+            "au_complete",
+            completed.timestamp,
+            completed.first_packet_at.elapsed().as_micros() as u64,
+        );
+        crate::streaming::video::trace::record(
+            "au_complete_bytes",
+            completed.timestamp,
+            data.len() as u64,
+        );
         // Record both average and worst-case RTP assembly time for the stream HUD.
         let assembly_us = completed.first_packet_at.elapsed().as_micros() as u64;
         crate::streaming::video::metrics::METRICS
@@ -620,11 +675,11 @@ impl VideoRtp {
         self.last_frame_timestamp = Some(completed.timestamp);
 
         let unit = inspect_h264_access_unit(&data);
-        if let Some(summary) = unit.buffering {
-            if self.sps_buffering.as_ref() != Some(&summary) {
-                eprintln!("{summary}");
-                self.sps_buffering = Some(summary);
-            }
+        if let Some(summary) = unit.buffering
+            && self.sps_buffering.as_ref() != Some(&summary)
+        {
+            eprintln!("{summary}");
+            self.sps_buffering = Some(summary);
         }
         if unit.has_idr {
             stats.idr = 1;
@@ -641,12 +696,13 @@ impl VideoRtp {
             self.last_sps_resolution = unit.resolution;
         }
         // Bound incoming SPS by hardware capacity, independently of Xbox's requested size.
-        let sample_too_large = unit
-            .resolution
-            .is_some_and(|(width, height)| {
-                width > self.decoder_capacity.0 || height > self.decoder_capacity.1
-            });
-        if sample_too_large {
+        let sample_too_large = unit.resolution.is_some_and(|(width, height)| {
+            width == 0
+                || height == 0
+                || width > self.decoder_capacity.0
+                || height > self.decoder_capacity.1
+        });
+        if sample_too_large || unit.malformed {
             if !self.stream_too_large {
                 eprintln!(
                     "Dropping H264 access unit {:?} beyond Vita decoder capacity {}x{}",
@@ -680,12 +736,22 @@ impl VideoRtp {
         // A complete random-access AU may replace queued old references. Include
         // parameter sets so skipping a queued SPS/PPS update cannot break it.
         // Otherwise continue decoding normally, even while a refresh is pending.
-        let cutover = unit.has_idr && unit.resolution.is_some() && unit.has_pps
+        let cutover = unit.has_idr
+            && unit.resolution.is_some()
+            && unit.has_pps
             && (self.refresh_pending || worker.queued_frames() >= 8);
         let submitted = if cutover {
-            worker.submit_refresh_access_unit(data.to_vec(), completed.first_packet_at, completed.timestamp)
+            worker.submit_refresh_access_unit(
+                data.to_vec(),
+                completed.first_packet_at,
+                completed.timestamp,
+            )
         } else {
-            worker.submit_access_unit(data.to_vec(), completed.first_packet_at, completed.timestamp)
+            worker.submit_access_unit(
+                data.to_vec(),
+                completed.first_packet_at,
+                completed.timestamp,
+            )
         };
         match submitted {
             SubmitResult::Submitted => {
@@ -694,8 +760,11 @@ impl VideoRtp {
                     self.refresh_completed += 1;
                 }
                 if unit.has_idr && self.recovery.waiting() {
-                    crate::streaming::video::trace::record("recovery_end_ms", completed.timestamp,
-                        self.recovery.wait_ms(Instant::now()));
+                    crate::streaming::video::trace::record(
+                        "recovery_end_ms",
+                        completed.timestamp,
+                        self.recovery.wait_ms(Instant::now()),
+                    );
                 }
                 self.recovery.submitted(unit.has_idr);
                 stats.submitted = 1;
@@ -739,6 +808,7 @@ struct AccessUnitInfo {
     has_pps: bool,
     resolution: Option<(u32, u32)>,
     buffering: Option<String>,
+    malformed: bool,
 }
 
 fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
@@ -747,9 +817,11 @@ fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
         has_pps: false,
         resolution: None,
         buffering: None,
+        malformed: false,
     };
     let mut reader = AnnexBReader::accumulate(|nal: RefNal<'_>| {
         let Ok(header) = nal.header() else {
+            info.malformed = true;
             return NalInterest::Ignore;
         };
         match header.nal_unit_type() {
@@ -765,16 +837,30 @@ fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
                 if nal.is_complete() {
                     if let Ok(sps) = SeqParameterSet::from_bits(nal.rbsp_bits()) {
                         info.resolution = sps.pixel_dimensions().ok();
-                        let restrictions = sps.vui_parameters.as_ref()
+                        info.malformed |= info.resolution.is_none();
+                        let restrictions = sps
+                            .vui_parameters
+                            .as_ref()
                             .and_then(|vui| vui.bitstream_restrictions.as_ref());
-                        let buffering = restrictions.map(|r| format!(
-                            "reorder:{} dpb:{}", r.max_num_reorder_frames, r.max_dec_frame_buffering
-                        )).unwrap_or_else(|| "reorder:unspecified dpb:unspecified".to_owned());
+                        let buffering = restrictions
+                            .map(|r| {
+                                format!(
+                                    "reorder:{} dpb:{}",
+                                    r.max_num_reorder_frames, r.max_dec_frame_buffering
+                                )
+                            })
+                            .unwrap_or_else(|| "reorder:unspecified dpb:unspecified".to_owned());
                         // Observe the source's instructions before changing decoder
                         // buffering. Allocating one reference frame does not establish
                         // what the SPS tells AVCDEC to retain for output.
-                        info.buffering = Some(format!("H264: {:?} level:{} refs:{} {buffering}",
-                            sps.profile(), sps.level_idc, sps.max_num_ref_frames));
+                        info.buffering = Some(format!(
+                            "H264: {:?} level:{} refs:{} {buffering}",
+                            sps.profile(),
+                            sps.level_idc,
+                            sps.max_num_ref_frames
+                        ));
+                    } else {
+                        info.malformed = true;
                     }
                 }
                 NalInterest::Buffer
@@ -791,6 +877,12 @@ fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
 mod tests {
     use super::*;
 
+    #[test]
+    fn malformed_sps_is_marked_invalid_instead_of_reaching_native_decode() {
+        assert!(inspect_h264_access_unit(&[0, 0, 0, 1, 0x67, 0xff]).malformed);
+        assert!(!inspect_h264_access_unit(&[0, 0, 0, 1, 0x65, 0x88, 0x99]).malformed);
+    }
+
     fn packet(sequence: u16, marker: bool, payload: &'static [u8]) -> Packet {
         let mut packet = Packet::default();
         packet.header.sequence_number = sequence;
@@ -806,7 +898,10 @@ mod tests {
         pending.insert(packet(11, true, &[0x7c, 0x45, 0xaa]));
         let mut depacketizer = H264Packet::default();
         match pending.assemble(&mut depacketizer, Some(10)) {
-            FrameAssembly::Complete { data, marker_sequence } => {
+            FrameAssembly::Complete {
+                data,
+                marker_sequence,
+            } => {
                 assert_eq!(marker_sequence, 11);
                 assert_eq!(&data[..], &[0, 0, 0, 1, 0x65, 0x88, 0x99, 0xaa]);
             }
@@ -826,11 +921,7 @@ mod tests {
 
     #[test]
     fn truncated_stap_a_length_is_rejected_before_depacketizing() {
-        let pending = PendingVideoFrame::new(packet(
-            10,
-            true,
-            &[0x78, 0, 3, 0x67, 0x42, 0xe0, 0],
-        ));
+        let pending = PendingVideoFrame::new(packet(10, true, &[0x78, 0, 3, 0x67, 0x42, 0xe0, 0]));
         assert!(matches!(
             pending.assemble(&mut H264Packet::default(), None),
             FrameAssembly::Invalid(DropReason::Malformed)

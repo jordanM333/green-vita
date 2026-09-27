@@ -1,10 +1,10 @@
 //! PS Vita hardware H.264 decoder (`sceVideodec`/`sceAvcdec`).
-use super::timing::{FrameTiming, PictureTracker, UNKNOWN_PTS};
-use std::time::Instant;
 use super::memory::{CdramBlock, release_reserved_decoder_cdram};
+use super::timing::{FrameTiming, PictureTracker, UNKNOWN_PTS};
 use super::{DecoderConfig, VideoTextureTarget, metrics};
 use anyhow::{Result, bail};
 use std::os::raw::c_void;
+use std::time::Instant;
 use vitasdk_sys::*;
 
 // The idea of reducing the reference frames came from MattKC on his Vanilla project
@@ -13,7 +13,7 @@ const AVCDEC_NUM_REF_FRAMES: u32 = 1;
 // AVCDEC and SDL's Vita GXM renderer both support RGB565 natively. At 960x544 this halves the
 // decoder-to-texture traffic from roughly 2 MiB to 1 MiB per frame, which matters at 60 FPS.
 const OUTPUT_BYTES_PER_PIXEL: u32 = 2;
-const OUTPUT_PIXEL_FORMAT: u32 = SCE_AVCDEC_PIXELFORMAT_RGBA565 as u32;
+const OUTPUT_PIXEL_FORMAT: u32 = SCE_AVCDEC_PIXELFORMAT_RGBA565;
 
 struct AvcdecLibrary {
     module_loaded: bool,
@@ -21,6 +21,7 @@ struct AvcdecLibrary {
 
 impl AvcdecLibrary {
     fn initialize(width: u32, height: u32) -> Result<Self> {
+        // SAFETY: SDK module identifiers are fixed constants; no pointers are passed.
         let module_loaded = unsafe {
             let loaded_before = sceSysmoduleIsLoaded(SCE_SYSMODULE_AVCDEC);
             let ret = sceSysmoduleLoadModule(SCE_SYSMODULE_AVCDEC);
@@ -45,9 +46,11 @@ impl AvcdecLibrary {
             numOfRefFrames: AVCDEC_NUM_REF_FRAMES,
             numOfStreams: 1,
         };
+        // SAFETY: fully initialized POD query remains live; one decoder worker owns the library.
         let ret = unsafe { sceVideodecInitLibrary(SCE_VIDEODEC_TYPE_HW_AVCDEC, &init_info) };
         if ret < 0 {
             if module_loaded {
+                // SAFETY: release only the module successfully acquired above.
                 unsafe {
                     sceSysmoduleUnloadModule(SCE_SYSMODULE_AVCDEC);
                 }
@@ -61,6 +64,7 @@ impl AvcdecLibrary {
 
 impl Drop for AvcdecLibrary {
     fn drop(&mut self) {
+        // SAFETY: decoder and its memory have already been dropped in field order.
         unsafe {
             sceVideodecTermLibrary(SCE_VIDEODEC_TYPE_HW_AVCDEC);
             if self.module_loaded {
@@ -74,6 +78,7 @@ struct AvcdecDecoder(SceAvcdecCtrl);
 
 impl Drop for AvcdecDecoder {
     fn drop(&mut self) {
+        // SAFETY: sole successful decoder handle owner; backing CDRAM is still alive.
         unsafe {
             sceAvcdecDeleteDecoder(&mut self.0);
         }
@@ -96,6 +101,9 @@ pub struct HwVideoDecoder {
 
 impl HwVideoDecoder {
     pub fn new(config: DecoderConfig) -> Result<Self> {
+        super::buffer_contract::config(config)?;
+        // SAFETY: all query/control structures are initialized; successful handles
+        // are owned by RAII guards, dropped before their backing CDRAM/library.
         unsafe {
             // Decoder capacity is the stock 1280x720 setting; Xbox can send a smaller 960x540
             // stream. Keep the library initialization and memory query at the same capacity.
@@ -162,12 +170,18 @@ impl HwVideoDecoder {
         submitted_at: Instant,
         epoch: u64,
     ) -> Result<Option<DecodedPicture>> {
-        let pts = self.pictures.submit(rtp_timestamp, received_at, submitted_at, epoch);
+        let pts = self
+            .pictures
+            .submit(rtp_timestamp, received_at, submitted_at, epoch);
         self.decode_output(access_unit, pts, Some(rtp_timestamp), direct_target)
     }
 
-    pub(super) fn has_pending_output(&self) -> bool { self.pictures.has_pending() }
-    pub(super) fn pending_output_count(&self) -> usize { self.pictures.pending_count() }
+    pub(super) fn has_pending_output(&self) -> bool {
+        self.pictures.has_pending()
+    }
+    pub(super) fn pending_output_count(&self) -> usize {
+        self.pictures.pending_count()
+    }
 
     /// Service buffered output without admitting another AU or ending the stream.
     /// Vita FFmpeg uses null/zero ES input with sceAvcdecDecode when its input
@@ -183,6 +197,18 @@ impl HwVideoDecoder {
         submission: Option<u32>,
         direct_target: VideoTextureTarget,
     ) -> Result<Option<DecodedPicture>> {
+        // Reject caller-controlled buffers BEFORE the SDK can write to them, even
+        // when it returns no picture. A target lease keeps its initialized CDRAM
+        // allocation alive and exclusive until this synchronous invocation returns.
+        super::buffer_contract::output(direct_target, self.width, self.height)?;
+        anyhow::ensure!(
+            access_unit.len() <= super::buffer_contract::MAX_ACCESS_UNIT_BYTES,
+            "encoded video access unit exceeds limit"
+        );
+        // SAFETY: validated RGB565 stride/capacity and a live exclusive target lease;
+        // the input slice and initialized picture/array structures outlive the call.
+        // Empty ES is the existing output-only polling contract. No pointer is kept
+        // by Rust after return; SDK retention is a documented hardware assumption.
         unsafe {
             let au = SceAvcdecAu {
                 // Vita FFmpeg uses the same 90 kHz PTS units and reads info.pts
@@ -196,8 +222,11 @@ impl HwVideoDecoder {
                     lower: 0xFFFFFFFF,
                 },
                 es: SceAvcdecBuf {
-                    pBuf: if access_unit.is_empty() { std::ptr::null_mut() }
-                        else { access_unit.as_ptr() as *mut c_void },
+                    pBuf: if access_unit.is_empty() {
+                        std::ptr::null_mut()
+                    } else {
+                        access_unit.as_ptr() as *mut c_void
+                    },
                     size: access_unit.len() as u32,
                 },
             };
@@ -253,6 +282,22 @@ impl HwVideoDecoder {
             if array_picture.numOfOutput == 0 {
                 return Ok(None);
             }
+            anyhow::ensure!(
+                array_picture.numOfOutput == 1 && picture.frame.pixelType == OUTPUT_PIXEL_FORMAT,
+                "invalid native picture count or pixel format"
+            );
+            super::buffer_contract::dimensions(
+                picture.frame.frameWidth,
+                picture.frame.frameHeight,
+                super::HW_DECODER_WIDTH,
+                super::HW_DECODER_HEIGHT,
+            )?;
+            super::buffer_contract::dimensions(
+                picture.frame.horizontalSize,
+                picture.frame.verticalSize,
+                super::HW_DECODER_WIDTH,
+                super::HW_DECODER_HEIGHT,
+            )?;
             if !self.reported_first_picture {
                 eprintln!(
                     "Vita AVC first picture: frame {}x{}, visible {}x{}, pitch {} pixels, output surface {}x{}",
@@ -286,24 +331,35 @@ impl HwVideoDecoder {
                 );
             }
             metrics::METRICS.picture_dimensions.store(
-                (u64::from(picture.frame.frameWidth) << 32)
-                    | u64::from(picture.frame.frameHeight),
+                (u64::from(picture.frame.frameWidth) << 32) | u64::from(picture.frame.frameHeight),
                 std::sync::atomic::Ordering::Relaxed,
             );
-            let output_pts = (u64::from(picture.info.pts.upper) << 32)
-                | u64::from(picture.info.pts.lower);
+            let output_pts =
+                (u64::from(picture.info.pts.upper) << 32) | u64::from(picture.info.pts.lower);
             let timing = self.pictures.output(output_pts, Instant::now());
-            super::trace::record(if submission.is_some() { "decoder_output_pts" }
-                else { "decoder_poll_output_pts" }, submission.unwrap_or(0), output_pts);
+            super::trace::record(
+                if submission.is_some() {
+                    "decoder_output_pts"
+                } else {
+                    "decoder_poll_output_pts"
+                },
+                submission.unwrap_or(0),
+                output_pts,
+            );
             if timing.is_none() {
-                super::trace::record("decoder_pts_unmatched", submission.unwrap_or(0),
-                    u64::from(output_pts == UNKNOWN_PTS));
+                super::trace::record(
+                    "decoder_pts_unmatched",
+                    submission.unwrap_or(0),
+                    u64::from(output_pts == UNKNOWN_PTS),
+                );
             }
             Ok(Some(DecodedPicture { timing }))
         }
     }
 }
 
-// SAFETY: the CDRAM blocks and decoder handle have no thread affinity in the underlying SCE API -
-// this is only ever moved once (into `VideoDecodeWorker`'s thread), never accessed concurrently.
+// SAFETY requirement: sole ownership transfers once into VideoDecodeWorker,
+// with no concurrent native access. The existing adapter assumes the SDK permits
+// moving a created handle between threads; authoritative affinity evidence is
+// incomplete and remains a release blocker documented in FINAL_BUILD_AUDIT.md.
 unsafe impl Send for HwVideoDecoder {}

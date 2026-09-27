@@ -1,10 +1,10 @@
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use crate::api::streaming::rtc::rtp;
+use crate::streaming::audio_timing::TimedAudio;
 use crate::streaming::video::{DecodedFrame, DecoderConfig, DirectVideoOutput, VideoDecodeWorker};
 use anyhow::Result;
 use bytes::Bytes;
-use crate::streaming::audio_timing::TimedAudio;
 use rtc::media_stream::MediaStreamTrackId;
-use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use rtc::rtp::Packet;
 use rtc::rtp_transceiver::RTCRtpReceiverId;
 use std::sync::Arc;
@@ -76,7 +76,9 @@ impl VideoReceiver {
             stats: VideoStats::default(),
             decoder_config: config,
             last_packet_at: None,
-            nack_payloads: Vec::new(), nack_queued: 0, nack_failed: 0,
+            nack_payloads: Vec::new(),
+            nack_queued: 0,
+            nack_failed: 0,
         })
     }
 
@@ -95,19 +97,39 @@ impl VideoReceiver {
         self.ssrc = Some(ssrc);
     }
 
-    pub(crate) fn set_nack_payloads(&mut self, payloads: Vec<u8>) { self.nack_payloads = payloads; }
+    pub(crate) fn set_nack_payloads(&mut self, payloads: Vec<u8>) {
+        self.nack_payloads = payloads;
+    }
 
     pub(crate) fn request_missing_packets(&mut self, peer: &mut RTCPeerConnection) {
-        let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc) else { return; };
-        let Some(mut receiver) = peer.rtp_receiver(receiver_id) else { return; };
+        let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc) else {
+            return;
+        };
+        let Some(mut receiver) = peer.rtp_receiver(receiver_id) else {
+            return;
+        };
         let missing = self.order.missing_for_nack(Instant::now());
-        if missing.is_empty() { return; }
+        if missing.is_empty() {
+            return;
+        }
         use rtcp::transport_feedbacks::transport_layer_nack::{NackPair, TransportLayerNack};
         let count = missing.len() as u64;
-        let nack = TransportLayerNack { sender_ssrc: 0, media_ssrc: ssrc,
-            nacks: missing.into_iter().map(|packet_id| NackPair { packet_id, lost_packets: 0 }).collect() };
-        if receiver.write_rtcp(vec![Box::new(nack)]).is_ok() { self.nack_queued += count; }
-        else { self.nack_failed += 1; }
+        let nack = TransportLayerNack {
+            sender_ssrc: 0,
+            media_ssrc: ssrc,
+            nacks: missing
+                .into_iter()
+                .map(|packet_id| NackPair {
+                    packet_id,
+                    lost_packets: 0,
+                })
+                .collect(),
+        };
+        if receiver.write_rtcp(vec![Box::new(nack)]).is_ok() {
+            self.nack_queued += count;
+        } else {
+            self.nack_failed += 1;
+        }
     }
 
     pub(crate) fn repair_summary(&self) -> String {
@@ -118,21 +140,28 @@ impl VideoReceiver {
         self.rtp.refresh();
     }
 
-    pub(crate) fn recovering(&self) -> bool { self.rtp.waiting_for_keyframe() }
+    pub(crate) fn recovering(&self) -> bool {
+        self.rtp.waiting_for_keyframe()
+    }
 
     pub(crate) fn handles(&self, track_id: &MediaStreamTrackId) -> bool {
         self.track_id.as_ref() == Some(track_id)
     }
 
     pub(crate) fn receive(&mut self, packet: Packet, keyframe_requested: &mut bool) {
-        self.order.enable_repair(self.nack_payloads.contains(&packet.header.payload_type));
+        self.order
+            .enable_repair(self.nack_payloads.contains(&packet.header.payload_type));
         self.received_packet = true;
         self.stats.packets = self.stats.packets.saturating_add(1);
         let now = Instant::now();
         if let Some(last) = self.last_packet_at.replace(now) {
             let gap = now.saturating_duration_since(last).as_micros() as u64;
             if gap > 20_000 {
-                crate::streaming::video::trace::record("video_packet_gap_us", packet.header.timestamp, gap);
+                crate::streaming::video::trace::record(
+                    "video_packet_gap_us",
+                    packet.header.timestamp,
+                    gap,
+                );
             }
         }
         let missing_before = self.order.stats.missing;
@@ -140,7 +169,10 @@ impl VideoReceiver {
         // Process already-delivered packets before declaring a gap expired.
         // Previously a pump delay could make us discard the exact packet in
         // hand that would have closed the gap, then trigger seconds of IDR wait.
-        if let Some((packet, received_at)) = self.order.push(packet.header.sequence_number, (packet, now), now) {
+        if let Some((packet, received_at)) =
+            self.order
+                .push(packet.header.sequence_number, (packet, now), now)
+        {
             self.receive_ordered(packet, received_at, keyframe_requested);
         }
         while let Some((packet, received_at)) = self.order.pop_ready(now) {
@@ -164,8 +196,15 @@ impl VideoReceiver {
         }
     }
 
-    fn receive_ordered(&mut self, packet: Packet, received_at: Instant, keyframe_requested: &mut bool) {
-        let sample_stats = self.rtp.receive_at(&self.decoder, packet, received_at, keyframe_requested);
+    fn receive_ordered(
+        &mut self,
+        packet: Packet,
+        received_at: Instant,
+        keyframe_requested: &mut bool,
+    ) {
+        let sample_stats =
+            self.rtp
+                .receive_at(&self.decoder, packet, received_at, keyframe_requested);
         macro_rules! add {
             ($field:ident) => {
                 self.stats.$field = self.stats.$field.saturating_add(sample_stats.$field as u64);
@@ -210,7 +249,11 @@ impl VideoReceiver {
             match result {
                 Ok(frame) => {
                     self.next_frame_id = self.next_frame_id.wrapping_add(1);
-                    if self.latest_frame.replace((self.next_frame_id, frame)).is_some() {
+                    if self
+                        .latest_frame
+                        .replace((self.next_frame_id, frame))
+                        .is_some()
+                    {
                         crate::streaming::video::metrics::METRICS
                             .handoff_replaced
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -245,7 +288,11 @@ impl VideoReceiver {
         }
     }
 
-    pub(crate) fn request_bitrate_ceiling(&self, peer: &mut RTCPeerConnection, bps: u32) -> Option<bool> {
+    pub(crate) fn request_bitrate_ceiling(
+        &self,
+        peer: &mut RTCPeerConnection,
+        bps: u32,
+    ) -> Option<bool> {
         let (receiver_id, ssrc) = (self.receiver_id?, self.ssrc?);
         let mut receiver = peer.rtp_receiver(receiver_id)?;
         let remb = rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate {

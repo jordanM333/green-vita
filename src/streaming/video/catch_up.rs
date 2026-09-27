@@ -22,20 +22,30 @@ impl CatchUp {
         self.requests += 1;
     }
 
-    pub(crate) fn requests(&self) -> u64 { self.requests }
+    pub(crate) fn requests(&self) -> u64 {
+        self.requests
+    }
 
     /// Only distinct, advancing frames count. A paused game, repeated status,
     /// brief packet burst, or an existing damage recovery cannot trigger this.
-    pub(crate) fn observe(&mut self, timestamp: u32, received_at: Instant,
-        _delay_ms: u64, queued: usize, recovering: bool, now: Instant) -> bool
-    {
+    pub(crate) fn observe(
+        &mut self,
+        timestamp: u32,
+        received_at: Instant,
+        _delay_ms: u64,
+        queued: usize,
+        recovering: bool,
+        now: Instant,
+    ) -> bool {
         if recovering || now.saturating_duration_since(received_at) > MAX_SAMPLE_GAP {
             self.pressure_since = None;
             return false;
         }
         if let Some((previous, at)) = self.last_sample {
             let forward = timestamp.wrapping_sub(previous);
-            if forward == 0 || forward >= (1 << 31) { return false; }
+            if forward == 0 || forward >= (1 << 31) {
+                return false;
+            }
             if received_at.saturating_duration_since(at) > MAX_SAMPLE_GAP {
                 self.pressure_since = None;
             }
@@ -50,9 +60,12 @@ impl CatchUp {
         }
         let since = *self.pressure_since.get_or_insert(received_at);
         if received_at.saturating_duration_since(since) < PERSISTENCE
-            || self.last_request.is_some_and(|at|
-                now.saturating_duration_since(at) < REQUEST_INTERVAL)
-        { return false; }
+            || self
+                .last_request
+                .is_some_and(|at| now.saturating_duration_since(at) < REQUEST_INTERVAL)
+        {
+            return false;
+        }
         self.requested(now);
         true
     }
@@ -72,7 +85,10 @@ mod tests {
                 requests.push(tick * 100);
             }
         }
-        assert!(requests.is_empty(), "arrival offset with an empty decode queue is not a local catch-up opportunity: {requests:?}");
+        assert!(
+            requests.is_empty(),
+            "arrival offset with an empty decode queue is not a local catch-up opportunity: {requests:?}"
+        );
     }
     #[test]
     fn still_video_and_stale_or_reordered_samples_cannot_trigger_refresh() {
@@ -94,8 +110,14 @@ mod tests {
         let mut state = CatchUp::default();
         for tick in 0..=100 {
             let now = start + Duration::from_millis(tick * 100);
-            assert!(!state.observe(tick as u32, now, 10,
-                if tick % 4 == 0 { 20 } else { 0 }, false, now));
+            assert!(!state.observe(
+                tick as u32,
+                now,
+                10,
+                if tick % 4 == 0 { 20 } else { 0 },
+                false,
+                now
+            ));
         }
         for tick in 101..=200 {
             let now = start + Duration::from_millis(tick * 100);
@@ -110,8 +132,16 @@ mod tests {
         let mut requested = Vec::new();
         for tick in 0..=60 {
             let now = start + Duration::from_millis(tick * 100);
-            if state.observe((u32::MAX - 20).wrapping_add(tick as u32), now,
-                5, 16, false, now) { requested.push(tick); }
+            if state.observe(
+                (u32::MAX - 20).wrapping_add(tick as u32),
+                now,
+                5,
+                16,
+                false,
+                now,
+            ) {
+                requested.push(tick);
+            }
         }
         assert_eq!(requested, [50]);
     }

@@ -2,7 +2,7 @@ use super::StreamingSession;
 use crate::app::{App, AppState, PollJob, poll_job};
 use crate::i18n::{I18n, arg_string};
 use crate::{MsalAuth, Stream, StreamKind, StreamState};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use fluent_bundle::FluentArgs;
 use std::time::{Duration, Instant};
 
@@ -69,7 +69,9 @@ impl App {
         let kind = target.kind;
         let target_id = target.target_id.clone();
         let job = Some(tokio::spawn(async move {
-            api.start_stream(kind, &target_id).await
+            api.start_stream(kind, &target_id)
+                .await
+                .context("stream session creation failed")
         }));
         self.set_state(AppState::StartingStream { target, job });
     }
@@ -190,6 +192,9 @@ impl App {
     ) -> Result<AppState> {
         match result {
             Ok((stream, StreamState::Provisioned)) => {
+                if let Some(job) = wait_estimate_job {
+                    crate::jobs::cancel(job).await;
+                }
                 session.stream = stream;
                 self.service.auth = MsalAuth::new();
                 let title_id = session.game_id.clone();
@@ -198,11 +203,15 @@ impl App {
                     session.kind,
                     title_id,
                     session.return_selected,
-                    StreamStartTarget { kind: session.kind, target_id: session.target_id.clone(),
-                        game_id: session.game_id.clone(), label: session.label.clone(),
-                        return_selected: session.return_selected },
+                    StreamStartTarget {
+                        kind: session.kind,
+                        target_id: session.target_id.clone(),
+                        game_id: session.game_id.clone(),
+                        label: session.label.clone(),
+                        return_selected: session.return_selected,
+                    },
                 ) {
-                    Ok(streaming) => Ok(AppState::Streaming(streaming)),
+                    Ok(streaming) => Ok(AppState::Streaming(Box::new(streaming))),
                     Err(error) => {
                         let _ = session.stream.stop().await;
                         eprintln!("Failed to start WebRTC session: {error:#}");
@@ -235,6 +244,12 @@ impl App {
                 let too_many_failures =
                     session.consecutive_failures >= MAX_CONSECUTIVE_POLL_FAILURES;
                 if session_gone || too_many_failures {
+                    if let Some(job) = wait_estimate_job {
+                        crate::jobs::cancel(job).await;
+                    }
+                    if session.stream.stop().await.is_err() {
+                        eprintln!("Session cleanup failed after provisioning error");
+                    }
                     Ok(self.localized_error_state("error-stream-state", format!("{error:#}")))
                 } else {
                     Ok(AppState::Connecting {

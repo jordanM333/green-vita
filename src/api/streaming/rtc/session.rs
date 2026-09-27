@@ -1,11 +1,11 @@
 use crate::api::streaming::rtc::clock::RtpClockProbe;
 use crate::api::streaming::rtc::media::{AudioReceiver, VideoReceiver};
+use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use crate::api::streaming::rtc::transport::RtcTransport;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::metrics::METRICS;
 use crate::streaming::video::{DecoderConfig, DirectVideoOutput};
 use anyhow::{Context, Result};
-use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use rtc::peer_connection::event::{RTCDataChannelEvent, RTCPeerConnectionEvent, RTCTrackEvent};
 use rtc::peer_connection::message::RTCMessage;
 use rtc::peer_connection::sdp::RTCSessionDescription;
@@ -13,11 +13,11 @@ use rtc::peer_connection::state::RTCPeerConnectionState;
 use rtc::peer_connection::transport::RTCIceCandidateInit;
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use rtc::sansio::Protocol;
-use rtc::statistics::report::RTCStatsReportEntry;
 use rtc::statistics::StatsSelector;
+use rtc::statistics::report::RTCStatsReportEntry;
 use rtcp::sender_report::SenderReport;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const KEYFRAME_REQUEST_COOLDOWN: Duration = Duration::from_millis(300);
@@ -37,9 +37,22 @@ pub(crate) struct RtcSessionConfig {
 /// Provider-specific hooks invoked by the reusable RTC session.
 pub(crate) trait RtcSessionBackend {
     fn pump_microphone(&mut self, _peer: &mut RTCPeerConnection, _connected: bool) {}
-    fn begin_chat_negotiation(&mut self, _peer: &mut RTCPeerConnection) -> Option<RTCSessionDescription> { None }
-    fn finish_chat_negotiation(&mut self, _peer: &mut RTCPeerConnection, _answer: Result<String>) -> bool { false }
-    fn microphone_status(&self) -> String { String::new() }
+    fn begin_chat_negotiation(
+        &mut self,
+        _peer: &mut RTCPeerConnection,
+    ) -> Option<RTCSessionDescription> {
+        None
+    }
+    fn finish_chat_negotiation(
+        &mut self,
+        _peer: &mut RTCPeerConnection,
+        _answer: Result<String>,
+    ) -> bool {
+        false
+    }
+    fn microphone_status(&self) -> String {
+        String::new()
+    }
     fn handle_channel_open(
         &mut self,
         peer: &mut RTCPeerConnection,
@@ -55,7 +68,11 @@ pub(crate) trait RtcSessionBackend {
     fn send_pointer_event(&mut self, peer: &mut RTCPeerConnection, event: PointerEvent);
     fn notify_keyframe_requested(&mut self, peer: &mut RTCPeerConnection);
     fn server_video_size(&self) -> Option<(u32, u32)>;
-    fn send_rendered_frame(&mut self, peer: &mut RTCPeerConnection, frame: crate::streaming::video::timing::PresentedFrame) -> bool;
+    fn send_rendered_frame(
+        &mut self,
+        peer: &mut RTCPeerConnection,
+        frame: crate::streaming::video::timing::PresentedFrame,
+    ) -> bool;
 }
 
 pub(crate) struct RtcSession<B: RtcSessionBackend> {
@@ -137,7 +154,8 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     pub(crate) fn refresh_negotiated_feedback(&mut self) {
         if let Some(answer) = self.peer.current_remote_description() {
             self.video_ceiling.answer(&answer.sdp);
-            self.video.set_nack_payloads(super::feedback::feedback_payloads(&answer.sdp, "nack"));
+            self.video
+                .set_nack_payloads(super::feedback::feedback_payloads(&answer.sdp, "nack"));
         }
     }
 
@@ -165,18 +183,34 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         self.transport.receive(&mut self.peer);
         let gathered_candidates = self.handle_peer_events();
         let mut keyframe_requested = self.handle_peer_messages();
-        self.backend.pump_microphone(&mut self.peer, self.connection_state == RTCPeerConnectionState::Connected);
+        self.backend.pump_microphone(
+            &mut self.peer,
+            self.connection_state == RTCPeerConnectionState::Connected,
+        );
         self.video.drain_decoder(&mut keyframe_requested);
         self.video.request_missing_packets(&mut self.peer);
 
         // Feedback identifies a matched output that has completed rendering.
         // Decode-only, replaced and unknown-PTS pictures never enter this slot.
-        let presented = self.direct_output.presentation.lock().ok().and_then(|mut state| state.take());
+        let presented = self
+            .direct_output
+            .presentation
+            .lock()
+            .ok()
+            .and_then(|mut state| state.take());
         if let Some(frame) = presented {
             let sent = self.backend.send_rendered_frame(&mut self.peer, frame);
-            let counter = if sent { &METRICS.frame_feedback_sent } else { &METRICS.frame_feedback_failed };
+            let counter = if sent {
+                &METRICS.frame_feedback_sent
+            } else {
+                &METRICS.frame_feedback_failed
+            };
             counter.fetch_add(1, Ordering::Relaxed);
-            crate::streaming::video::trace::record("frame_feedback", frame.timing.rtp_timestamp, u64::from(sent));
+            crate::streaming::video::trace::record(
+                "frame_feedback",
+                frame.timing.rtp_timestamp,
+                u64::from(sent),
+            );
         }
 
         // Materialize admitted ephemeral reports while the sampled send capacity
@@ -184,14 +218,25 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         self.transport.flush(&mut self.peer).await;
         let now = Instant::now();
         self.video_ceiling.update_arrival_feedback(
-            super::reports::video_arrival_packets(), self.transport.twcc_sent(), now);
+            super::reports::video_arrival_packets(),
+            self.transport.twcc_sent(),
+            now,
+        );
         if let Some(sample) = self.video_clock.timing()
-            && self.catch_up.observe(sample.timestamp, sample.received_at,
-                sample.added_delay_ms, self.video.decoder.queued_frames(),
-                self.video.recovering(), now)
+            && self.catch_up.observe(
+                sample.timestamp,
+                sample.received_at,
+                sample.added_delay_ms,
+                self.video.decoder.queued_frames(),
+                self.video.recovering(),
+                now,
+            )
         {
-            crate::streaming::video::trace::record("lag_keyframe_request",
-                sample.timestamp, sample.added_delay_ms);
+            crate::streaming::video::trace::record(
+                "lag_keyframe_request",
+                sample.timestamp,
+                sample.added_delay_ms,
+            );
             self.video.refresh();
             keyframe_requested = true;
         }
@@ -207,8 +252,9 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         }
         self.request_keyframe(keyframe_requested, now);
         if self.video_ceiling.due(now)
-            && let Some(success) = self.video.request_bitrate_ceiling(
-                &mut self.peer, self.video_ceiling.target_bps())
+            && let Some(success) = self
+                .video
+                .request_bitrate_ceiling(&mut self.peer, self.video_ceiling.target_bps())
         {
             self.video_ceiling.attempted(now, success);
             crate::streaming::video::trace::record("remb_queued", 0, u64::from(success));
@@ -221,7 +267,13 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             let receive = self.transport.take_receive_summary();
             let rate = self.video_rate.summary(now);
             let ceiling = self.video_ceiling.summary(self.video_rate.latest_kbps);
-            let feedback = format!("Video payload:{rate}\n{ceiling}\n{}\n{}\nCatch-up requests:{}\nSDP video ceiling:{}k", super::reports::summary(), self.video.repair_summary(), self.catch_up.requests(), super::bandwidth::VIDEO_CEILING_BPS / 1000);
+            let feedback = format!(
+                "Video payload:{rate}\n{ceiling}\n{}\n{}\nCatch-up requests:{}\nSDP video ceiling:{}k",
+                super::reports::summary(),
+                self.video.repair_summary(),
+                self.catch_up.requests(),
+                super::bandwidth::VIDEO_CEILING_BPS / 1000
+            );
             let (requested_width, requested_height) = self.requested_video_size;
             let server_size = self
                 .backend
@@ -231,7 +283,9 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             let microphone = self.backend.microphone_status();
             self.status = format!(
                 "Build: RX Test {} revision {}\nMode:{}\nXbox requested:{requested_width}x{requested_height} server:{server_size}\n{status}\n{link}\n{receive}\n{feedback}\n{microphone}",
-                crate::build_info::NUMBER, crate::build_info::REVISION, self.mode,
+                crate::build_info::NUMBER,
+                crate::build_info::REVISION,
+                self.mode,
             );
             crate::streaming::video::trace::status_snapshot(&self.status);
             eprintln!("{}", self.status);
@@ -242,7 +296,12 @@ impl<B: RtcSessionBackend> RtcSession<B> {
 
     pub(crate) fn video_timing(&self) -> Option<crate::streaming::video::freshness::VideoTiming> {
         let sample = self.video_clock.timing()?;
-        let rendered = self.direct_output.presentation.lock().ok().and_then(|state| state.latest);
+        let rendered = self
+            .direct_output
+            .presentation
+            .lock()
+            .ok()
+            .and_then(|state| state.latest);
         Some(sample.with_presented_frame(rendered, Instant::now()))
     }
 
@@ -266,7 +325,10 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                     _ => None,
                 })
                 .unwrap_or_else(|| "?".to_owned());
-            format!("{}ms/{remote}", (pair.current_round_trip_time * 1_000.0) as u32)
+            format!(
+                "{}ms/{remote}",
+                (pair.current_round_trip_time * 1_000.0) as u32
+            )
         } else {
             "?".to_owned()
         };
@@ -326,10 +388,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                     }
                 }
                 RTCPeerConnectionEvent::OnIceCandidateErrorEvent(error) => {
-                    eprintln!(
-                        "ICE candidate error from {} ({}:{}): {} {}",
-                        error.url, error.address, error.port, error.error_code, error.error_text
-                    );
+                    eprintln!("ICE candidate error code {}", error.error_code);
                 }
                 RTCPeerConnectionEvent::OnTrack(RTCTrackEvent::OnOpen(init)) => {
                     let track_kind = self
@@ -355,7 +414,9 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                     RTCDataChannelEvent::OnBufferedAmountHigh(_),
                 ) => {
                     METRICS.input_buffered_high.store(1, Ordering::Relaxed);
-                    METRICS.input_buffered_events.fetch_add(1, Ordering::Relaxed);
+                    METRICS
+                        .input_buffered_events
+                        .fetch_add(1, Ordering::Relaxed);
                 }
                 RTCPeerConnectionEvent::OnDataChannel(
                     RTCDataChannelEvent::OnBufferedAmountLow(_),
@@ -381,19 +442,33 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             match message {
                 RTCMessage::RtpPacket(track_id, packet) => {
                     if self.video.handles(&track_id) {
-                        self.video_ceiling.observe_payload(packet.header.payload_type);
-                        self.video_rate.receive(packet.payload.len(), Instant::now());
+                        self.video_ceiling
+                            .observe_payload(packet.header.payload_type);
+                        self.video_rate
+                            .receive(packet.payload.len(), Instant::now());
                         // Empty RTP probes participate in sequence/TWCC handling,
                         // but their timestamps do not describe a captured frame.
                         if !packet.payload.is_empty() {
                             self.video_clock.receive(packet.header.timestamp);
                             if let Some(timing) = self.video_clock.timing() {
                                 let before = self.video_ceiling.target_bps();
-                                self.video_ceiling.receive(packet.payload.len(), timing.added_delay_ms, Instant::now());
+                                self.video_ceiling.receive(
+                                    packet.payload.len(),
+                                    timing.added_delay_ms,
+                                    Instant::now(),
+                                );
                                 let after = self.video_ceiling.target_bps();
                                 if after != before {
-                                    crate::streaming::video::trace::record("receiver_ceiling_bps", packet.header.timestamp, u64::from(after));
-                                    crate::streaming::video::trace::record("receiver_ceiling_delay_ms", packet.header.timestamp, timing.added_delay_ms);
+                                    crate::streaming::video::trace::record(
+                                        "receiver_ceiling_bps",
+                                        packet.header.timestamp,
+                                        u64::from(after),
+                                    );
+                                    crate::streaming::video::trace::record(
+                                        "receiver_ceiling_delay_ms",
+                                        packet.header.timestamp,
+                                        timing.added_delay_ms,
+                                    );
                                 }
                             }
                         }
@@ -421,7 +496,6 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                         &data_message.data,
                     );
                 }
-                _ => {}
             }
         }
         keyframe_requested

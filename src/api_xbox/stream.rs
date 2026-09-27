@@ -1,5 +1,5 @@
-use crate::api_xbox::api::ApiClient;
 use super::session_kind::StreamKind;
+use crate::api_xbox::api::ApiClient;
 use crate::api_xbox::auth::{EndpointCredentials, MsalAuth};
 use anyhow::{Context, Result};
 use reqwest::Method;
@@ -76,7 +76,9 @@ impl Stream {
         }
     }
 
-    pub(crate) fn kind(&self) -> StreamKind { self.kind }
+    pub(crate) fn kind(&self) -> StreamKind {
+        self.kind
+    }
 
     pub fn session_path(&self) -> String {
         format!("/{}", self.session_path.trim_start_matches('/'))
@@ -156,9 +158,15 @@ impl Stream {
 
     pub async fn send_chat_sdp_offer(&self, sdp: &str) -> Result<String> {
         let body = super::chat_sdp::offer_body(sdp);
-        let _: Value = self.api_client.request_json(
-            &self.credentials, Method::POST, &self.session_endpoint("sdp"), Some(&body),
-        ).await?;
+        let _: Value = self
+            .api_client
+            .request_json(
+                &self.credentials,
+                Method::POST,
+                &self.session_endpoint("sdp"),
+                Some(&body),
+            )
+            .await?;
         let response = self.wait_for_sdp_response().await?;
         check_exchange_error(&response)?;
         extract_answer_sdp(&response)
@@ -270,7 +278,7 @@ fn check_exchange_error(value: &Value) -> Result<()> {
                 && fields.get("message").is_some_and(Value::is_null)
         });
         if !empty_placeholder {
-            anyhow::bail!("xCloud exchange failed: {error_details}");
+            anyhow::bail!("streaming exchange rejected by service");
         }
     }
     Ok(())
@@ -282,9 +290,7 @@ fn extract_answer_sdp(response: &Value) -> Result<String> {
         .and_then(Value::as_str)
         .and_then(|exchange| serde_json::from_str::<Value>(exchange).ok())
         .and_then(|parsed| parsed.get("sdp").and_then(Value::as_str).map(str::to_owned))
-        .with_context(|| {
-            format!("xCloud SDP answer response was missing an SDP payload: {response}")
-        })
+        .context("streaming SDP answer response was missing an SDP payload")
 }
 
 fn serialize_local_candidate(candidate: &RTCIceCandidateInit) -> String {
@@ -372,16 +378,25 @@ mod tests {
 
     #[test]
     fn empty_home_exchange_error_is_not_a_signaling_failure() {
-        assert!(check_exchange_error(&json!({
-            "errorDetails": {"code": null, "message": null},
-            "exchangeResponse": "answer"
-        })).is_ok());
-        assert!(check_exchange_error(&json!({
-            "errorDetails": {"code": "ExchangeFailed", "message": null}
-        })).is_err());
-        assert!(check_exchange_error(&json!({
-            "errorDetails": {"code": null, "message": null, "unexpected": "failure"}
-        })).is_err());
+        assert!(
+            check_exchange_error(&json!({
+                "errorDetails": {"code": null, "message": null},
+                "exchangeResponse": "answer"
+            }))
+            .is_ok()
+        );
+        assert!(
+            check_exchange_error(&json!({
+                "errorDetails": {"code": "ExchangeFailed", "message": null}
+            }))
+            .is_err()
+        );
+        assert!(
+            check_exchange_error(&json!({
+                "errorDetails": {"code": null, "message": null, "unexpected": "failure"}
+            }))
+            .is_err()
+        );
     }
 
     #[test]

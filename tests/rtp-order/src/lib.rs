@@ -11,9 +11,15 @@ mod streaming {
     pub(crate) use crate::audio_timing;
     pub mod video {
         pub(crate) use crate::policy;
-        pub mod trace { pub fn record(_: &'static str, _: u32, _: u64) {} }
+        pub mod trace {
+            pub fn record(_: &'static str, _: u32, _: u64) {}
+        }
         use std::sync::Mutex;
-        pub enum SubmitResult { Submitted, QueueFull, Disconnected }
+        pub enum SubmitResult {
+            Submitted,
+            QueueFull,
+            Disconnected,
+        }
         #[derive(Default)]
         pub struct VideoDecodeWorker {
             pub submitted: Mutex<Vec<Vec<u8>>>,
@@ -22,13 +28,28 @@ mod streaming {
         }
         impl VideoDecodeWorker {
             pub fn begin_resync(&self) {}
-            pub fn take_recovery_request(&self) -> bool { false }
-            pub fn queued_frames(&self) -> usize { self.queued.load(std::sync::atomic::Ordering::Relaxed) }
-            pub fn submit_refresh_access_unit(&self, data: Vec<u8>, at: std::time::Instant, ts: u32) -> SubmitResult {
-                self.cutovers.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            pub fn take_recovery_request(&self) -> bool {
+                false
+            }
+            pub fn queued_frames(&self) -> usize {
+                self.queued.load(std::sync::atomic::Ordering::Relaxed)
+            }
+            pub fn submit_refresh_access_unit(
+                &self,
+                data: Vec<u8>,
+                at: std::time::Instant,
+                ts: u32,
+            ) -> SubmitResult {
+                self.cutovers
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.submit_access_unit(data, at, ts)
             }
-            pub fn submit_access_unit(&self, data: Vec<u8>, _: std::time::Instant, _: u32) -> SubmitResult {
+            pub fn submit_access_unit(
+                &self,
+                data: Vec<u8>,
+                _: std::time::Instant,
+                _: u32,
+            ) -> SubmitResult {
                 self.submitted.lock().unwrap().push(data);
                 SubmitResult::Submitted
             }
@@ -45,9 +66,12 @@ mod streaming {
                 pub rtp_assembly_max_us: AtomicU64,
             }
             pub static METRICS: Metrics = Metrics {
-                audio_rtp_gaps: AtomicU64::new(0), audio_rtp_late: AtomicU64::new(0),
-                audio_rtp_backlog_ms: AtomicU64::new(0), audio_rtp_lost: AtomicU64::new(0),
-                rtp_assembly_sum_us: AtomicU64::new(0), rtp_assembly_count: AtomicU64::new(0),
+                audio_rtp_gaps: AtomicU64::new(0),
+                audio_rtp_late: AtomicU64::new(0),
+                audio_rtp_backlog_ms: AtomicU64::new(0),
+                audio_rtp_lost: AtomicU64::new(0),
+                rtp_assembly_sum_us: AtomicU64::new(0),
+                rtp_assembly_count: AtomicU64::new(0),
                 rtp_assembly_max_us: AtomicU64::new(0),
             };
         }
@@ -72,8 +96,12 @@ mod tests {
     fn packet(seq: u16, ts: u32, marker: bool, payload: &'static [u8]) -> rtp::Packet {
         rtp::Packet {
             header: rtp::header::Header {
-                sequence_number: seq, timestamp: ts, marker, ..Default::default()
-            }, payload: Bytes::from_static(payload), ..Default::default()
+                sequence_number: seq,
+                timestamp: ts,
+                marker,
+                ..Default::default()
+            },
+            payload: Bytes::from_static(payload),
         }
     }
 
@@ -82,9 +110,21 @@ mod tests {
         let mut audio = video_rtp::AudioRtp::new(48_000, 0);
         let old = Instant::now() - Duration::from_secs(6);
         let mut ready = Vec::new();
-        audio.receive(packet(u16::MAX, u32::MAX - 959, false, &[0xf8, 0xff, 0xfe]), old, &mut ready);
-        audio.receive(packet(0, 0, false, &[0xf8, 0xff, 0xfe]), Instant::now(), &mut ready);
-        audio.receive(packet(1, 960, false, &[0xf8, 0xff, 0xfe]), Instant::now(), &mut ready);
+        audio.receive(
+            packet(u16::MAX, u32::MAX - 959, false, &[0xf8, 0xff, 0xfe]),
+            old,
+            &mut ready,
+        );
+        audio.receive(
+            packet(0, 0, false, &[0xf8, 0xff, 0xfe]),
+            Instant::now(),
+            &mut ready,
+        );
+        audio.receive(
+            packet(1, 960, false, &[0xf8, 0xff, 0xfe]),
+            Instant::now(),
+            &mut ready,
+        );
         assert!(!ready.is_empty());
         assert_eq!(ready[0].received_at, old);
         assert!(!ready[0].fits_playback(Instant::now(), Duration::ZERO, Duration::ZERO));
@@ -100,16 +140,22 @@ mod tests {
 
     impl OrderedReceiver {
         fn consume(&mut self, assembler: &mut video_rtp::VideoRtp, packet: rtp::Packet) {
-            self.drops += assembler.receive(&self.worker, packet, &mut self.keyframe).dropped;
+            self.drops += assembler
+                .receive(&self.worker, packet, &mut self.keyframe)
+                .dropped;
         }
         fn flush(&mut self, assembler: &mut video_rtp::VideoRtp, now: Instant) {
-            while let Some(p) = self.order.pop(now) { self.consume(assembler, p); }
+            while let Some(p) = self.order.pop(now) {
+                self.consume(assembler, p);
+            }
         }
         fn receive(&mut self, assembler: &mut video_rtp::VideoRtp, p: rtp::Packet, now: Instant) {
             if let Some(p) = self.order.push(p.header.sequence_number, p, now) {
                 self.consume(assembler, p);
             }
-            while let Some(p) = self.order.pop_ready(now) { self.consume(assembler, p); }
+            while let Some(p) = self.order.pop_ready(now) {
+                self.consume(assembler, p);
+            }
         }
     }
 
@@ -119,18 +165,24 @@ mod tests {
             let mut receiver = OrderedReceiver::default();
             let mut assembler = video_rtp::VideoRtp::new(1280, 720);
             let now = Instant::now();
-            for p in [packet(seq, 1000, false, &[0x7c, 0x85, 0x88]),
-                      packet(seq.wrapping_add(2), 1000, true, &[0x7c, 0x45, 0x99]),
-                      packet(seq.wrapping_add(1), 99999, true, &[]),
-                      packet(seq.wrapping_add(3), 2500, true, &[0x61, 0xaa, 0xbb])] {
+            for p in [
+                packet(seq, 1000, false, &[0x7c, 0x85, 0x88]),
+                packet(seq.wrapping_add(2), 1000, true, &[0x7c, 0x45, 0x99]),
+                packet(seq.wrapping_add(1), 99999, true, &[]),
+                packet(seq.wrapping_add(3), 2500, true, &[0x61, 0xaa, 0xbb]),
+            ] {
                 receiver.receive(&mut assembler, p, now);
             }
             receiver.flush(&mut assembler, now);
             assert_eq!(receiver.drops, 0);
             assert!(!receiver.keyframe);
-            assert_eq!(*receiver.worker.submitted.lock().unwrap(), vec![
-                vec![0, 0, 0, 1, 0x65, 0x88, 0x99],
-                vec![0, 0, 0, 1, 0x61, 0xaa, 0xbb]]);
+            assert_eq!(
+                *receiver.worker.submitted.lock().unwrap(),
+                vec![
+                    vec![0, 0, 0, 1, 0x65, 0x88, 0x99],
+                    vec![0, 0, 0, 1, 0x61, 0xaa, 0xbb]
+                ]
+            );
         }
     }
 
@@ -139,13 +191,25 @@ mod tests {
         let mut receiver = OrderedReceiver::default();
         let mut assembler = video_rtp::VideoRtp::new(1280, 720);
         let now = Instant::now();
-        receiver.receive(&mut assembler, packet(10, 1000, false, &[0x7c, 0x85, 0x88]), now);
+        receiver.receive(
+            &mut assembler,
+            packet(10, 1000, false, &[0x7c, 0x85, 0x88]),
+            now,
+        );
         receiver.receive(&mut assembler, packet(11, 1000, true, &[]), now);
         assert!(receiver.worker.submitted.lock().unwrap().is_empty());
         // Sequence 12 is genuinely absent, not padding we actually received.
-        receiver.receive(&mut assembler, packet(13, 1000, true, &[0x7c, 0x45, 0xaa]), now);
+        receiver.receive(
+            &mut assembler,
+            packet(13, 1000, true, &[0x7c, 0x45, 0xaa]),
+            now,
+        );
         receiver.flush(&mut assembler, now + Duration::from_millis(7));
-        receiver.receive(&mut assembler, packet(14, 2500, true, &[0x61, 0xaa, 0xbb]), now + Duration::from_millis(8));
+        receiver.receive(
+            &mut assembler,
+            packet(14, 2500, true, &[0x61, 0xaa, 0xbb]),
+            now + Duration::from_millis(8),
+        );
         assert!(receiver.keyframe);
         assert!(receiver.worker.submitted.lock().unwrap().is_empty());
     }
@@ -155,11 +219,21 @@ mod tests {
         let mut assembler = video_rtp::VideoRtp::new(1280, 720);
         let worker = VideoDecodeWorker::default();
         let mut keyframe = false;
-        assembler.receive(&worker, packet(0, 1000, false, &[0x7c, 0x85, 0x88]), &mut keyframe);
-        for seq in 1..=2100 { assembler.receive(&worker, packet(seq, 1000, false, &[]), &mut keyframe); }
+        assembler.receive(
+            &worker,
+            packet(0, 1000, false, &[0x7c, 0x85, 0x88]),
+            &mut keyframe,
+        );
+        for seq in 1..=2100 {
+            assembler.receive(&worker, packet(seq, 1000, false, &[]), &mut keyframe);
+        }
         assert!(keyframe);
         assert!(worker.submitted.lock().unwrap().is_empty());
-        assembler.receive(&worker, packet(2101, 2500, true, &[0x65, 0x88, 0xaa]), &mut keyframe);
+        assembler.receive(
+            &worker,
+            packet(2101, 2500, true, &[0x65, 0x88, 0xaa]),
+            &mut keyframe,
+        );
         assert_eq!(worker.submitted.lock().unwrap().len(), 1);
     }
 
@@ -175,10 +249,12 @@ mod tests {
             // out-of-order end fragment; use actual reorder + H264 assembly.
             // No hardware decode is claimed for these small assembly fixtures.
             let now = start + Duration::from_micros((frame / 8) * 133_333);
-            for p in [packet(seq, timestamp, false, &[0x7c, 0x85, 0x88]),
-                      packet(seq.wrapping_add(3), timestamp, true, &[0x7c, 0x45, 0xaa]),
-                      packet(seq.wrapping_add(1), timestamp, true, &[]),
-                      packet(seq.wrapping_add(2), timestamp, false, &[0x7c, 0x05, 0x99])] {
+            for p in [
+                packet(seq, timestamp, false, &[0x7c, 0x85, 0x88]),
+                packet(seq.wrapping_add(3), timestamp, true, &[0x7c, 0x45, 0xaa]),
+                packet(seq.wrapping_add(1), timestamp, true, &[]),
+                packet(seq.wrapping_add(2), timestamp, false, &[0x7c, 0x05, 0x99]),
+            ] {
                 receiver.receive(&mut assembler, p, now);
             }
             receiver.flush(&mut assembler, now);
@@ -204,8 +280,11 @@ mod tests {
         let mut old = video_rtp::VideoRtp::new(1280, 720);
         let worker = VideoDecodeWorker::default();
         let mut keyframe = false;
-        let old_drops: u32 = packets.iter().cloned()
-            .map(|p| old.receive(&worker, p, &mut keyframe).dropped).sum();
+        let old_drops: u32 = packets
+            .iter()
+            .cloned()
+            .map(|p| old.receive(&worker, p, &mut keyframe).dropped)
+            .sum();
         assert_eq!(old_drops, 2);
         assert!(keyframe);
         assert_eq!(worker.submitted.lock().unwrap().len(), 0);
@@ -218,9 +297,13 @@ mod tests {
         }
         assert_eq!(fixed.drops, 0);
         assert!(!fixed.keyframe);
-        assert_eq!(*fixed.worker.submitted.lock().unwrap(), vec![
-            vec![0, 0, 0, 1, 0x65, 0x88, 0x99], vec![0, 0, 0, 1, 0x61, 0xaa, 0xbb],
-        ]);
+        assert_eq!(
+            *fixed.worker.submitted.lock().unwrap(),
+            vec![
+                vec![0, 0, 0, 1, 0x65, 0x88, 0x99],
+                vec![0, 0, 0, 1, 0x61, 0xaa, 0xbb],
+            ]
+        );
         assert_eq!(fixed.order.stats.filled, 1);
     }
 
@@ -229,22 +312,41 @@ mod tests {
         let mut fixed = OrderedReceiver::default();
         let mut assembler = video_rtp::VideoRtp::new(1280, 720);
         let now = Instant::now();
-        fixed.receive(&mut assembler, packet(10, 1000, false, &[0x7c, 0x85, 0x88]), now);
-        fixed.receive(&mut assembler, packet(12, 2500, true, &[0x61, 0xaa, 0xbb]), now);
+        fixed.receive(
+            &mut assembler,
+            packet(10, 1000, false, &[0x7c, 0x85, 0x88]),
+            now,
+        );
+        fixed.receive(
+            &mut assembler,
+            packet(12, 2500, true, &[0x61, 0xaa, 0xbb]),
+            now,
+        );
         // The next receive batch is processed after the 6ms deadline. Packet 13
         // arrives before the gap filler within this already-received batch.
         let delayed = now + Duration::from_millis(11);
-        fixed.receive(&mut assembler, packet(13, 4000, true, &[0x61, 0xcc, 0xdd]), delayed);
-        fixed.receive(&mut assembler, packet(11, 1000, true, &[0x7c, 0x45, 0x99]), delayed);
+        fixed.receive(
+            &mut assembler,
+            packet(13, 4000, true, &[0x61, 0xcc, 0xdd]),
+            delayed,
+        );
+        fixed.receive(
+            &mut assembler,
+            packet(11, 1000, true, &[0x7c, 0x45, 0x99]),
+            delayed,
+        );
         fixed.flush(&mut assembler, delayed);
         assert_eq!(fixed.drops, 0);
         assert_eq!(fixed.order.stats.missing, 0);
         assert!(!fixed.keyframe);
-        assert_eq!(*fixed.worker.submitted.lock().unwrap(), vec![
-            vec![0, 0, 0, 1, 0x65, 0x88, 0x99],
-            vec![0, 0, 0, 1, 0x61, 0xaa, 0xbb],
-            vec![0, 0, 0, 1, 0x61, 0xcc, 0xdd],
-        ]);
+        assert_eq!(
+            *fixed.worker.submitted.lock().unwrap(),
+            vec![
+                vec![0, 0, 0, 1, 0x65, 0x88, 0x99],
+                vec![0, 0, 0, 1, 0x61, 0xaa, 0xbb],
+                vec![0, 0, 0, 1, 0x61, 0xcc, 0xdd],
+            ]
+        );
     }
 
     #[test]
@@ -257,7 +359,9 @@ mod tests {
             // The middle FU-A fragment, sequence 11, never arrives.
             packet(12, 1000, true, &[0x7c, 0x45, 0x99]),
             packet(13, 2500, true, &[0x61, 0xaa, 0xbb]),
-        ] { fixed.receive(&mut assembler, p, now); }
+        ] {
+            fixed.receive(&mut assembler, p, now);
+        }
         assert!(fixed.worker.submitted.lock().unwrap().is_empty());
         fixed.flush(&mut assembler, now + Duration::from_millis(6));
         assert_eq!(fixed.drops, 2);
@@ -265,8 +369,11 @@ mod tests {
         assert_eq!(fixed.order.stats.missing, 1);
         assert!(fixed.worker.submitted.lock().unwrap().is_empty());
         // A fragment arriving after the deadline cannot resurrect the old AU.
-        fixed.receive(&mut assembler, packet(11, 1000, false, &[0x7c, 0x05, 0x77]),
-            now + Duration::from_millis(7));
+        fixed.receive(
+            &mut assembler,
+            packet(11, 1000, false, &[0x7c, 0x05, 0x77]),
+            now + Duration::from_millis(7),
+        );
         assert_eq!(fixed.worker.submitted.lock().unwrap().len(), 0);
         assert_eq!(fixed.order.stats.too_late, 1);
     }
@@ -276,15 +383,31 @@ mod tests {
         let mut assembler = video_rtp::VideoRtp::new(1280, 720);
         let worker = VideoDecodeWorker::default();
         let mut request = false;
-        assembler.receive(&worker, packet(10, 1000, false, &[0x7c, 0x81, 0x88]), &mut request);
-        let damage = assembler.receive(&worker, packet(12, 2500, true, &[0x61, 0xaa, 0xbb]), &mut request);
+        assembler.receive(
+            &worker,
+            packet(10, 1000, false, &[0x7c, 0x81, 0x88]),
+            &mut request,
+        );
+        let damage = assembler.receive(
+            &worker,
+            packet(12, 2500, true, &[0x61, 0xaa, 0xbb]),
+            &mut request,
+        );
         assert_eq!(damage.dropped, 2);
         assert!(assembler.waiting_for_keyframe());
         assert!(worker.submitted.lock().unwrap().is_empty());
-        let idr = assembler.receive(&worker, packet(13, 4000, true, &[0x65, 0xaa, 0xbb]), &mut request);
+        let idr = assembler.receive(
+            &worker,
+            packet(13, 4000, true, &[0x65, 0xaa, 0xbb]),
+            &mut request,
+        );
         assert_eq!(idr.submitted, 1);
         assert!(!assembler.waiting_for_keyframe());
-        let next = assembler.receive(&worker, packet(14, 5500, true, &[0x61, 0xaa, 0xbb]), &mut request);
+        let next = assembler.receive(
+            &worker,
+            packet(14, 5500, true, &[0x61, 0xaa, 0xbb]),
+            &mut request,
+        );
         assert_eq!(next.submitted, 1);
         assert_eq!(next.post_damage_submitted, 0);
     }
@@ -296,94 +419,180 @@ mod repair_integration {
     use bytes::Bytes;
     use std::time::{Duration, Instant};
     fn packet(seq: u16, ts: u32, marker: bool, bytes: &'static [u8]) -> rtp::Packet {
-        rtp::Packet { header: rtp::header::Header { sequence_number: seq, timestamp: ts, marker,
-            ..Default::default() }, payload: Bytes::from_static(bytes), ..Default::default() }
+        rtp::Packet {
+            header: rtp::header::Header {
+                sequence_number: seq,
+                timestamp: ts,
+                marker,
+                ..Default::default()
+            },
+            payload: Bytes::from_static(bytes),
+        }
     }
     #[test]
     fn recovered_tail_keeps_the_h264_reference_chain_instead_of_entering_idr_wait() {
         let t = Instant::now();
-        let mut order = reorder::PacketOrder::default(); order.enable_repair(true);
+        let mut order = reorder::PacketOrder::default();
+        order.enable_repair(true);
         let mut video = video_rtp::VideoRtp::new(1280, 720);
-        let worker = streaming::video::VideoDecodeWorker::default(); let mut keyframe = false;
+        let worker = streaming::video::VideoDecodeWorker::default();
+        let mut keyframe = false;
         let first = packet(10, 1000, false, &[0x7c, 0x85, 0x88]);
         let next = packet(12, 2500, true, &[0x61, 0xaa, 0xbb]);
         video.receive(&worker, order.push(10, first, t).unwrap(), &mut keyframe);
         assert!(order.push(12, next, t).is_none());
-        assert_eq!(order.missing_for_nack(t + Duration::from_millis(2)), vec![11]);
+        assert_eq!(
+            order.missing_for_nack(t + Duration::from_millis(2)),
+            vec![11]
+        );
         assert!(order.pop(t + Duration::from_millis(30)).is_none());
         let tail = packet(11, 1000, true, &[0x7c, 0x45, 0x99]);
         let now = t + Duration::from_millis(46);
         video.receive(&worker, order.push(11, tail, now).unwrap(), &mut keyframe);
         video.receive(&worker, order.pop_ready(now).unwrap(), &mut keyframe);
         assert!(!keyframe);
-        assert_eq!(*worker.submitted.lock().unwrap(), vec![vec![0,0,0,1,0x65,0x88,0x99], vec![0,0,0,1,0x61,0xaa,0xbb]]);
+        assert_eq!(
+            *worker.submitted.lock().unwrap(),
+            vec![
+                vec![0, 0, 0, 1, 0x65, 0x88, 0x99],
+                vec![0, 0, 0, 1, 0x61, 0xaa, 0xbb]
+            ]
+        );
     }
     #[test]
     fn manual_refresh_keeps_partial_au_and_playback_until_self_contained_idr() {
-        let mut video = video_rtp::VideoRtp::new(1280,720);
-        let worker = streaming::video::VideoDecodeWorker::default(); let mut keyframe = false;
-        video.receive(&worker, packet(10, 1000, false, &[0x7c,0x85,0x88]), &mut keyframe);
+        let mut video = video_rtp::VideoRtp::new(1280, 720);
+        let worker = streaming::video::VideoDecodeWorker::default();
+        let mut keyframe = false;
+        video.receive(
+            &worker,
+            packet(10, 1000, false, &[0x7c, 0x85, 0x88]),
+            &mut keyframe,
+        );
         video.refresh();
         assert!(!video.waiting_for_keyframe());
-        video.receive(&worker, packet(11, 1000, true, &[0x7c,0x45,0x99]), &mut keyframe);
-        video.receive(&worker, packet(12, 2500, true, &[0x61,0xaa,0xbb]), &mut keyframe);
+        video.receive(
+            &worker,
+            packet(11, 1000, true, &[0x7c, 0x45, 0x99]),
+            &mut keyframe,
+        );
+        video.receive(
+            &worker,
+            packet(12, 2500, true, &[0x61, 0xaa, 0xbb]),
+            &mut keyframe,
+        );
         // An IDR without its own parameter sets cannot discard queued updates.
-        video.receive(&worker, packet(13, 4000, true, &[0x65,0xbb,0xcc]), &mut keyframe);
-        assert_eq!(worker.cutovers.load(std::sync::atomic::Ordering::Relaxed), 0);
-        assert_eq!(*worker.submitted.lock().unwrap(), vec![
-            vec![0,0,0,1,0x65,0x88,0x99], vec![0,0,0,1,0x61,0xaa,0xbb], vec![0,0,0,1,0x65,0xbb,0xcc]]);
+        video.receive(
+            &worker,
+            packet(13, 4000, true, &[0x65, 0xbb, 0xcc]),
+            &mut keyframe,
+        );
+        assert_eq!(
+            worker.cutovers.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            *worker.submitted.lock().unwrap(),
+            vec![
+                vec![0, 0, 0, 1, 0x65, 0x88, 0x99],
+                vec![0, 0, 0, 1, 0x61, 0xaa, 0xbb],
+                vec![0, 0, 0, 1, 0x65, 0xbb, 0xcc]
+            ]
+        );
         // Complete 720p SPS/PPS + IDR at the same RTP timestamp.
-        for (seq, marker, nal) in [(14,false,SPS), (15,false,PPS), (16,true,IDR)] {
+        for (seq, marker, nal) in [(14, false, SPS), (15, false, PPS), (16, true, IDR)] {
             video.receive(&worker, packet(seq, 5500, marker, nal), &mut keyframe);
         }
-        assert_eq!(worker.cutovers.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert!(video.recovery_summary(Instant::now()).contains("Refresh pending:0 completed:1"));
-        video.receive(&worker, packet(17, 7000, true, &[0x61,0xcc,0xdd]), &mut keyframe);
+        assert_eq!(
+            worker.cutovers.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert!(
+            video
+                .recovery_summary(Instant::now())
+                .contains("Refresh pending:0 completed:1")
+        );
+        video.receive(
+            &worker,
+            packet(17, 7000, true, &[0x61, 0xcc, 0xdd]),
+            &mut keyframe,
+        );
         assert_eq!(worker.submitted.lock().unwrap().len(), 5);
         assert!(!keyframe);
         assert!(!video.waiting_for_keyframe());
     }
 
     // libx264 baseline, 1280x720/60; synthesized black frame parameter sets.
-    const SPS: &[u8] = &[0x67,0x42,0xc0,0x20,0xda,0x01,0x40,0x16,0xec,0x04,0x40,
-        0,0,3,0,0x40,0,0,0x1e,0x23,0xc6,0x0c,0xa8];
-    const PPS: &[u8] = &[0x68,0xce,0x0f,0xc8];
-    const IDR: &[u8] = &[0x65,0xbb,0xcc]; // slice bytes are opaque to the submission sink
+    const SPS: &[u8] = &[
+        0x67, 0x42, 0xc0, 0x20, 0xda, 0x01, 0x40, 0x16, 0xec, 0x04, 0x40, 0, 0, 3, 0, 0x40, 0, 0,
+        0x1e, 0x23, 0xc6, 0x0c, 0xa8,
+    ];
+    const PPS: &[u8] = &[0x68, 0xce, 0x0f, 0xc8];
+    const IDR: &[u8] = &[0x65, 0xbb, 0xcc]; // slice bytes are opaque to the submission sink
 
     #[test]
     fn backlog_can_cut_over_at_natural_keyframe_but_not_at_parameter_sets_or_pictures() {
-        let mut video = video_rtp::VideoRtp::new(1280,720);
-        let worker = streaming::video::VideoDecodeWorker::default(); let mut keyframe = false;
-        worker.queued.store(32, std::sync::atomic::Ordering::Relaxed);
+        let mut video = video_rtp::VideoRtp::new(1280, 720);
+        let worker = streaming::video::VideoDecodeWorker::default();
+        let mut keyframe = false;
+        worker
+            .queued
+            .store(32, std::sync::atomic::Ordering::Relaxed);
         // First AU contains all parameter sets but no IDR. Second is self-contained.
-        for (seq, marker, nal) in [(10,false,SPS), (11,false,PPS), (12,true,&[0x61,0xaa][..])] {
+        for (seq, marker, nal) in [
+            (10, false, SPS),
+            (11, false, PPS),
+            (12, true, &[0x61, 0xaa][..]),
+        ] {
             video.receive(&worker, packet(seq, 1000, marker, nal), &mut keyframe);
         }
-        assert_eq!(worker.cutovers.load(std::sync::atomic::Ordering::Relaxed), 0);
-        for (seq, marker, nal) in [(13,false,SPS), (14,false,IDR), (15,true,PPS)] {
+        assert_eq!(
+            worker.cutovers.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        for (seq, marker, nal) in [(13, false, SPS), (14, false, IDR), (15, true, PPS)] {
             video.receive(&worker, packet(seq, 2500, marker, nal), &mut keyframe);
         }
         // PPS last in the Annex-B reader must be inspected on completion too.
-        assert_eq!(worker.cutovers.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            worker.cutovers.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
         assert!(!video.waiting_for_keyframe());
     }
 
     #[test]
     fn damage_during_soft_refresh_still_blocks_dependent_pictures() {
-        let mut video = video_rtp::VideoRtp::new(1280,720);
-        let worker = streaming::video::VideoDecodeWorker::default(); let mut keyframe = false;
+        let mut video = video_rtp::VideoRtp::new(1280, 720);
+        let worker = streaming::video::VideoDecodeWorker::default();
+        let mut keyframe = false;
         video.refresh();
-        video.receive(&worker, packet(10,1000,false,&[0x7c,0x85,0x88]), &mut keyframe);
-        video.receive(&worker, packet(12,1000,true,&[0x7c,0x45,0x99]), &mut keyframe);
-        video.receive(&worker, packet(13,2500,true,&[0x61,0xaa,0xbb]), &mut keyframe);
+        video.receive(
+            &worker,
+            packet(10, 1000, false, &[0x7c, 0x85, 0x88]),
+            &mut keyframe,
+        );
+        video.receive(
+            &worker,
+            packet(12, 1000, true, &[0x7c, 0x45, 0x99]),
+            &mut keyframe,
+        );
+        video.receive(
+            &worker,
+            packet(13, 2500, true, &[0x61, 0xaa, 0xbb]),
+            &mut keyframe,
+        );
         assert!(video.waiting_for_keyframe());
         assert!(keyframe);
         assert!(worker.submitted.lock().unwrap().is_empty());
-        for (seq, marker, nal) in [(14,false,SPS), (15,false,PPS), (16,true,IDR)] {
-            video.receive(&worker, packet(seq,4000,marker,nal), &mut keyframe);
+        for (seq, marker, nal) in [(14, false, SPS), (15, false, PPS), (16, true, IDR)] {
+            video.receive(&worker, packet(seq, 4000, marker, nal), &mut keyframe);
         }
         assert!(!video.waiting_for_keyframe());
         assert_eq!(worker.submitted.lock().unwrap().len(), 1);
-        assert_eq!(worker.cutovers.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            worker.cutovers.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
     }
 }

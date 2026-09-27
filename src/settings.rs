@@ -6,6 +6,8 @@ use std::collections::HashMap;
 
 const SETTINGS_DIR: &str = "ux0:data/green-vita-540-test";
 const SETTINGS_PATH: &str = "ux0:data/green-vita-540-test/settings.json";
+const MAX_SETTINGS_BYTES: usize = 1024 * 1024;
+const MAX_SAVED_IDS: usize = 4096;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Locale {
@@ -98,6 +100,8 @@ impl Locale {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    #[serde(skip)]
+    pub persistence_error: bool,
     pub locale: Locale,
     /// Shows internal stream/session state on the `Streaming` screen. Off by default.
     pub show_stream_debug_info: bool,
@@ -133,6 +137,7 @@ impl Default for GameProfile {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            persistence_error: false,
             locale: Locale::default(),
             show_stream_debug_info: false,
             stream_volume_percent: 100,
@@ -169,42 +174,96 @@ impl Settings {
             .rear_touch_enabled = enabled;
     }
 
-    /// Loads from disk, falling back to defaults on any error.
+    fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(self.stream_volume_percent <= 100, "invalid saved volume");
+        anyhow::ensure!(
+            self.game_profiles.len() <= MAX_SAVED_IDS
+                && self.catalog.favorites.len() <= MAX_SAVED_IDS
+                && self.catalog.recently_played.len() <= MAX_SAVED_IDS,
+            "too many saved game IDs"
+        );
+        for id in self
+            .game_profiles
+            .keys()
+            .chain(self.catalog.favorites.iter())
+            .chain(self.catalog.recently_played.iter())
+        {
+            anyhow::ensure!(
+                !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control),
+                "invalid saved game ID"
+            );
+        }
+        Ok(())
+    }
+
+    fn load_path(path: &str) -> anyhow::Result<Self> {
+        let data = crate::fs_utils::read_bounded(path, MAX_SETTINGS_BYTES)?;
+        let settings: Self = serde_json::from_slice(&data).context("invalid saved settings")?;
+        settings.validate()?;
+        Ok(settings)
+    }
+
+    /// Invalid originals remain on disk. Saving will refuse to replace them.
     pub fn load() -> Self {
-        let data = match std::fs::read_to_string(SETTINGS_PATH) {
-            Ok(data) => data,
-            Err(error) => {
-                eprintln!("Settings: no existing {SETTINGS_PATH} ({error}), using defaults");
-                return Self::default();
-            }
-        };
-        match serde_json::from_str(&data) {
+        match Self::load_path(SETTINGS_PATH) {
             Ok(settings) => settings,
-            Err(error) => {
-                eprintln!("Settings: failed to parse {SETTINGS_PATH} ({error}), using defaults");
-                Self::default()
+            Err(_) => {
+                let missing = std::fs::metadata(SETTINGS_PATH)
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+                Self {
+                    persistence_error: !missing,
+                    ..Self::default()
+                }
             }
         }
     }
 
-    /// Saves to disk; errors are logged rather than surfaced.
-    pub fn save(&self) {
-        let result = std::fs::create_dir_all(SETTINGS_DIR)
-            .context("failed to create settings directory")
-            .and_then(|_| {
-                serde_json::to_string_pretty(self).context("failed to serialize settings")
-            })
-            .and_then(|data| crate::fs_utils::write_file_truncating(SETTINGS_PATH, data));
-
-        if let Err(error) = result {
-            eprintln!("Settings: failed to save: {error:#}");
+    fn save_path(&self, path: &str) -> anyhow::Result<()> {
+        self.validate()?;
+        match std::fs::metadata(path) {
+            Ok(_) => {
+                Self::load_path(path)
+                    .context("existing settings require recovery; original preserved")?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => anyhow::bail!("cannot inspect existing settings; original preserved"),
         }
+        let data = serde_json::to_vec_pretty(self).context("could not serialize settings")?;
+        anyhow::ensure!(
+            data.len() <= MAX_SETTINGS_BYTES,
+            "settings exceed size limit"
+        );
+        crate::fs_utils::write_file_truncating(path, data)
+    }
+
+    /// A visible localized banner reports failure without discarding current edits.
+    pub fn save(&mut self) {
+        self.persistence_error = std::fs::create_dir_all(SETTINGS_DIR)
+            .context("could not create settings directory")
+            .and_then(|_| self.save_path(SETTINGS_PATH))
+            .is_err();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::Settings;
+
+    #[test]
+    fn validation_preserves_original_corrupt_file() {
+        let path =
+            std::env::temp_dir().join(format!("greenvita-corrupt-{}.json", std::process::id()));
+        std::fs::write(&path, b"{broken").unwrap();
+        assert!(
+            Settings::default()
+                .save_path(path.to_str().unwrap())
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"{broken");
+        let bad: Settings = serde_json::from_str(r#"{"stream_volume_percent":255}"#).unwrap();
+        assert!(bad.validate().is_err());
+        assert!(Settings::default().validate().is_ok());
+    }
 
     #[test]
     fn older_settings_keep_profiles_and_default_to_original_rear_layout() {

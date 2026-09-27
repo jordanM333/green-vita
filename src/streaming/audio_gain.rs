@@ -2,24 +2,41 @@
 const UNITY: i32 = 100 * 256;
 const RAMP_FRAMES: i32 = 480; // 10ms at 48kHz, shared by both stereo channels.
 
-pub(crate) struct AudioGain { current: i32, target: i32, remaining: i32 }
+pub(crate) struct AudioGain {
+    current: i32,
+    target: i32,
+    remaining: i32,
+}
 impl Default for AudioGain {
-    fn default() -> Self { Self { current: UNITY, target: UNITY, remaining: 0 } }
+    fn default() -> Self {
+        Self {
+            current: UNITY,
+            target: UNITY,
+            remaining: 0,
+        }
+    }
 }
 impl AudioGain {
     pub(crate) fn set_percent(&mut self, percent: u8) {
         let target = i32::from(percent.min(100)) * 256;
-        if target != self.target { self.target = target; self.remaining = RAMP_FRAMES; }
+        if target != self.target {
+            self.target = target;
+            self.remaining = RAMP_FRAMES;
+        }
     }
 
     pub(crate) fn apply_stereo(&mut self, samples: &mut [i16]) {
-        if self.remaining == 0 && self.current == UNITY { return; }
+        if self.remaining == 0 && self.current == UNITY {
+            return;
+        }
         for frame in samples.chunks_mut(2) {
             if self.remaining > 0 {
                 self.current += (self.target - self.current) / self.remaining;
                 self.remaining -= 1;
             }
-            for sample in frame { *sample = (i32::from(*sample) * self.current / UNITY) as i16; }
+            for sample in frame {
+                *sample = (i32::from(*sample) * self.current / UNITY) as i16;
+            }
         }
     }
 }
@@ -46,7 +63,13 @@ mod tests {
         let mut first = vec![10000; 480];
         gain.apply_stereo(&mut first);
         assert!(first[0] > 9900 && first[478] >= 4900 && first[478] <= 5100);
-        assert!(first.chunks_exact(2).all(|pair| pair[0] == pair[1]));
+        assert!(
+            first
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .all(|pair| pair[0] == pair[1])
+        );
         gain.set_percent(0); // Applying unchanged settings must not restart the ramp.
         let mut rest = vec![10000; 482];
         gain.apply_stereo(&mut rest);
