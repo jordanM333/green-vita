@@ -101,6 +101,7 @@ def analyze(path):
         last_seq = None
         ticks = 0
         origin = None
+        previous_dequeue = None
         for e in packets:
             key = packet_key(e, e["a"])
             candidates = raw[key]
@@ -108,7 +109,9 @@ def analyze(path):
             if len(candidates) == 1:
                 r = candidates[0]
                 if r["b"] != UNKNOWN and 0 <= r["b"] <= e["a"]:
-                    bound = e["a"] - r["b"]
+                    # Both absolute Instants were rounded down to microseconds.
+                    # Add one microsecond to keep the residence bound conservative.
+                    bound = e["a"] - r["b"] + 1
                 matched += 1
             elif len(candidates) > 1:
                 ambiguous += 1
@@ -130,7 +133,12 @@ def analyze(path):
                     if (last - e["rtp"]) & 0xffffffff > rate * 2 and 0 < seq_forward < 32768:
                         discontinuities += 1
                     continue
-                if forward > rate * 120:
+                # A multi-frame forward jump can be loss, discontinuity or a
+                # legitimate catch-up. If media skips >500ms beyond elapsed wall
+                # time in one observed step, attribution cannot choose among them.
+                wall_step = max(0, e["a"] - previous_dequeue) if previous_dequeue is not None else 0
+                uncertain_jump = forward * 1_000_000 / rate > wall_step + 500_000
+                if forward > rate * 120 or uncertain_jump:
                     discontinuities += 1
                     # Restart an analysis segment, but prohibit attribution across it.
                     ticks = 0
@@ -138,6 +146,7 @@ def analyze(path):
                 else:
                     ticks += forward
             last, last_seq = e["rtp"], e["seq"]
+            previous_dequeue = e["a"]
             if origin is None:
                 origin = e["a"]
             offset = e["a"] - origin - ticks * 1_000_000 / rate
@@ -154,7 +163,7 @@ def analyze(path):
             p["dequeue_growth"] = p["offset"] - baseline["offset"]
             p["rtc_growth"] = p["rtc"] - baseline["rtc"]
             p["application_growth"] = p["dequeue_growth"] + p["rtc_growth"]
-            p["pre_socket_lower"] = None if p["bound"] is None else p["dequeue_growth"] - p["bound"]
+            p["pre_socket_lower"] = None if p["bound"] is None else p["dequeue_growth"] - p["bound"] - 1
         delayed = [p for p in points if p["application_growth"] >= 500_000]
         prefix = "video" if stream[1] == 1 else "audio"
         # A run of >=10 observed frames over >=500ms is a sustained positive finding.

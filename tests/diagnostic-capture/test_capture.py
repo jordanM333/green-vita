@@ -117,6 +117,20 @@ class CaptureTest(unittest.TestCase):
         self.assertEqual(result["outcome"], "INCONCLUSIVE")
         self.assertGreater(result["streams"][0]["timestamp_discontinuities"], 0)
 
+    def test_forward_discontinuity_cannot_invent_a_new_fast_baseline(self):
+        def jump(rows):
+            for row in rows:
+                if row["ssrc"] == "7" and int(row["at_us"]) > 5_000_000:
+                    row["rtp"] = str((int(row["rtp"])+9_000_000) & 0xffffffff)
+            return rows
+        result = self.altered("forward-reset", jump)
+        self.assertEqual(result["outcome"], "INCONCLUSIVE")
+        self.assertGreater(result["streams"][0]["timestamp_discontinuities"], 0)
+
+    def test_socket_bound_rounding_is_conservative(self):
+        result = analyzer.analyze(self.root / "device/upstream")
+        self.assertEqual(result["streams"][0]["delayed"]["socket_residence_upper_bound"]["max_us"], 1501)
+
     def test_stream_restart_does_not_cross_correlate(self):
         def reset(rows):
             for row in rows:
