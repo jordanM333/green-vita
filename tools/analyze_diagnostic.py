@@ -62,6 +62,42 @@ def stats(values):
             "p95_us": values[min(len(values)-1, int(len(values)*.95))], "max_us": max(values)}
 
 
+def packet_witness(p):
+    """Keep an auditable packet identity with every boundary assertion."""
+    return {k: p[k] for k in ("epoch", "ssrc", "seq", "rtp", "dequeue", "at",
+                              "empty_probe_started", "bound", "dequeue_growth",
+                              "pre_socket_lower")}
+
+
+def time_windows(points, rate, attribution_valid):
+    """One-second observation windows, without interpolating missing capture time.
+
+    Rates span the first/last observed advancing timestamp within each window;
+    they are dequeue rates, not network arrival or sender production rates.
+    """
+    buckets = defaultdict(list)
+    for p in points:
+        buckets[p["dequeue"] // 1_000_000].append(p)
+    result = []
+    for second, samples in sorted(buckets.items()):
+        first, last = samples[0], samples[-1]
+        wall = last["dequeue"] - first["dequeue"]
+        media = (last["ticks"] - first["ticks"]) * 1_000_000 / rate
+        bounds = [p["bound"] for p in samples if p["bound"] is not None]
+        result.append({
+            "second": second, "first_dequeue_us": first["dequeue"],
+            "last_dequeue_us": last["dequeue"], "forward_timestamps": len(samples),
+            "observed_media_per_wall": media / wall if wall > 0 and attribution_valid else None,
+            "dequeue_growth": stats([p["dequeue_growth"] for p in samples]) if attribution_valid else None,
+            "rtc_residence": stats([p["rtc"] for p in samples]),
+            "rtc_to_ordered": stats([p["reorder"] for p in samples if p["reorder"] is not None]),
+            "socket_upper_bound": stats(bounds), "unknown_bounds": len(samples)-len(bounds),
+            "pre_socket_lower": stats([p["pre_socket_lower"] for p in samples
+                                       if p["pre_socket_lower"] is not None]) if attribution_valid else None,
+        })
+    return result
+
+
 def analyze(path):
     data = read_bundle(path)
     manifest = json.loads(data["manifest.json"])
@@ -153,7 +189,9 @@ def analyze(path):
             released = ordered[key]
             reorder_us = released[0]["at_us"] - e["at_us"] if len(released) == 1 and released[0]["b"] == e["at_us"] else None
             points.append(dict(at=e["at_us"], dequeue=e["a"], offset=offset,
-                               rtc=e["at_us"]-e["a"], bound=bound, reorder=reorder_us, ticks=ticks))
+                               rtc=e["at_us"]-e["a"], bound=bound, reorder=reorder_us, ticks=ticks,
+                               epoch=e["epoch"], ssrc=e["ssrc"], seq=e["seq"], rtp=e["rtp"],
+                               empty_probe_started=candidates[0]["b"] if bound is not None else None))
         if not points:
             continue
         # One explicit baseline packet is used for media progression at all boundaries.
@@ -180,8 +218,9 @@ def analyze(path):
             if 1 <= seconds <= 120 and 0 < ticks_sr < 1 << 31:
                 sr_rates.append(ticks_sr / seconds)
         clock_consistent = not any(abs(r / rate - 1) > .02 for r in sr_rates)
+        attribution_valid = discontinuities == 0 and clock_consistent
         labels = []
-        if discontinuities == 0 and clock_consistent:
+        if attribution_valid:
             if sustained(pre):
                 labels.append("DELAY_GROWTH_BEFORE_UDP_SOCKET_BOUND")
             if sustained(client):
@@ -211,6 +250,11 @@ def analyze(path):
                         "media_progress_us": (points[-1]["ticks"] - points[0]["ticks"]) * 1_000_000 / rate,
                         "wall_progress_us": points[-1]["dequeue"] - points[0]["dequeue"],
                         "positive_pre_socket_lower_bounds": stats([p["pre_socket_lower"] for p in pre]),
+                        "baseline_packet": packet_witness(baseline) if attribution_valid else None,
+                        "boundary_witnesses": [packet_witness(p) for p in
+                            ([pre[0], max(pre, key=lambda p: p["pre_socket_lower"]), pre[-1]]
+                             if pre and attribution_valid else [])],
+                        "dequeue_windows": time_windows(points, rate, attribution_valid),
                         "findings": labels})
     video_findings = [f for f in findings if f["media"] == "video"]
     if video_findings:

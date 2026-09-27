@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,19 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 import analyze_diagnostic as analyzer
 from export_diagnostic import export
+from correlate_observer import correlate
+
+
+def header_pcap(packets):
+    """Synthetic wire observation, not an Xbox/wire replay."""
+    data = struct.pack("<IHHIIII", 0xa1b2c3d4, 2, 4, 0, 0, 128, 1)
+    for e, at in sorted(packets, key=lambda p: p[1]):
+        rtp = struct.pack("!BBHII", 0x80, 0x66, e["seq"], e["rtp"], e["ssrc"])
+        ip = bytes([0x45, 0, 0, 40, 0, 0, 0, 0, 64, 17, 0, 0])+bytes(8)
+        frame = bytes(12)+b"\x08\x00"+ip+struct.pack("!HHHH", 100, 200, 20, 0)+rtp
+        seconds, us = divmod(round(at), 1_000_000)
+        data += struct.pack("<IIII", seconds, us, len(frame), len(frame))+frame
+    return data
 
 
 class CaptureTest(unittest.TestCase):
@@ -131,6 +145,92 @@ class CaptureTest(unittest.TestCase):
         result = analyzer.analyze(self.root / "device/upstream")
         self.assertEqual(result["streams"][0]["delayed"]["socket_residence_upper_bound"]["max_us"], 1501)
 
+    def test_windows_and_boundary_witnesses_preserve_measured_intervals(self):
+        result = analyzer.analyze(self.exported("upstream"))
+        video = result["streams"][0]
+        witness = video["boundary_witnesses"][0]
+        self.assertEqual(witness["bound"], witness["dequeue"]-witness["empty_probe_started"]+1)
+        self.assertEqual(witness["pre_socket_lower"], witness["dequeue_growth"]-witness["bound"]-1)
+        late = [w for w in video["dequeue_windows"] if w["second"] >= 12]
+        self.assertTrue(late)
+        self.assertGreater(late[-1]["pre_socket_lower"]["min_us"], 1_990_000)
+        self.assertLess(late[-1]["rtc_residence"]["max_us"], 1000)
+
+    def observer_file(self, mode):
+        events = analyzer.events_from(analyzer.read_bundle(self.root / "device/upstream")["events.csv"])
+        first, packets = {}, []
+        for e in events:
+            if e["stage"] != "rtc":
+                continue
+            base = first.setdefault(e["ssrc"], e)
+            # The SAME device packet observations admit both earlier histories.
+            media = ((e["rtp"]-base["rtp"]) & 0xffffffff)*1_000_000/e["c"]
+            at = e["a"] if mode == "before_observer" else base["a"]+media
+            packets.append((e, at+1_000_000_000_000))
+        path = self.root / f"{mode}.pcap"
+        path.write_bytes(header_pcap(packets))
+        return path, packets
+
+    def test_external_point_distinguishes_two_histories_identical_on_device(self):
+        bundle = self.exported("upstream")
+        before, _ = self.observer_file("before_observer")
+        after, _ = self.observer_file("after_observer")
+        a = correlate(bundle, before, "SYNTHETIC egress", 0)
+        b = correlate(bundle, after, "SYNTHETIC egress", 0)
+        av, aa = a["streams"]
+        bv, ba = b["streams"]
+        self.assertLess(abs(av["observer_to_dequeue_change_plus_clock_skew"]["max_us"]), 2)
+        self.assertGreater(bv["observer_to_dequeue_change_plus_clock_skew"]["max_us"], 1_999_000)
+        self.assertLess(abs(aa["observer_to_dequeue_change_plus_clock_skew"]["max_us"]), 2)
+        self.assertLess(abs(ba["observer_to_dequeue_change_plus_clock_skew"]["max_us"]), 2)
+        self.assertEqual(av["timestamp_discontinuities"], 0)  # Includes RTP/sequence wrap.
+        self.assertGreater(av["dequeue_windows"][-1]["observer_vs_nominal_media_change"]["min_us"], 1_999_000)
+        self.assertLess(abs(bv["dequeue_windows"][-1]["observer_vs_nominal_media_change"]["max_us"]), 2)
+        self.assertEqual(a["outcome"], "CORRELATED_OBSERVATIONS_ONLY")
+        self.assertEqual(b["outcome"], "CORRELATED_OBSERVATIONS_ONLY")
+
+    def test_duplicate_external_or_device_identities_remain_inconclusive(self):
+        path, packets = self.observer_file("before_observer")
+        path.write_bytes(header_pcap(packets+packets))
+        r = correlate(self.exported("upstream"), path, "synthetic")
+        self.assertEqual(r["outcome"], "INCONCLUSIVE")
+        self.assertGreater(r["ambiguous_packet_identities"], 0)
+        path.write_bytes(header_pcap(packets))
+        def duplicate(rows):
+            extra = []
+            for row in rows:
+                if row["stage"] in ("rtc", "udp"):
+                    extra.append(dict(row, epoch="2"))
+            return rows+extra
+        self.altered("reset-identities", duplicate)
+        r = correlate(self.root / "reset-identities", path, "synthetic")
+        self.assertEqual(r["outcome"], "INCONCLUSIVE")
+
+    def test_observer_requires_raw_same_packet_and_preserves_unknown_drop_count(self):
+        path, _ = self.observer_file("before_observer")
+        self.altered("observer-no-udp", lambda rows: [r for r in rows if r["stage"] != "udp"])
+        r = correlate(self.root / "observer-no-udp", path, "synthetic")
+        self.assertEqual(r["outcome"], "INCONCLUSIVE")
+        self.assertGreater(r["unmatched_udp_observations"], 0)
+        self.assertIsNone(r["capture_drops"])
+
+    def test_audio_only_external_capture_cannot_resolve_video(self):
+        path, packets = self.observer_file("before_observer")
+        path.write_bytes(header_pcap([(e, at) for e, at in packets if e["media"] == 2]))
+        r = correlate(self.exported("upstream"), path, "synthetic")
+        self.assertEqual(r["outcome"], "INCONCLUSIVE")
+        self.assertTrue(r["streams"])
+        self.assertTrue(all(s["stream"][1] == 2 for s in r["streams"]))
+
+    def test_observer_clock_step_is_not_automatically_called_network_delay(self):
+        path, packets = self.observer_file("before_observer")
+        path.write_bytes(header_pcap([(e, at-(2_000_000 if e["a"] > 12_000_000 else 0)) for e, at in packets]))
+        r = correlate(self.exported("upstream"), path, "synthetic")
+        self.assertIn("clock skew/steps", r["limitations"])
+        for stream in r["streams"]:
+            self.assertGreater(stream["observer_to_dequeue_change_plus_clock_skew"]["max_us"], 1_999_000)
+        self.assertEqual(r["outcome"], "CORRELATED_OBSERVATIONS_ONLY")
+
     def test_stream_restart_does_not_cross_correlate(self):
         def reset(rows):
             for row in rows:
@@ -176,7 +276,7 @@ class ObserverAndClockTest(unittest.TestCase):
         from correlate_observer import pcap_packets
         rtp = struct.pack("!BBHII", 0x80, 0xe0, 65535, 0xffffffff, 123)
         ip = bytes([0x45,0,0,40,0,0,0,0,64,17,0,0])+bytes(8)
-        frame = bytes(12)+b"\x08\x00"+ip+bytes(8)+rtp
+        frame = bytes(12)+b"\x08\x00"+ip+struct.pack("!HHHH", 100, 200, 20, 0)+rtp
         pcap = struct.pack("<IHHIIII",0xa1b2c3d4,2,4,0,0,128,1)
         pcap += struct.pack("<IIII",1,2345,len(frame),len(frame))+frame
         self.assertEqual(list(pcap_packets(pcap)), [((123,65535,0xffffffff),1_002_345)])
