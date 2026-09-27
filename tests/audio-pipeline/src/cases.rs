@@ -87,3 +87,41 @@ fn opus_rejects_undersized_output_before_native_write() {
     );
     assert_eq!(pcm, [123]);
 }
+
+#[test]
+fn thirty_minutes_of_pcm_overproduction_cannot_build_a_device_archive() {
+    // 90,000 20ms PCM frames = 30 media minutes, accelerated. The recording SDL
+    // sink consumes nothing: this stresses the real trim/admission policy, not
+    // the Vita DAC or its clock. Native Opus correctness is tested separately.
+    let sdl = sdl2::init().unwrap();
+    let audio = sdl.audio().unwrap();
+    let mut renderer = AudioRenderer::new(&audio).unwrap();
+    let (tx, rx) = sync_channel(1);
+    let original = std::mem::replace(&mut renderer.samples_rx, rx);
+    let before = METRICS.audio_latency_trims.load(Ordering::Relaxed);
+    let mut maximum = 0;
+    for tick in 0..90_000 {
+        METRICS.audio_pcm_pending.fetch_add(1, Ordering::Relaxed);
+        tx.send(TimedAudio {
+            data: vec![0; 1920],
+            received_at: Instant::now()
+                - if tick % 1000 == 0 {
+                    Duration::from_secs(6)
+                } else {
+                    Duration::ZERO
+                },
+        })
+        .unwrap();
+        renderer.submit_packets(vec![], 100);
+        maximum = maximum.max(renderer.queue.size());
+        assert!(renderer.queue.size() <= AUDIO_TRIM_THRESHOLD_BYTES);
+    }
+    assert!(METRICS.audio_latency_trims.load(Ordering::Relaxed) > before);
+    renderer.samples_rx = original;
+    renderer.reset_stream();
+    assert_eq!(renderer.queue.size(), 0);
+    println!(
+        "30 media minutes of overproduction: maximum software output {}ms; reset leaves zero queued bytes",
+        u64::from(maximum) * 1000 / u64::from(AUDIO_BYTES_PER_SECOND)
+    );
+}

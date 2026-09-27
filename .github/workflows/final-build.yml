@@ -19,6 +19,8 @@ jobs:
           sudo apt-get update && sudo apt-get install -y libopus-dev
       - name: Formatting
         run: cargo fmt --all -- --check
+      - name: Vendored SCTP protocol tests
+        run: cargo test --manifest-path vendor/rtc-sctp/Cargo.toml --lib --target x86_64-unknown-linux-gnu -- --test-threads=1
       - name: Host tests and strict Clippy
         run: python3 tools/run_host_audit.py --output verification/host --clippy
       - uses: actions/upload-artifact@v4

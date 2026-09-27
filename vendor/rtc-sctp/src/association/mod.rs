@@ -2060,6 +2060,7 @@ impl Association {
                 raw_packets = self.gather_outbound_data_and_reconfig_packets(raw_packets, now);
                 raw_packets = self.gather_outbound_fast_retransmission_packets(raw_packets, now);
                 raw_packets = self.gather_outbound_sack_packets(raw_packets);
+                self.advance_abandoned();
                 raw_packets = self.gather_outbound_forward_tsn_packets(raw_packets, now);
                 (raw_packets, true)
             }
@@ -2069,6 +2070,8 @@ impl Association {
                 raw_packets = self.gather_data_packets_to_retransmit(raw_packets, now);
                 raw_packets = self.gather_outbound_fast_retransmission_packets(raw_packets, now);
                 raw_packets = self.gather_outbound_sack_packets(raw_packets);
+                self.advance_abandoned();
+                raw_packets = self.gather_outbound_forward_tsn_packets(raw_packets, now);
                 self.gather_outbound_shutdown_packets(raw_packets, now)
             }
             AssociationState::ShutdownAckSent => {
@@ -2201,6 +2204,18 @@ impl Association {
                     //      of cwnd and SHOULD NOT delay retransmission for this single
                     //		packet.
 
+                    Association::check_partial_reliability_status(
+                        c,
+                        now,
+                        self.use_forward_tsn,
+                        self.side,
+                        &self.streams,
+                    );
+                    if c.abandoned() {
+                        i += 1;
+                        continue;
+                    }
+
                     let data_chunk_size = DATA_CHUNK_HEADER_SIZE + c.user_data.len() as u32;
                     if self.mtu < fast_retrans_size + data_chunk_size {
                         break;
@@ -2214,13 +2229,6 @@ impl Association {
                 }
 
                 if let Some(c) = self.inflight_queue.get_mut(tsn) {
-                    Association::check_partial_reliability_status(
-                        c,
-                        now,
-                        self.use_forward_tsn,
-                        self.side,
-                        &self.streams,
-                    );
                     to_fast_retrans.push(Box::new(c.clone()));
                     trace!(
                         "[{}] fast-retransmit: tsn={} sent={} htna={}",
@@ -2258,6 +2266,30 @@ impl Association {
         }
 
         raw_packets
+    }
+
+    fn advance_abandoned(&mut self) {
+        if !self.use_forward_tsn {
+            return;
+        }
+        if sna32lt(
+            self.advanced_peer_tsn_ack_point,
+            self.cumulative_tsn_ack_point,
+        ) {
+            self.advanced_peer_tsn_ack_point = self.cumulative_tsn_ack_point;
+        }
+        let previous = self.advanced_peer_tsn_ack_point;
+        let mut next = previous.wrapping_add(1);
+        while let Some(chunk) = self.inflight_queue.get(next) {
+            if !chunk.abandoned() {
+                break;
+            }
+            self.advanced_peer_tsn_ack_point = next;
+            next = next.wrapping_add(1);
+        }
+        if self.advanced_peer_tsn_ack_point != previous {
+            self.will_send_forward_tsn = true;
+        }
     }
 
     fn gather_outbound_forward_tsn_packets(
@@ -2388,6 +2420,19 @@ impl Association {
                     continue;
                 }
 
+                Association::check_partial_reliability_status(
+                    c,
+                    now,
+                    self.use_forward_tsn,
+                    self.side,
+                    &self.streams,
+                );
+                if c.acked || c.abandoned() {
+                    c.retransmit = false;
+                    i += 1;
+                    continue;
+                }
+
                 if i == 0 && self.rwnd < c.user_data.len() as u32 {
                     // Send it as a zero window probe
                     done = true;
@@ -2408,14 +2453,6 @@ impl Association {
             }
 
             if let Some(c) = self.inflight_queue.get_mut(tsn) {
-                Association::check_partial_reliability_status(
-                    c,
-                    now,
-                    self.use_forward_tsn,
-                    self.side,
-                    &self.streams,
-                );
-
                 trace!(
                     "[{}] retransmitting tsn={} ssn={} sent={}",
                     self.side, c.tsn, c.stream_sequence_number, c.nsent
@@ -2639,7 +2676,7 @@ impl Association {
             let reliability_value = s.reliability_value;
 
             if reliability_type == ReliabilityType::Rexmit {
-                if c.nsent >= reliability_value {
+                if c.nsent > reliability_value {
                     c.set_abandoned(true);
                     trace!(
                         "[{}] marked as abandoned: tsn={} ppi={} (remix: {})",
@@ -2747,14 +2784,6 @@ impl Association {
 
             c.since = Some(now); // use to calculate RTT and also for maxPacketLifeTime
             c.nsent = 1; // being sent for the first time
-
-            Association::check_partial_reliability_status(
-                &mut c,
-                now,
-                self.use_forward_tsn,
-                self.side,
-                &self.streams,
-            );
 
             trace!(
                 "[{}] sending ppi={} tsn={} ssn={} sent={} len={} ({},{})",

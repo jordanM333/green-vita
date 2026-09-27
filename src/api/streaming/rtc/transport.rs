@@ -167,8 +167,12 @@ impl RtcTransport {
     }
 
     pub(crate) fn take_receive_summary(&mut self) -> String {
+        let wire = self.traffic.take_summary(Instant::now());
+        let tx_budget = self.tx_budget_hits;
+        let tx_blocked = self.tx_would_block;
+        let tx_pending = u8::from(self.pending_write.is_some());
         let summary = format!(
-            "RX passes:{} budget:{} maxPk:{} max:{}us\nUDP:{} RRsent:{} PSFB:{} txErr:{} TWCCsent:{}\n{}",
+            "RX passes:{} budget:{} maxPk:{} max:{}us\nUDP:{} RRsent:{} PSFB:{} txErr:{} TWCCsent:{}\n{wire}\nTX budget:{tx_budget} blocked:{tx_blocked} pending:{tx_pending}",
             self.receive_passes,
             self.receive_budget_hits,
             self.receive_packets_max,
@@ -178,18 +182,76 @@ impl RtcTransport {
             self.feedback_sent,
             self.send_errors,
             self.twcc_sent,
-            format!(
-                "{}\nTX budget:{} blocked:{} pending:{}",
-                self.traffic.take_summary(Instant::now()),
-                self.tx_budget_hits,
-                self.tx_would_block,
-                u8::from(self.pending_write.is_some())
-            ),
         );
         self.receive_passes = 0;
         self.receive_budget_hits = 0;
         self.receive_packets_max = 0;
         self.receive_pass_max_us = 0;
         summary
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test(flavor = "current_thread")]
+    async fn udp_receive_pass_is_bounded_and_deferred_send_keeps_its_bytes() {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let remote = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let local_addr = socket.local_addr().unwrap();
+        let remote_addr = remote.local_addr().unwrap();
+        let mut media = rtc::peer_connection::configuration::media_engine::MediaEngine::default();
+        let registry = super::super::arrival_feedback::configure(&mut media, vec![]).unwrap();
+        let mut peer = rtc::peer_connection::RTCPeerConnectionBuilder::new()
+            .with_media_engine(media)
+            .with_interceptor_registry(registry)
+            .build()
+            .unwrap();
+        let payload = BytesMut::from(&b"exact deferred datagram"[..]);
+        let mut transport = RtcTransport {
+            socket,
+            local_addr,
+            recv_buf: vec![0; 2048],
+            receive_passes: 0,
+            receive_budget_hits: 0,
+            receive_packets_max: 0,
+            receive_pass_max_us: 0,
+            receive_rate: super::super::feedback::ReceiveRate::new(),
+            rr_sent: 0,
+            feedback_sent: 0,
+            send_errors: 0,
+            twcc_sent: 0,
+            traffic: super::super::traffic::Traffic::new(),
+            tx_budget_hits: 0,
+            tx_would_block: 0,
+            pending_write: Some(TaggedBytesMut {
+                now: Instant::now(),
+                message: payload.clone(),
+                transport: TransportContext {
+                    local_addr,
+                    peer_addr: remote_addr,
+                    ecn: None,
+                    transport_protocol: TransportProtocol::UDP,
+                },
+            }),
+        };
+        transport.socket.writable().await.unwrap();
+        transport.flush(&mut peer).await;
+        let mut bytes = [0; 2048];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(1), remote.recv_from(&mut bytes))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&bytes[..n], &payload[..]);
+        assert!(transport.pending_write.is_none());
+        // The protocol rejects these unnegotiated media datagrams; the test is
+        // of socket-pass fairness, not media authentication or SDP negotiation.
+        for _ in 0..64 {
+            remote.send_to(&[0x80; 12], local_addr).await.unwrap();
+        }
+        transport.socket.readable().await.unwrap();
+        transport.receive(&mut peer);
+        assert!(transport.receive_packets_max <= RECEIVE_PASS_PACKETS);
+        assert_eq!(transport.receive_budget_hits, 1);
     }
 }

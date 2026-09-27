@@ -7,6 +7,7 @@ publish = false
 [workspace]
 
 [dependencies]
+tokio = { version = "=1.52.3", features = ["macros", "net", "rt", "sync", "time"] }
 anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
 sctp = { package = "rtc-sctp", version = "=0.20.0-rc.2" }

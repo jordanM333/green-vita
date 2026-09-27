@@ -489,16 +489,6 @@ impl VideoRtp {
         self.last_idr_at.map(|at| at.elapsed().as_secs())
     }
 
-    #[cfg(test)]
-    pub(super) fn receive(
-        &mut self,
-        worker: &VideoDecodeWorker,
-        packet: Packet,
-        keyframe_requested: &mut bool,
-    ) -> VideoSampleStats {
-        self.receive_at(worker, packet, Instant::now(), keyframe_requested)
-    }
-
     pub(super) fn receive_at(
         &mut self,
         worker: &VideoDecodeWorker,

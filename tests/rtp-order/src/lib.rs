@@ -596,3 +596,12 @@ mod repair_integration {
         );
     }
 }
+
+
+// Convenience belongs to this harness; production supplies socket-dequeue time.
+impl video_rtp::VideoRtp {
+    fn receive(&mut self, worker: &streaming::video::VideoDecodeWorker,
+        packet: rtp::Packet, keyframe: &mut bool) -> video_rtp::VideoSampleStats {
+        self.receive_at(worker, packet, std::time::Instant::now(), keyframe)
+    }
+}

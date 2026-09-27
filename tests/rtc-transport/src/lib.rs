@@ -20,6 +20,14 @@ mod reports;
 mod traffic;
 #[cfg(test)]
 mod webrtc;
+// Host harness does not initiate external ICE discovery; all production methods
+// still type-check, while the UDP tests exercise local sockets only.
+#[allow(dead_code)]
+#[path = "../../../src/api/streaming/rtc/ice.rs"]
+mod ice;
+#[allow(dead_code)]
+#[path = "../../../src/api/streaming/rtc/transport.rs"]
+mod transport;
 #[cfg(test)]
 mod tests {
     const INPUT_OUTSTANDING_LIMIT: usize = 256; // RX Test 33 baseline policy
@@ -44,6 +52,8 @@ mod tests {
         received: Vec<(u64, u64)>,
         delay: Duration,
         transmitted: usize,
+        data_transmits: usize,
+        drop_data: usize,
         forward_tsns: usize,
         unordered_forward_entries: usize,
         sacks: usize,
@@ -67,6 +77,8 @@ mod tests {
                 received: Vec::new(),
                 delay: Duration::from_millis(5),
                 transmitted: 0,
+                data_transmits: 0,
+                drop_data: 0,
                 forward_tsns: 0,
                 unordered_forward_entries: 0,
                 sacks: 0,
@@ -112,10 +124,13 @@ mod tests {
             }
             while let Some(tx) = conn.poll_transmit(now) {
                 if let Payload::RawEncode(packets) = tx.message
-                    && !lose
                 {
                         for packet in packets {
                             self.transmitted += 1;
+                            let data = packet.get(12) == Some(&0);
+                            self.data_transmits += usize::from(data);
+                            if data && self.drop_data > 0 { self.drop_data -= 1; continue; }
+                            if lose { continue; }
                             self.forward_tsns += usize::from(packet.get(12) == Some(&192));
                             self.sacks += usize::from(packet.get(12) == Some(&3));
                             if packet.get(12) == Some(&192) {
@@ -148,6 +163,11 @@ mod tests {
     #[test]
     fn control_traffic_thirty_virtual_minutes_with_repeated_rtt_stalls() {
         verify_control_traffic(1_800_000);
+    }
+
+    #[test]
+    fn lossless_unreliable_reports_do_not_abandon_unacknowledged_first_transmissions() {
+        verify_control_traffic(5_000);
     }
 
     fn verify_control_traffic(end_ms: u64) {
@@ -189,11 +209,39 @@ mod tests {
         }
         eprintln!("70ms RTT duration={end_ms}ms reports={reports} sent={} forward={} sacks={} maxWindow={} tailWindow={}",
             client.transmitted,client.forward_tsns,server.sacks, windows.iter().max().unwrap(), windows.last().unwrap());
+        if end_ms < 10_000 {
+            assert_eq!(client.forward_tsns, 0, "a healthy first transmission must await its ACK, not be treated as a failed retransmission");
+        }
         assert_eq!(client.unordered_forward_entries, 0, "RFC3758 C4 forbids unordered SSN entries");
         eprintln!("duplicate_forward_under_half_rtt={}", client.duplicate_forward_under_rtt);
         assert_eq!(client.duplicate_forward_under_rtt, 0, "unchanged forward progress must not be amplified by ACKs faster than the path RTT");
         assert!(client.transmitted < reports * 3, "control chatter grows without new useful work");
         assert!(*windows.last().unwrap() < 30, "control traffic must settle after reports stop");
+    }
+
+    #[test]
+    fn retry_limits_count_retries_not_the_initial_transmission() {
+        for (retries, losses, attempts, delivered) in [(0, 1, 1, 0), (1, 1, 2, 1), (1, 2, 2, 0)] {
+            let mut client = Side::new(43000, false);
+            let mut server = Side::new(43001, true);
+            client.association = Some(client.endpoint.connect(ClientConfig::new(TransportConfig::default()), server.address).unwrap());
+            let start = Instant::now();
+            for ms in 0..15_000u64 {
+                let now = start + Duration::from_millis(ms);
+                if ms == 1000 {
+                    client.drop_data = losses;
+                    let conn = &mut client.association.as_mut().unwrap().1;
+                    conn.open_stream(2, PayloadProtocolIdentifier::Binary).unwrap()
+                        .set_reliability_params(true, ReliabilityType::Rexmit, retries).unwrap();
+                    conn.stream(2).unwrap().write_sctp(&Bytes::copy_from_slice(&ms.to_le_bytes()), PayloadProtocolIdentifier::Binary).unwrap();
+                }
+                client.drive(&mut server, now, start, false);
+                server.drive(&mut client, now, start, false);
+            }
+            assert_eq!(client.data_transmits, attempts, "retry limit {retries}, losses {losses}");
+            assert_eq!(server.received.len(), delivered);
+            if delivered == 0 { assert!(client.forward_tsns > 0, "loss must advance through FORWARD-TSN"); }
+        }
     }
 
     #[derive(Clone, Copy)]
