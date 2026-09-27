@@ -430,6 +430,147 @@ fn voice_pair() -> (
     (pair, mic, uplink, game_audio)
 }
 
+#[test]
+fn encrypted_media_keeps_ingress_identity_across_burst_delivery_and_rtp_wrap() {
+    use rtc::rtp_transceiver::rtp_sender::{
+        RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
+    };
+    let a_addr = "127.0.0.1:42400".parse().unwrap();
+    let b_addr = "127.0.0.1:42401".parse().unwrap();
+    let mut a = Pair::peer(a_addr);
+    let mut b = Pair::peer(b_addr);
+    let mut senders = Vec::new();
+    for (kind, ssrc, mime, rate, channels, fmtp) in [
+        (
+            RtpCodecKind::Video,
+            12345,
+            "video/H264",
+            90_000,
+            0,
+            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f",
+        ),
+        (
+            RtpCodecKind::Audio,
+            12346,
+            "audio/opus",
+            48_000,
+            2,
+            "minptime=10;useinbandfec=1",
+        ),
+    ] {
+        a.add_transceiver_from_kind(kind, None).unwrap();
+        senders.push(
+            b.add_track(rtc::media_stream::MediaStreamTrack::new(
+                "game".into(),
+                mime.into(),
+                mime.into(),
+                kind,
+                vec![RTCRtpEncodingParameters {
+                    rtp_coding_parameters: RTCRtpCodingParameters {
+                        ssrc: Some(ssrc),
+                        ..Default::default()
+                    },
+                    codec: RTCRtpCodec {
+                        mime_type: mime.into(),
+                        clock_rate: rate,
+                        channels,
+                        sdp_fmtp_line: fmtp.into(),
+                        rtcp_feedback: vec![],
+                    },
+                    ..Default::default()
+                }],
+            ))
+            .unwrap(),
+        );
+    }
+    let offer = a.create_offer(None).unwrap();
+    a.set_local_description(offer.clone()).unwrap();
+    b.set_remote_description(offer).unwrap();
+    let answer = b.create_answer(None).unwrap();
+    b.set_local_description(answer.clone()).unwrap();
+    a.set_remote_description(answer).unwrap();
+    let mut pair = Pair {
+        a,
+        b,
+        a_addr,
+        b_addr,
+    };
+    pair.wait_for(|p| {
+        p.a.data_channel(CHANNEL).unwrap().ready_state() == RTCDataChannelState::Open
+            && p.b.data_channel(CHANNEL).unwrap().ready_state() == RTCDataChannelState::Open
+    });
+    while pair.a.poll_read().is_some() {}
+    let start = Instant::now();
+    let mut expected = std::collections::VecDeque::new();
+    let mut received = 0;
+    // 30 minutes of 60 Hz synthetic RTP through real SRTP, including both
+    // timestamp and sequence wrap. This is NOT an Xbox or H.264 replay.
+    for frame in 0..108_000u64 {
+        let at = start + Duration::from_micros(frame * 1_000_000 / 60);
+        for (index, sender) in senders.iter().enumerate() {
+            let timestamp = (u32::MAX - 90_000)
+                .wrapping_add((frame * if index == 0 { 1500 } else { 800 }) as u32);
+            let ssrc = 12345 + index as u32;
+            pair.b
+                .rtp_sender(*sender)
+                .unwrap()
+                .write_rtp(rtc::rtp::Packet {
+                    header: rtc::rtp::Header {
+                        version: 2,
+                        ssrc,
+                        payload_type: if index == 0 { 102 } else { 111 },
+                        sequence_number: frame as u16,
+                        timestamp,
+                        ..Default::default()
+                    },
+                    payload: bytes::Bytes::from_static(&[0x61; 1000]),
+                })
+                .unwrap();
+            expected.push_back((at, ssrc, timestamp));
+        }
+        while let Some(msg) = pair.b.poll_write() {
+            pair.a
+                .handle_read(TaggedBytesMut {
+                    now: at,
+                    transport: TransportContext {
+                        local_addr: a_addr,
+                        peer_addr: b_addr,
+                        ecn: None,
+                        transport_protocol: TransportProtocol::UDP,
+                    },
+                    message: msg.message,
+                })
+                .unwrap();
+        }
+        // Fault-inject a >2s application stall once, then drain every 16 frames.
+        if frame >= 127 && frame % 16 == 15 {
+            while let Some((dequeued, message)) = pair.a.poll_read_with_timestamp() {
+                if let RTCMessage::RtpPacket(_, packet) = message {
+                    let expected = expected.pop_front().unwrap();
+                    assert_eq!(
+                        (dequeued, packet.header.ssrc, packet.header.timestamp),
+                        expected
+                    );
+                    let residence = at.duration_since(dequeued);
+                    if frame == 127 && received == 0 {
+                        assert!(residence >= Duration::from_secs(2));
+                    }
+                    assert!(
+                        residence <= Duration::from_millis(if frame == 127 { 2117 } else { 250 })
+                    );
+                    received += 1;
+                }
+            }
+            assert!(
+                expected.is_empty(),
+                "authenticated media must not linger in another RTC queue"
+            );
+        }
+    }
+    assert_eq!(received, 216_000);
+    assert!(pair.a.poll_read().is_none());
+}
+
 fn assert_game_audio(pair: &mut Pair, sender: rtc::rtp_transceiver::RTCRtpSenderId, sequence: u16) {
     pair.b
         .rtp_sender(sender)
@@ -449,9 +590,10 @@ fn assert_game_audio(pair: &mut Pair, sender: rtc::rtp_transceiver::RTCRtpSender
     pair.wait_for(|p| {
         while let Some(message) = p.a.poll_read() {
             if let RTCMessage::RtpPacket(_, packet) = message
-                && packet.header.ssrc == 12345 && packet.header.sequence_number == sequence
+                && packet.header.ssrc == 12345
+                && packet.header.sequence_number == sequence
             {
-                    return true;
+                return true;
             }
         }
         false
@@ -469,7 +611,7 @@ fn assert_controls(pair: &mut Pair) {
             if let RTCMessage::DataChannelMessage(_, message) = message
                 && message.data.as_ref() == b"controls"
             {
-                    return true;
+                return true;
             }
         }
         false

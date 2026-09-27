@@ -5,6 +5,73 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 const NTP_UNIX_SECONDS: i128 = 2_208_988_800;
 const MAX_REPORT_DISTANCE_SECONDS: i64 = 120;
 
+/// Independent, allocation-free observation of the socket -> RTC handoff.
+/// Never subtract two independently minimized relative clocks to infer residence:
+/// measure the same packet's two Instants instead.
+pub(super) struct IngressProbe {
+    clock: RtpClockProbe,
+    packets: u64,
+    residence_us: u128,
+    residence_max_us: u128,
+    previous_ticks: u64,
+    previous_at: Option<Instant>,
+}
+
+impl IngressProbe {
+    pub(super) fn new(rate: i64) -> Self {
+        Self {
+            clock: RtpClockProbe::new(rate),
+            packets: 0,
+            residence_us: 0,
+            residence_max_us: 0,
+            previous_ticks: 0,
+            previous_at: None,
+        }
+    }
+
+    pub(super) fn reset(&mut self) {
+        *self = Self::new(self.clock.clock_rate);
+    }
+
+    pub(super) fn receive(&mut self, timestamp: u32, dequeued: Instant, delivered: Instant) {
+        self.clock.receive_at(timestamp, dequeued);
+        let us = delivered.saturating_duration_since(dequeued).as_micros();
+        self.packets += 1;
+        self.residence_us += us;
+        self.residence_max_us = self.residence_max_us.max(us);
+    }
+
+    pub(super) fn take_summary(&mut self, now: Instant) -> String {
+        let media_us = self.clock.elapsed_ticks.saturating_sub(self.previous_ticks) * 1_000_000
+            / self.clock.clock_rate as u64;
+        let wall_us = self
+            .previous_at
+            .map(|at| now.saturating_duration_since(at).as_micros());
+        let progress = wall_us
+            .map(|wall| format!("{media_us}/{wall}us"))
+            .unwrap_or_else(|| "?".into());
+        let avg = self
+            .residence_us
+            .checked_div(u128::from(self.packets))
+            .unwrap_or(0);
+        let relative = self
+            .clock
+            .timing()
+            .map(|timing| timing.added_delay_ms.to_string())
+            .unwrap_or_else(|| "?".into());
+        let summary = format!(
+            "dequeue rel+{relative}ms RTC avg/max:{avg}/{}us pk:{} media/wall:{progress}",
+            self.residence_max_us, self.packets,
+        );
+        self.previous_ticks = self.clock.elapsed_ticks;
+        self.previous_at = Some(now);
+        self.packets = 0;
+        self.residence_us = 0;
+        self.residence_max_us = 0;
+        summary
+    }
+}
+
 pub(super) struct RtpClockProbe {
     clock_rate: i64,
     report: Option<(u32, i128)>,
@@ -139,6 +206,82 @@ impl RtpClockProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ingress_separates_dequeue_staleness_from_two_second_rtc_residence() {
+        use std::time::Duration;
+        let start = Instant::now();
+        let mut upstream = IngressProbe::new(90_000);
+        let mut inside_rtc = IngressProbe::new(90_000);
+        for probe in [&mut upstream, &mut inside_rtc] {
+            probe.receive(0, start, start);
+            probe.take_summary(start);
+        }
+        let delivered = start + Duration::from_secs(3);
+        // The old app-only clock is identical in these two distinct mechanisms.
+        upstream.receive(90_000, delivered, delivered);
+        inside_rtc.receive(90_000, start + Duration::from_secs(1), delivered);
+        assert_eq!(upstream.clock.relative_delay_ms, 2000);
+        assert_eq!(upstream.residence_max_us, 0);
+        assert_eq!(inside_rtc.clock.relative_delay_ms, 0);
+        assert_eq!(inside_rtc.residence_max_us, 2_000_000);
+        assert!(
+            upstream
+                .take_summary(delivered)
+                .contains("media/wall:1000000/3000000us")
+        );
+        assert!(
+            inside_rtc
+                .take_summary(delivered)
+                .contains("RTC avg/max:2000000/2000000us")
+        );
+        inside_rtc.reset();
+        assert!(inside_rtc.clock.timing().is_none());
+        assert!(inside_rtc.take_summary(delivered).contains("media/wall:?"));
+    }
+
+    #[test]
+    fn thirty_minutes_of_bursts_wrap_reorder_and_recovery_do_not_accumulate_clock_error() {
+        use std::time::Duration;
+        let start = Instant::now();
+        let first = u32::MAX - 90_000;
+        let mut video = IngressProbe::new(90_000);
+        let mut audio = IngressProbe::new(48_000);
+        for frame in 0..108_000u64 {
+            let ts = first.wrapping_add((frame * 1500) as u32);
+            let media_us = frame * 1_000_000 / 60;
+            let phase = frame % 3600;
+            let extra_us = if phase < 3420 {
+                0
+            } else if phase < 3480 {
+                (phase - 3420) * 1_000_000 / 30
+            } else {
+                (3600 - phase) * 1_000_000 / 60
+            };
+            // Deliver an old packet after each current one without moving the clock.
+            let dequeued = start + Duration::from_micros(media_us + extra_us);
+            video.receive(ts, dequeued, dequeued + Duration::from_micros(300));
+            let last = video.clock.last_frame_at;
+            video.receive(
+                ts.wrapping_sub(1500),
+                dequeued,
+                dequeued + Duration::from_micros(700),
+            );
+            assert_eq!(video.clock.last_frame_at, last);
+            assert!(video.clock.relative_delay_ms.abs_diff(extra_us / 1000) <= 1);
+            let audio_at = start + Duration::from_micros(media_us);
+            audio.receive(
+                (frame * 800) as u32,
+                audio_at,
+                audio_at + Duration::from_micros(300),
+            );
+            assert_eq!(audio.clock.relative_delay_ms, 0);
+            if frame % 60 == 59 {
+                video.take_summary(dequeued);
+                audio.take_summary(audio_at);
+            }
+        }
+    }
 
     #[test]
     fn sender_report_ntp_and_rtp_wrap_are_mapped_to_unix_time() {

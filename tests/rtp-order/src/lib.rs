@@ -23,6 +23,7 @@ mod streaming {
         #[derive(Default)]
         pub struct VideoDecodeWorker {
             pub submitted: Mutex<Vec<Vec<u8>>>,
+            pub submitted_times: Mutex<Vec<(std::time::Instant, u32)>>,
             pub cutovers: std::sync::atomic::AtomicUsize,
             pub queued: std::sync::atomic::AtomicUsize,
         }
@@ -47,10 +48,11 @@ mod streaming {
             pub fn submit_access_unit(
                 &self,
                 data: Vec<u8>,
-                _: std::time::Instant,
-                _: u32,
+                at: std::time::Instant,
+                ts: u32,
             ) -> SubmitResult {
                 self.submitted.lock().unwrap().push(data);
+                self.submitted_times.lock().unwrap().push((at, ts));
                 SubmitResult::Submitted
             }
         }
@@ -458,6 +460,31 @@ mod repair_integration {
                 vec![0, 0, 0, 1, 0x61, 0xaa, 0xbb]
             ]
         );
+    }
+
+    #[test]
+    fn two_second_ingress_age_is_preserved_through_reorder_assembly_and_decoder_submission() {
+        let old = Instant::now() - Duration::from_secs(2);
+        let mut video = video_rtp::VideoRtp::new(1280, 720);
+        let worker = streaming::video::VideoDecodeWorker::default();
+        let mut order = reorder::PacketOrder::default();
+        let mut keyframe = false;
+        // Arrive out of sequence across u16 wrap; the earliest socket timestamp
+        // belongs to a later fragment. Completion must preserve the minimum.
+        let now = Instant::now();
+        let first = order.push(u16::MAX - 1,
+            (packet(u16::MAX - 1, 1234, false, &[0x7c, 0x85, 0x88]), old + Duration::from_millis(10)), now).unwrap();
+        video.receive_at(&worker, first.0, first.1, &mut keyframe);
+        assert!(order.push(0, (packet(0, 1234, true, &[0x7c, 0x45, 0xaa]), old), now).is_none());
+        let middle = order.push(u16::MAX,
+            (packet(u16::MAX, 1234, false, &[0x7c, 0x05, 0x99]), old + Duration::from_millis(20)), now).unwrap();
+        video.receive_at(&worker, middle.0, middle.1, &mut keyframe);
+        let last = order.pop_ready(now).unwrap();
+        video.receive_at(&worker, last.0, last.1, &mut keyframe);
+        assert_eq!(*worker.submitted_times.lock().unwrap(), vec![(old, 1234)]);
+        assert!(!keyframe);
+        let summary = video.take_assembly_summary();
+        assert!(summary.contains("samples:1"));
     }
     #[test]
     fn manual_refresh_keeps_partial_au_and_playback_until_self_contained_idr() {

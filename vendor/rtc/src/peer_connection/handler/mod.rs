@@ -114,7 +114,7 @@ pub(crate) struct PipelineContext {
     pub(crate) endpoint_handler_context: EndpointHandlerContext,
 
     // Pipeline
-    pub(crate) read_outs: VecDeque<RTCMessage>,
+    pub(crate) read_outs: VecDeque<(Instant, RTCMessage)>,
     pub(crate) write_outs: VecDeque<TaggedBytesMut>,
     pub(crate) event_outs: VecDeque<RTCPeerConnectionEvent>,
 
@@ -126,6 +126,14 @@ impl<I> RTCPeerConnection<I>
 where
     I: Interceptor,
 {
+    /// Receive a message with the ingress time supplied to `handle_read`.
+    /// For RTP this is the datagram's transport timestamp, retained through
+    /// authentication and application buffering; it is not a capture timestamp.
+    /// For a reassembled data-channel message it identifies the completing input.
+    pub fn poll_read_with_timestamp(&mut self) -> Option<(Instant, RTCMessage)> {
+        self.pipeline_context.read_outs.pop_front()
+    }
+
     /*
      Pipeline Flow (Read Path):
      Raw Bytes -> Demuxer -> ICE -> DTLS -> SCTP -> DataChannel -> SRTP -> Interceptor -> Endpoint -> Application
@@ -248,7 +256,9 @@ where
             };
 
             if let Some(rtc_message) = rtc_message {
-                self.pipeline_context.read_outs.push_back(rtc_message);
+                self.pipeline_context
+                    .read_outs
+                    .push_back((msg.now, rtc_message));
             }
         }
 
@@ -256,7 +266,7 @@ where
     }
 
     fn poll_read(&mut self) -> Option<Self::Rout> {
-        self.pipeline_context.read_outs.pop_front()
+        self.poll_read_with_timestamp().map(|(_, message)| message)
     }
 
     fn handle_write(&mut self, msg: RTCMessage) -> Result<(), Self::Error> {

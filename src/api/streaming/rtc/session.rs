@@ -1,4 +1,4 @@
-use crate::api::streaming::rtc::clock::RtpClockProbe;
+use crate::api::streaming::rtc::clock::{IngressProbe, RtpClockProbe};
 use crate::api::streaming::rtc::media::{AudioReceiver, VideoReceiver};
 use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use crate::api::streaming::rtc::transport::RtcTransport;
@@ -90,6 +90,8 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     mode: &'static str,
     video_clock: RtpClockProbe,
     audio_clock: RtpClockProbe,
+    video_ingress: IngressProbe,
+    audio_ingress: IngressProbe,
     video_rate: super::feedback::ReceiveRate,
     video_ceiling: super::feedback::VideoCeiling,
     catch_up: crate::streaming::video::catch_up::CatchUp,
@@ -123,6 +125,8 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             mode: config.mode,
             video_clock: RtpClockProbe::new(90_000),
             audio_clock: RtpClockProbe::new(i64::from(config.audio_sample_rate)),
+            video_ingress: IngressProbe::new(90_000),
+            audio_ingress: IngressProbe::new(i64::from(config.audio_sample_rate)),
             video_rate: super::feedback::ReceiveRate::new(),
             video_ceiling: Default::default(),
             catch_up: Default::default(),
@@ -265,6 +269,11 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         if let Some(status) = self.video.status(now) {
             let link = self.connection_debug(now);
             let receive = self.transport.take_receive_summary();
+            let ingress = format!(
+                "Ingress V:{}\nIngress A:{}",
+                self.video_ingress.take_summary(now),
+                self.audio_ingress.take_summary(now)
+            );
             let rate = self.video_rate.summary(now);
             let ceiling = self.video_ceiling.summary(self.video_rate.latest_kbps);
             let feedback = format!(
@@ -284,7 +293,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             let progress = crate::streaming::video::trace::progress_summary();
             let [sacks, forward_rx, forward_tx, coalesced, t3] = self.peer.sctp_control_counters();
             self.status = format!(
-                "Build: RX Test {} revision {}\nMode:{}\nXbox requested:{requested_width}x{requested_height} server:{server_size}\n{status}\n{link}\n{receive}\n{feedback}\n{microphone}\n{progress}\nSCTP totals SACKrx:{sacks} FWD rx/tx:{forward_rx}/{forward_tx} coalesced:{coalesced} T3:{t3}",
+                "Build: RX Test {} revision {}\nMode:{}\nXbox requested:{requested_width}x{requested_height} server:{server_size}\n{status}\n{link}\n{receive}\n{ingress}\n{feedback}\n{microphone}\n{progress}\nSCTP totals SACKrx:{sacks} FWD rx/tx:{forward_rx}/{forward_tx} coalesced:{coalesced} T3:{t3}",
                 crate::build_info::NUMBER,
                 crate::build_info::REVISION,
                 self.mode,
@@ -400,11 +409,13 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                     match track_kind {
                         Some(RtpCodecKind::Video) => {
                             self.video_clock.reset();
+                            self.video_ingress.reset();
                             self.video.open(init.track_id, init.receiver_id, init.ssrc);
                             self.status = "Receiving video track".to_owned();
                         }
                         Some(RtpCodecKind::Audio) => {
                             self.audio_clock.reset();
+                            self.audio_ingress.reset();
                             self.audio.open(init.track_id);
                             self.status = "Receiving audio track".to_owned();
                         }
@@ -442,7 +453,8 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                 self.audio_clock.sender_report(&report);
             }
         }
-        while let Some(message) = self.peer.poll_read() {
+        while let Some((dequeued_at, message)) = self.peer.poll_read_with_timestamp() {
+            let delivered_at = Instant::now();
             match message {
                 RTCMessage::RtpPacket(track_id, packet) => {
                     if self.video.handles(&track_id) {
@@ -453,11 +465,16 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                         // Empty RTP probes participate in sequence/TWCC handling,
                         // but their timestamps do not describe a captured frame.
                         if !packet.payload.is_empty() {
+                            self.video_ingress.receive(
+                                packet.header.timestamp,
+                                dequeued_at,
+                                delivered_at,
+                            );
                             self.video_clock.receive(packet.header.timestamp);
                             crate::streaming::video::trace::record(
                                 "video_received",
                                 packet.header.timestamp,
-                                0,
+                                dequeued_at.elapsed().as_micros() as u64,
                             );
                             if let Some(timing) = self.video_clock.timing() {
                                 let before = self.video_ceiling.target_bps();
@@ -481,15 +498,25 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                                 }
                             }
                         }
-                        self.video.receive(packet, &mut keyframe_requested);
+                        self.video.receive(
+                            packet,
+                            dequeued_at,
+                            delivered_at,
+                            &mut keyframe_requested,
+                        );
                     } else if self.audio.handles(&track_id) {
+                        self.audio_ingress.receive(
+                            packet.header.timestamp,
+                            dequeued_at,
+                            delivered_at,
+                        );
                         self.audio_clock.receive(packet.header.timestamp);
                         crate::streaming::video::trace::record(
                             "audio_received",
                             packet.header.timestamp,
-                            0,
+                            dequeued_at.elapsed().as_micros() as u64,
                         );
-                        self.audio.receive(packet);
+                        self.audio.receive(packet, dequeued_at);
                     }
                 }
                 RTCMessage::RtcpPacket(track_id, packets) => {

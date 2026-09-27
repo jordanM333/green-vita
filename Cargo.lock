@@ -848,6 +848,7 @@ dependencies = [
  "sdl2",
  "serde",
  "serde_json",
+ "socket2 0.6.4",
  "tokio",
  "unic-langid",
  "uuid",

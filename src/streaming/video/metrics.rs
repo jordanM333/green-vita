@@ -322,7 +322,7 @@ pub fn video_performance_summary(window: std::time::Duration) -> String {
     let window_ms = window.as_millis();
     let base = format!(
         "Q depth/max:{}/{} AUage:{au_age_average}/{au_age_max}ms dec:{decode_average}/{decode_max}ms up:{upload_average}/{upload_max}ms paint:{paint_average}/{paint_max}ms ui:{ui_loop_average}/{ui_loop_max}ms\n\
-         FPS hwCall:{} decoded:{} shown:{} ui:{ui_fps} idle:{} pic:{} noPic:{} noOut:{} qFull/s:{} asm:{rtp_average}/{rtp_max}ms window:{window_ms}ms\n\
+         FPS hwCall:{} decoded:{} shown:{} ui:{ui_fps} idle:{} pic:{} noPic:{} noOut:{} qFull/s:{} socketToAU:{rtp_average}/{rtp_max}ms window:{window_ms}ms\n\
          Render draw:{draw_average}/{draw_max}ms swap:{present_average}/{present_max}ms GPUwait:{gpu_wait_average}/{gpu_wait_max}ms decodedToGPU:{gpu_age_average}/{gpu_age_max}ms\n\
          Stage texRepl:{} showAge:{display_age_average}/{display_age_max}ms staleAU:{} noDec:{} mailRepl:{} handoffRepl:{} resync:{} reset:{}",
         METRICS.au_queue_depth.load(Ordering::Relaxed),

@@ -43,7 +43,8 @@ pub(crate) struct VideoReceiver {
     receiver_id: Option<RTCRtpReceiverId>,
     ssrc: Option<u32>,
     rtp: rtp::VideoRtp,
-    order: super::reorder::PacketOrder<(Packet, Instant)>,
+    order: super::reorder::PacketOrder<(Packet, Instant, Instant)>,
+    order_window: (u64, u64, u64), // count, sum us, max us from RTC delivery to reorder release
     pub(crate) decoder: VideoDecodeWorker,
     pub(crate) latest_frame: Option<(u64, DecodedFrame)>,
     next_frame_id: u64,
@@ -68,6 +69,7 @@ impl VideoReceiver {
             ssrc: None,
             rtp: rtp::VideoRtp::new(config.decode_width, config.decode_height),
             order: Default::default(),
+            order_window: (0, 0, 0),
             decoder: VideoDecodeWorker::spawn(config, direct_output)?,
             latest_frame: None,
             next_frame_id: 0,
@@ -93,6 +95,7 @@ impl VideoReceiver {
                 self.rtp.source_changed(&self.decoder);
             }
             self.order.clear();
+            self.order_window = (0, 0, 0);
             self.last_packet_at = None;
         }
         self.track_id = Some(track_id);
@@ -151,7 +154,13 @@ impl VideoReceiver {
         self.track_id.as_ref() == Some(track_id)
     }
 
-    pub(crate) fn receive(&mut self, packet: Packet, keyframe_requested: &mut bool) {
+    pub(crate) fn receive(
+        &mut self,
+        packet: Packet,
+        received_at: Instant,
+        delivered_at: Instant,
+        keyframe_requested: &mut bool,
+    ) {
         self.order
             .enable_repair(self.nack_payloads.contains(&packet.header.payload_type));
         self.received_packet = true;
@@ -172,22 +181,23 @@ impl VideoReceiver {
         // Process already-delivered packets before declaring a gap expired.
         // Previously a pump delay could make us discard the exact packet in
         // hand that would have closed the gap, then trigger seconds of IDR wait.
-        if let Some((packet, received_at)) =
-            self.order
-                .push(packet.header.sequence_number, (packet, now), now)
-        {
-            self.receive_ordered(packet, received_at, keyframe_requested);
+        if let Some((packet, received_at, delivered_at)) = self.order.push(
+            packet.header.sequence_number,
+            (packet, received_at, delivered_at),
+            now,
+        ) {
+            self.receive_ordered(packet, received_at, delivered_at, keyframe_requested);
         }
-        while let Some((packet, received_at)) = self.order.pop_ready(now) {
-            self.receive_ordered(packet, received_at, keyframe_requested);
+        while let Some((packet, received_at, delivered_at)) = self.order.pop_ready(now) {
+            self.receive_ordered(packet, received_at, delivered_at, keyframe_requested);
         }
         self.record_order_loss(missing_before, timestamp);
     }
 
     fn flush_order(&mut self, now: Instant, keyframe_requested: &mut bool) {
         let missing_before = self.order.stats.missing;
-        while let Some((packet, received_at)) = self.order.pop(now) {
-            self.receive_ordered(packet, received_at, keyframe_requested);
+        while let Some((packet, received_at, delivered_at)) = self.order.pop(now) {
+            self.receive_ordered(packet, received_at, delivered_at, keyframe_requested);
         }
         self.record_order_loss(missing_before, 0);
     }
@@ -203,8 +213,13 @@ impl VideoReceiver {
         &mut self,
         packet: Packet,
         received_at: Instant,
+        delivered_at: Instant,
         keyframe_requested: &mut bool,
     ) {
+        let order_us = delivered_at.elapsed().as_micros() as u64;
+        self.order_window.0 += 1;
+        self.order_window.1 += order_us;
+        self.order_window.2 = self.order_window.2.max(order_us);
         let sample_stats =
             self.rtp
                 .receive_at(&self.decoder, packet, received_at, keyframe_requested);
@@ -314,6 +329,13 @@ impl VideoReceiver {
         self.last_stats_report = now;
 
         let performance = crate::streaming::video::video_performance_summary(window);
+        let assembly = self.rtp.take_assembly_summary();
+        let (count, sum, max) = std::mem::take(&mut self.order_window);
+        let order_timing = format!(
+            "RTC-to-ordered avg/max:{}/{}us packets:{count}",
+            sum.checked_div(count).unwrap_or(0),
+            max
+        );
         let buffering = self.rtp.buffering_summary();
         let source_fps = self
             .stats
@@ -339,7 +361,7 @@ impl VideoReceiver {
             .map(|error| format!("\nlast decode error: {error}"))
             .unwrap_or_default();
         Some(format!(
-            "SPS:{encoded_resolution} decoder:{}x{} output:{}x{} source-fps:{source_fps}\n{buffering}\n\
+            "SPS:{encoded_resolution} decoder:{}x{} output:{}x{} source-fps:{source_fps}\n{buffering}\n{order_timing}\n{assembly}\n\
              RTP pk:{} jump:{}/~{} late:{} dup:{} empty:{}\n{}\n\
              AU done:{} sent:{} drop:{} seq:{} FU:{} mal:{} q:{} SPS:{} IDRwait:{} other:{}\n\
              IDR count:{} age:{idr_age} postDamageSent:{} wait:{} decoderErr:{}\n\
@@ -399,7 +421,7 @@ impl AudioReceiver {
         self.track_id.as_ref() == Some(track_id)
     }
 
-    pub(crate) fn receive(&mut self, packet: Packet) {
-        self.rtp.receive(packet, Instant::now(), &mut self.packets);
+    pub(crate) fn receive(&mut self, packet: Packet, received_at: Instant) {
+        self.rtp.receive(packet, received_at, &mut self.packets);
     }
 }

@@ -38,6 +38,7 @@ def trace_summary(rows):
         "receive_to_gpu_done_us": "matched_receive_to_gpu_ms",
         "decoded_to_gpu_done_us": "decoded_to_gpu_ms",
         "gpu_queue_wait_us": "gpu_callback_wait_ms",
+        "h264_assembly_us": "first_ordered_fragment_to_au_ms",
     }
     measurements = defaultdict(list)
     counts = Counter()
@@ -149,6 +150,19 @@ def history_metrics(body):
         "input_outstanding_sample_bytes": r"Input transport sampled:(\d+)/",
         "input_deferred_process_total": r"Input transport sampled:[^\n]* deferred:(\d+)",
         "remb_target_kbps": r"REMB:[^\n]*?target:(\d+)k",
+        "socket_empty_observations": r"Socket empty:(\d+)",
+        "socket_ready_gaps": r"Socket empty:\d+ readyGap:(\d+)",
+        "socket_residence_bound_max_us": r"Socket [^\n]*? boundMax:(\d+)us",
+        "socket_residence_unknown_packets": r"Socket [^\n]*? unknown:(\d+)",
+        "socket_residence_bounded_packets": r"Socket [^\n]*? boundedPk:(\d+)",
+        "receive_pass_gap_max_us": r"Socket [^\n]*? passGapMax:(\d+)us",
+        "video_dequeue_growth_ms": r"Ingress V:dequeue rel\+(\d+)ms",
+        "audio_dequeue_growth_ms": r"Ingress A:dequeue rel\+(\d+)ms",
+        "video_rtc_residence_max_us": r"Ingress V:[^\n]*? RTC avg/max:\d+/(\d+)us",
+        "audio_rtc_residence_max_us": r"Ingress A:[^\n]*? RTC avg/max:\d+/(\d+)us",
+        "reorder_residence_max_us": r"RTC-to-ordered avg/max:\d+/(\d+)us",
+        "h264_assembly_max_us": r"H264 ordered-to-AU avg/max:\d+/(\d+)us",
+        "socket_to_au_max_ms": r"socketToAU:\d+/(\d+)ms",
     }
     result = {}
     for key, pattern in patterns.items():
@@ -158,6 +172,7 @@ def history_metrics(body):
     # Keep those raw samples, but never use them as the new session's baseline.
     result["startup_or_inherited_window"] = (result["rtp_packets"] == 0 or
                                                   "H264: waiting for SPS" in body)
+    result["local_age_origin"] = ("socket_dequeue" if "Ingress V:" in body else "application_receive_or_unknown")
     return result
 
 

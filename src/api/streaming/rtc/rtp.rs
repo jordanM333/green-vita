@@ -196,11 +196,13 @@ pub(super) struct VideoRtp {
     suspect_reference: bool,
     refresh_pending: bool,
     refresh_completed: u64,
+    assembly_window: (u64, u64, u64), // count, sum us, max us after first ordered fragment
 }
 
 struct PendingVideoFrame {
     timestamp: u32,
     first_packet_at: Instant,
+    assembly_started_at: Instant,
     packets: Vec<Packet>,
     marker: Option<u16>,
     bytes: usize,
@@ -214,6 +216,7 @@ enum FrameAssembly {
 
 impl PendingVideoFrame {
     fn new(packet: Packet) -> Self {
+        let now = Instant::now();
         let marker = packet
             .header
             .marker
@@ -221,7 +224,8 @@ impl PendingVideoFrame {
         let bytes = packet.payload.len();
         Self {
             timestamp: packet.header.timestamp,
-            first_packet_at: Instant::now(),
+            first_packet_at: now,
+            assembly_started_at: now,
             packets: vec![packet],
             marker,
             bytes,
@@ -443,6 +447,7 @@ impl VideoRtp {
             suspect_reference: false,
             refresh_pending: false,
             refresh_completed: 0,
+            assembly_window: (0, 0, 0),
         }
     }
 
@@ -466,6 +471,15 @@ impl VideoRtp {
         self.sps_buffering
             .as_deref()
             .unwrap_or("H264: waiting for SPS")
+    }
+
+    pub(super) fn take_assembly_summary(&mut self) -> String {
+        let (count, sum, max) = std::mem::take(&mut self.assembly_window);
+        format!(
+            "H264 ordered-to-AU avg/max:{}/{}us samples:{count}",
+            sum.checked_div(count).unwrap_or(0),
+            max
+        )
     }
 
     pub(super) fn recovery_summary(&self, now: Instant) -> String {
@@ -640,6 +654,15 @@ impl VideoRtp {
         };
         stats.assembled = 1;
         let completed = self.pending.take().expect("assembled pending video frame");
+        let ordered_to_au_us = completed.assembly_started_at.elapsed().as_micros() as u64;
+        self.assembly_window.0 += 1;
+        self.assembly_window.1 += ordered_to_au_us;
+        self.assembly_window.2 = self.assembly_window.2.max(ordered_to_au_us);
+        crate::streaming::video::trace::record(
+            "h264_assembly_us",
+            completed.timestamp,
+            ordered_to_au_us,
+        );
         crate::streaming::video::trace::record(
             "au_complete",
             completed.timestamp,
@@ -650,7 +673,8 @@ impl VideoRtp {
             completed.timestamp,
             data.len() as u64,
         );
-        // Record both average and worst-case RTP assembly time for the stream HUD.
+        // First socket-dequeued fragment -> completed AU, including RTC/reorder.
+        // Pure assembly residence starts at the first ordered fragment above.
         let assembly_us = completed.first_packet_at.elapsed().as_micros() as u64;
         crate::streaming::video::metrics::METRICS
             .rtp_assembly_sum_us

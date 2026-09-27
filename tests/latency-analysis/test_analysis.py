@@ -8,6 +8,29 @@ spec.loader.exec_module(analysis)
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_old_logs_do_not_invent_a_socket_bound_or_rtc_residence(self):
+        metrics = analysis.history_metrics("RX passes:424 budget:83 maxPk:8 max:3053us\n")
+        self.assertIsNone(metrics["socket_residence_bound_max_us"])
+        self.assertIsNone(metrics["video_dequeue_growth_ms"])
+        self.assertIsNone(metrics["video_rtc_residence_max_us"])
+        self.assertEqual(metrics["local_age_origin"], "application_receive_or_unknown")
+
+    def test_new_ingress_measurements_keep_residence_and_relative_age_separate(self):
+        metrics = analysis.history_metrics(
+            "Socket empty:341 readyGap:2 err:0/0 rtcErr:0 rcvbuf:Some(65536)B lastEmpty:20us boundMax:8000us unknown:0 boundedPk:350 passGapMax:9000us ioCallMax:14us\n"
+            "Ingress V:dequeue rel+2000ms RTC avg/max:1000/3000us pk:300 media/wall:500000/1000000us\n"
+            "Ingress A:dequeue rel+4ms RTC avg/max:800/2000us pk:50 media/wall:1000000/1000000us\n"
+            "RTC-to-ordered avg/max:20/20000us packets:300\nH264 ordered-to-AU avg/max:12000/51000us samples:30\n")
+        self.assertEqual(metrics["video_dequeue_growth_ms"], 2000)
+        self.assertEqual(metrics["video_rtc_residence_max_us"], 3000)
+        self.assertEqual(metrics["socket_residence_bound_max_us"], 8000)
+        self.assertEqual(metrics["socket_ready_gaps"], 2)
+        self.assertEqual(metrics["socket_residence_unknown_packets"], 0)
+        self.assertEqual(metrics["socket_residence_bounded_packets"], 350)
+        self.assertEqual(metrics["reorder_residence_max_us"], 20000)
+        self.assertEqual(metrics["h264_assembly_max_us"], 51000)
+        self.assertEqual(metrics["local_age_origin"], "socket_dequeue")
+
     def test_fast_decode_and_empty_queue_do_not_prove_responsiveness(self):
         rows = [{"elapsed_us": "10000000", "stage": "decode_submit", "value_us_or_reason": "0"},
                 {"elapsed_us": "10002000", "stage": "decode_return", "value_us_or_reason": "2000"},

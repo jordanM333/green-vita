@@ -4,6 +4,8 @@ use anyhow::{Context, Result};
 use bytes::BytesMut;
 use rtc::sansio::Protocol;
 use rtc::shared::{TaggedBytesMut, TransportContext, TransportProtocol};
+use socket2::SockRef;
+use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
@@ -12,6 +14,87 @@ use tokio::net::UdpSocket;
 // This bounds pre-AU work, not the socket buffer; unread datagrams remain queued.
 const RECEIVE_PASS_PACKETS: usize = 32;
 const RECEIVE_PASS_TIME: Duration = Duration::from_millis(2);
+
+/// A real empty-socket observation bounds the residence of subsequently received
+/// datagrams. Readiness-cache WouldBlock alone is NOT an empty-socket observation.
+/// This is an upper bound, not a kernel arrival timestamp or a queue-depth estimate.
+#[derive(Default)]
+struct ReceiveBoundary {
+    last_empty: Option<Instant>,
+    last_pass_end: Option<Instant>,
+    empty: u64,
+    readiness_gap: u64,
+    errors: u64,
+    rtc_errors: u64,
+    last_error: Option<i32>,
+    unknown: u64,
+    bounded: u64,
+    bound_max_us: u128,
+    idle_max_us: u128,
+    io_call_max_us: u128,
+}
+
+impl ReceiveBoundary {
+    fn packet(&mut self, dequeued: Instant) {
+        if let Some(empty) = self.last_empty {
+            self.bounded += 1;
+            self.bound_max_us = self
+                .bound_max_us
+                .max(dequeued.saturating_duration_since(empty).as_micros());
+        } else {
+            self.unknown += 1;
+        }
+    }
+
+    fn confirm_empty(&mut self, socket: &UdpSocket) {
+        // Do not replace Tokio/Mio's recv_from with a raw receive: on Vita's
+        // poll selector, Mio must re-arm its interest after a real WouldBlock.
+        // A one-byte, non-consuming peek checks the kernel independently *after*
+        // the normal receive path. It cannot consume or reorder a datagram.
+        let mut byte = [MaybeUninit::uninit(); 1];
+        let started = Instant::now();
+        match SockRef::from(socket).peek_from(&mut byte) {
+            Ok(_) => self.readiness_gap += 1, // May be a concurrent arrival; not proof of a reactor bug.
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                self.last_empty = Some(started); // Before syscall, so the bound is conservative.
+                self.empty += 1;
+            }
+            Err(error) => {
+                self.errors += 1;
+                self.last_error = error.raw_os_error();
+            }
+        }
+        self.io_call_max_us = self.io_call_max_us.max(started.elapsed().as_micros());
+    }
+
+    fn take_summary(&mut self, now: Instant, rcvbuf: Option<usize>) -> String {
+        let empty_ago = self
+            .last_empty
+            .map(|at| now.saturating_duration_since(at).as_micros().to_string())
+            .unwrap_or_else(|| "?".into());
+        let summary = format!(
+            "Socket empty:{} readyGap:{} err:{}/{} rtcErr:{} rcvbuf:{:?}B lastEmpty:{}us boundMax:{}us unknown:{} boundedPk:{} passGapMax:{}us ioCallMax:{}us",
+            self.empty,
+            self.readiness_gap,
+            self.errors,
+            self.last_error.unwrap_or(0),
+            self.rtc_errors,
+            rcvbuf,
+            empty_ago,
+            self.bound_max_us,
+            self.unknown,
+            self.bounded,
+            self.idle_max_us,
+            self.io_call_max_us,
+        );
+        *self = Self {
+            last_empty: self.last_empty,
+            last_pass_end: self.last_pass_end,
+            ..Self::default()
+        };
+        summary
+    }
+}
 
 /// UDP/ICE transport shared by WebRTC streaming providers.
 pub(crate) struct RtcTransport {
@@ -31,6 +114,8 @@ pub(crate) struct RtcTransport {
     pending_write: Option<TaggedBytesMut>,
     tx_budget_hits: u64,
     tx_would_block: u64,
+    boundary: ReceiveBoundary,
+    receive_buffer_bytes: Option<usize>,
 }
 
 impl RtcTransport {
@@ -66,6 +151,7 @@ impl RtcTransport {
         ice::local_candidate(peer, String::new(), None)
             .context("failed to signal end-of-candidates")?;
 
+        let receive_buffer_bytes = SockRef::from(&socket).recv_buffer_size().ok();
         Ok(Self {
             socket,
             local_addr,
@@ -83,6 +169,8 @@ impl RtcTransport {
             pending_write: None,
             tx_budget_hits: 0,
             tx_would_block: 0,
+            boundary: ReceiveBoundary::default(),
+            receive_buffer_bytes,
         })
     }
 
@@ -128,11 +216,24 @@ impl RtcTransport {
 
     pub(crate) fn receive(&mut self, peer: &mut RTCPeerConnection) {
         let started = Instant::now();
+        if let Some(end) = self.boundary.last_pass_end {
+            self.boundary.idle_max_us = self
+                .boundary
+                .idle_max_us
+                .max(started.saturating_duration_since(end).as_micros());
+        }
         let mut received = 0;
         loop {
-            match self.socket.try_recv_from(&mut self.recv_buf) {
+            let receive_started = Instant::now();
+            let result = self.socket.try_recv_from(&mut self.recv_buf);
+            let arrived = Instant::now();
+            self.boundary.io_call_max_us = self
+                .boundary
+                .io_call_max_us
+                .max(arrived.duration_since(receive_started).as_micros());
+            match result {
                 Ok((n, peer_addr)) => {
-                    let arrived = Instant::now();
+                    self.boundary.packet(arrived);
                     self.receive_rate.receive(n, arrived);
                     received += 1;
                     if let Err(_error) = peer.handle_read(TaggedBytesMut {
@@ -145,6 +246,7 @@ impl RtcTransport {
                         },
                         message: BytesMut::from(&self.recv_buf[..n]),
                     }) {
+                        self.boundary.rtc_errors += 1;
                         eprintln!("Failed to handle WebRTC UDP packet");
                     }
                     self.traffic
@@ -154,8 +256,13 @@ impl RtcTransport {
                         break;
                     }
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    self.boundary.confirm_empty(&self.socket);
+                    break;
+                }
                 Err(error) => {
+                    self.boundary.errors += 1;
+                    self.boundary.last_error = error.raw_os_error();
                     eprintln!("Failed to receive WebRTC UDP packet: {error}");
                     break;
                 }
@@ -164,6 +271,7 @@ impl RtcTransport {
         self.receive_passes += 1;
         self.receive_packets_max = self.receive_packets_max.max(received);
         self.receive_pass_max_us = self.receive_pass_max_us.max(started.elapsed().as_micros());
+        self.boundary.last_pass_end = Some(Instant::now());
     }
 
     pub(crate) fn take_receive_summary(&mut self) -> String {
@@ -171,8 +279,11 @@ impl RtcTransport {
         let tx_budget = self.tx_budget_hits;
         let tx_blocked = self.tx_would_block;
         let tx_pending = u8::from(self.pending_write.is_some());
+        let boundary = self
+            .boundary
+            .take_summary(Instant::now(), self.receive_buffer_bytes);
         let summary = format!(
-            "RX passes:{} budget:{} maxPk:{} max:{}us\nUDP:{} RRsent:{} PSFB:{} txErr:{} TWCCsent:{}\n{wire}\nTX budget:{tx_budget} blocked:{tx_blocked} pending:{tx_pending}",
+            "RX passes:{} budget:{} maxPk:{} max:{}us\nUDP:{} RRsent:{} PSFB:{} txErr:{} TWCCsent:{}\n{wire}\nTX budget:{tx_budget} blocked:{tx_blocked} pending:{tx_pending}\n{boundary}",
             self.receive_passes,
             self.receive_budget_hits,
             self.receive_packets_max,
@@ -194,6 +305,59 @@ impl RtcTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn kernel_peek_distinguishes_pending_datagrams_from_readiness_and_preserves_them() {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let remote = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut boundary = ReceiveBoundary::default();
+        boundary.packet(Instant::now());
+        assert_eq!(boundary.unknown, 1);
+        boundary.confirm_empty(&socket);
+        let empty = boundary.last_empty.unwrap();
+        assert_eq!(boundary.empty, 1);
+        remote
+            .send_to(b"retained", socket.local_addr().unwrap())
+            .unwrap();
+        // No reactor turn has occurred. A direct peek sees what a readiness
+        // cache may not yet see. It neither consumes bytes nor advances the bound.
+        boundary.confirm_empty(&socket);
+        assert_eq!(boundary.readiness_gap, 1);
+        assert_eq!(boundary.last_empty, Some(empty));
+        let mut buf = [0; 32];
+        let (n, _) = socket.recv_from(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"retained");
+        boundary.packet(Instant::now());
+        assert!(boundary.bound_max_us <= empty.elapsed().as_micros());
+        boundary.confirm_empty(&socket);
+        assert_eq!(boundary.empty, 2);
+        // Include legal zero-byte UDP datagrams: Ok(0) is not an empty socket.
+        remote.send_to(&[], socket.local_addr().unwrap()).unwrap();
+        boundary.confirm_empty(&socket);
+        assert_eq!(boundary.readiness_gap, 2);
+        assert_eq!(socket.recv_from(&mut buf).await.unwrap().0, 0);
+    }
+
+    #[test]
+    fn kernel_bound_includes_scheduler_stalls_and_survives_summary_windows() {
+        let start = Instant::now();
+        let mut boundary = ReceiveBoundary {
+            last_empty: Some(start),
+            ..Default::default()
+        };
+        boundary.packet(start + Duration::from_secs(2));
+        assert_eq!(boundary.bound_max_us, 2_000_000);
+        let summary = boundary.take_summary(start + Duration::from_secs(2), None);
+        assert!(summary.contains("boundMax:2000000us unknown:0"));
+        boundary.packet(start + Duration::from_secs(3));
+        assert_eq!(boundary.bound_max_us, 3_000_000);
+        // A later actual empty observation tightens future bounds, not old ones.
+        boundary.last_empty = Some(start + Duration::from_secs(3));
+        boundary.take_summary(start + Duration::from_secs(3), None);
+        boundary.packet(start + Duration::from_millis(3004));
+        assert_eq!(boundary.bound_max_us, 4000);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn udp_receive_pass_is_bounded_and_deferred_send_keeps_its_bytes() {
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -224,6 +388,8 @@ mod tests {
             traffic: super::super::traffic::Traffic::new(),
             tx_budget_hits: 0,
             tx_would_block: 0,
+            boundary: ReceiveBoundary::default(),
+            receive_buffer_bytes: None,
             pending_write: Some(TaggedBytesMut {
                 now: Instant::now(),
                 message: payload.clone(),
