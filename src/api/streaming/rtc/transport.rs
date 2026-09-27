@@ -28,6 +28,9 @@ pub(crate) struct RtcTransport {
     send_errors: u64,
     twcc_sent: u64,
     traffic: super::traffic::Traffic,
+    pending_write: Option<TaggedBytesMut>,
+    tx_budget_hits: u64,
+    tx_would_block: u64,
 }
 
 impl RtcTransport {
@@ -77,30 +80,48 @@ impl RtcTransport {
             send_errors: 0,
             twcc_sent: 0,
             traffic: super::traffic::Traffic::new(),
+            pending_write: None,
+            tx_budget_hits: 0,
+            tx_would_block: 0,
         })
     }
 
     pub(crate) async fn flush(&mut self, peer: &mut RTCPeerConnection) {
-        while let Some(outgoing) = peer.poll_write() {
-            if let Err(_error) = self
+        let started = Instant::now();
+        let mut sent = 0;
+        while let Some(outgoing) = self.pending_write.take().or_else(|| peer.poll_write()) {
+            match self
                 .socket
-                .send_to(&outgoing.message, outgoing.transport.peer_addr)
-                .await
+                .try_send_to(&outgoing.message, outgoing.transport.peer_addr)
             {
-                self.send_errors += 1;
-                eprintln!("Failed to send WebRTC UDP packet");
-            } else {
-                self.traffic.sent(&outgoing.message);
-                if outgoing.message.len() >= 8 && outgoing.message[0] >> 6 == 2 {
-                    // SRTCP keeps its first RTCP header clear. Count successful UDP sends,
-                    // not server acknowledgements; encrypted REMB contents are not inspected.
-                    match outgoing.message[1] {
-                        201 => self.rr_sent += 1,
-                        206 => self.feedback_sent += 1,
-                        205 if outgoing.message[0] & 0x1f == 15 => self.twcc_sent += 1,
-                        _ => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    // Exactly one owned datagram waits; no protocol output is lost
+                    // and receive/input service does not await socket writability.
+                    self.pending_write = Some(outgoing);
+                    self.tx_would_block += 1;
+                    break;
+                }
+                Err(_) => {
+                    self.send_errors += 1;
+                }
+                Ok(_) => {
+                    self.traffic.sent(&outgoing.message);
+                    if outgoing.message.len() >= 8 && outgoing.message[0] >> 6 == 2 {
+                        // SRTCP keeps its first RTCP header clear. Count successful UDP sends,
+                        // not server acknowledgements; encrypted REMB contents are not inspected.
+                        match outgoing.message[1] {
+                            201 => self.rr_sent += 1,
+                            206 => self.feedback_sent += 1,
+                            205 if outgoing.message[0] & 0x1f == 15 => self.twcc_sent += 1,
+                            _ => {}
+                        }
                     }
                 }
+            }
+            sent += 1;
+            if sent >= RECEIVE_PASS_PACKETS || started.elapsed() >= RECEIVE_PASS_TIME {
+                self.tx_budget_hits += 1;
+                break;
             }
         }
     }
@@ -157,7 +178,13 @@ impl RtcTransport {
             self.feedback_sent,
             self.send_errors,
             self.twcc_sent,
-            self.traffic.take_summary(Instant::now()),
+            format!(
+                "{}\nTX budget:{} blocked:{} pending:{}",
+                self.traffic.take_summary(Instant::now()),
+                self.tx_budget_hits,
+                self.tx_would_block,
+                u8::from(self.pending_write.is_some())
+            ),
         );
         self.receive_passes = 0;
         self.receive_budget_hits = 0;

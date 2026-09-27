@@ -38,6 +38,10 @@ impl RtpClockProbe {
         }
     }
 
+    pub(super) fn reset(&mut self) {
+        *self = Self::new(self.clock_rate);
+    }
+
     pub(super) fn sender_report(&mut self, sr: &SenderReport) {
         self.last_report_at = Some(Instant::now());
         self.report_count += 1;

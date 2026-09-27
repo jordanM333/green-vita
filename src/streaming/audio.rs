@@ -253,6 +253,12 @@ impl AudioRenderer {
             }
             if let Err(error) = self.queue.queue_audio(&samples.data) {
                 eprintln!("Failed to queue SDL audio: {error}");
+            } else {
+                crate::streaming::video::trace::record(
+                    "audio_device_submit",
+                    0,
+                    samples.received_at.elapsed().as_micros() as u64,
+                );
             }
             if !self.started && self.queue.size() >= AUDIO_START_BUFFER_BYTES {
                 self.queue.resume();
@@ -336,6 +342,11 @@ fn spawn_decode_worker() -> Result<DecodeWorker> {
                     }
                 };
 
+                crate::streaming::video::trace::record(
+                    "audio_decoded",
+                    0,
+                    packet.received_at.elapsed().as_micros() as u64,
+                );
                 let sample_count = samples_per_channel * AUDIO_CHANNELS;
                 // Advance Opus prediction, but do not publish stale decoded
                 // audio. No downstream handoff is allowed to reset this age.

@@ -358,8 +358,4 @@ impl HwVideoDecoder {
     }
 }
 
-// SAFETY requirement: sole ownership transfers once into VideoDecodeWorker,
-// with no concurrent native access. The existing adapter assumes the SDK permits
-// moving a created handle between threads; authoritative affinity evidence is
-// incomplete and remains a release blocker documented in FINAL_BUILD_AUDIT.md.
-unsafe impl Send for HwVideoDecoder {}
+// The decoder handle stays on the thread that creates it. It is intentionally not Send.

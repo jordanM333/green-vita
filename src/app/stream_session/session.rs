@@ -2,7 +2,7 @@ use crate::api::streaming::{PlaybackBackend, PlaybackBackendEvent};
 use crate::settings::Settings;
 use crate::streaming::audio_timing::TimedAudio;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
-use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
+use crate::streaming::video::DirectVideoOutput;
 use crate::{Stream, StreamKind};
 use anyhow::Result;
 use bytes::Bytes;
@@ -29,7 +29,6 @@ pub(crate) struct StreamingSession {
     pub(super) restart_target: super::StreamStartTarget,
     pub(super) video_timing: Option<crate::streaming::video::freshness::VideoTiming>,
     latest_video_frame: Option<u64>,
-    current_video_frame: Option<DecodedFrame>,
     stream_video_size: Option<(u32, u32)>,
     pending_audio_packets: Vec<TimedAudio<Bytes>>,
     ignore_confirm_until_release: bool,
@@ -63,7 +62,6 @@ impl StreamingSession {
             restart_target,
             video_timing: None,
             latest_video_frame: None,
-            current_video_frame: None,
             stream_video_size: None,
             pending_audio_packets: Vec::new(),
             ignore_confirm_until_release: true,
@@ -91,10 +89,6 @@ impl StreamingSession {
 
     pub(crate) fn take_audio_packets(&mut self) -> Vec<TimedAudio<Bytes>> {
         std::mem::take(&mut self.pending_audio_packets)
-    }
-
-    pub(crate) fn video_frame(&self) -> Option<(u64, &DecodedFrame)> {
-        Some((self.latest_video_frame?, self.current_video_frame.as_ref()?))
     }
 
     pub(crate) fn video_size(&self) -> Option<(u32, u32)> {
@@ -160,9 +154,8 @@ impl StreamingSession {
             self.pending_audio_packets.append(&mut packets);
         }
 
-        if let Some((frame_id, frame)) = self.backend.take_latest_frame() {
+        if let Some((frame_id, _frame)) = self.backend.take_latest_frame() {
             self.latest_video_frame = Some(frame_id);
-            self.current_video_frame = Some(frame);
         }
 
         if !self.video_startup.picture_seen() {

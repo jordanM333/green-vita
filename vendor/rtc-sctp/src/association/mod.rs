@@ -140,6 +140,10 @@ pub struct Association {
     // for RTT measurement
     min_tsn2measure_rtt: u32,
     will_send_forward_tsn: bool,
+    // RFC3758 F2/F3: duplicate SACKs must not recursively amplify the same
+    // unacknowledged forward advance. New advances remain immediately eligible.
+    last_forward_tsn: Option<(u32, Instant)>,
+    forward_tsn_deadline: Option<Instant>,
     will_retransmit_fast: bool,
     will_retransmit_reconfig: bool,
     /// True only while the in-flight queue may still hold chunks flagged for
@@ -237,6 +241,8 @@ impl Default for Association {
             // for RTT measurement
             min_tsn2measure_rtt: 0,
             will_send_forward_tsn: false,
+            last_forward_tsn: None,
+            forward_tsn_deadline: None,
             will_retransmit_fast: false,
             will_retransmit_reconfig: false,
             t3_retransmit_pending: false,
@@ -428,7 +434,11 @@ impl Association {
     /// - a call was made to `handle_timeout`
     #[must_use]
     pub fn poll_timeout(&self) -> Option<Instant> {
-        self.timers.next_timeout()
+        self.timers
+            .next_timeout()
+            .into_iter()
+            .chain(self.forward_tsn_deadline)
+            .min()
     }
 
     /// Returns packets to transmit
@@ -1383,6 +1393,7 @@ impl Association {
     }
 
     fn handle_forward_tsn(&mut self, c: &ChunkForwardTsn) -> Result<Vec<Packet>> {
+        self.stats.forward_received += 1;
         trace!("[{}] FwdTSN: {}", self.side, c);
 
         if !self.use_forward_tsn {
@@ -2049,7 +2060,7 @@ impl Association {
                 raw_packets = self.gather_outbound_data_and_reconfig_packets(raw_packets, now);
                 raw_packets = self.gather_outbound_fast_retransmission_packets(raw_packets, now);
                 raw_packets = self.gather_outbound_sack_packets(raw_packets);
-                raw_packets = self.gather_outbound_forward_tsn_packets(raw_packets);
+                raw_packets = self.gather_outbound_forward_tsn_packets(raw_packets, now);
                 (raw_packets, true)
             }
             AssociationState::ShutdownPending
@@ -2249,27 +2260,56 @@ impl Association {
         raw_packets
     }
 
-    fn gather_outbound_forward_tsn_packets(&mut self, mut raw_packets: Vec<Bytes>) -> Vec<Bytes> {
-        /*log::debug!(
-            "[{}] gatherOutboundForwardTSNPackets {}",
-            self.name,
-            self.will_send_forward_tsn
-        );*/
-        if self.will_send_forward_tsn {
+    fn gather_outbound_forward_tsn_packets(
+        &mut self,
+        mut raw_packets: Vec<Bytes>,
+        now: Instant,
+    ) -> Vec<Bytes> {
+        if !self.will_send_forward_tsn {
+            return raw_packets;
+        }
+        if !sna32gt(
+            self.advanced_peer_tsn_ack_point,
+            self.cumulative_tsn_ack_point,
+        ) {
             self.will_send_forward_tsn = false;
-            if sna32gt(
-                self.advanced_peer_tsn_ack_point,
-                self.cumulative_tsn_ack_point,
-            ) {
-                let fwd_tsn = self.create_forward_tsn();
-                if let Ok(raw) = self.create_packet(vec![Box::new(fwd_tsn)]).marshal() {
-                    raw_packets.push(raw);
-                } else {
-                    warn!("[{}] failed to serialize a Forward TSN packet", self.side);
-                }
+            self.forward_tsn_deadline = None;
+            return raw_packets;
+        }
+        if let Some((point, sent_at)) = self.last_forward_tsn
+            && point == self.advanced_peer_tsn_ack_point
+        {
+            // A pending deadline is fixed, not extended by each new SACK.
+            // An unmeasured RTT uses 100ms; RFC3758 recommends <=200ms delay.
+            let rtt = if self.rto_mgr.srtt == 0 {
+                100
+            } else {
+                self.rto_mgr.srtt
+            };
+            if self.forward_tsn_deadline.is_none() {
+                self.stats.forward_coalesced += 1;
+            }
+            let due = *self
+                .forward_tsn_deadline
+                .get_or_insert(sent_at + Duration::from_millis(rtt.clamp(10, 200)));
+            if now < due {
+                return raw_packets;
             }
         }
-
+        self.will_send_forward_tsn = false;
+        self.forward_tsn_deadline = None;
+        let fwd_tsn = self.create_forward_tsn();
+        if let Ok(raw) = self.create_packet(vec![Box::new(fwd_tsn)]).marshal() {
+            self.stats.forward_sent += 1;
+            self.last_forward_tsn = Some((self.advanced_peer_tsn_ack_point, now));
+            // Retain T3 loss recovery even if no further SACK arrives (C5).
+            if self.timers.get(Timer::T3RTX).is_none() {
+                self.timers.start(Timer::T3RTX, now, self.rto_mgr.get_rto());
+            }
+            raw_packets.push(raw);
+        } else {
+            warn!("[{}] failed to serialize a Forward TSN packet", self.side);
+        }
         raw_packets
     }
 
@@ -2644,9 +2684,14 @@ impl Association {
         // like every other window-bounded map here -- the default `HashMap`'s
         // SipHash showed up as ~6-7% of send CPU in profiles.
         let mut stream_map: FxHashMap<u16, u16> = FxHashMap::default(); // report once per SI
-        let mut i = self.cumulative_tsn_ack_point + 1;
+        let mut i = self.cumulative_tsn_ack_point.wrapping_add(1);
         while sna32lte(i, self.advanced_peer_tsn_ack_point) {
             if let Some(c) = self.inflight_queue.get(i) {
+                if c.unordered {
+                    // RFC3758 C4: unordered DATA MUST NOT add stream/SSN entries.
+                    i = i.wrapping_add(1);
+                    continue;
+                }
                 if let Some(ssn) = stream_map.get(&c.stream_identifier) {
                     if sna16lt(*ssn, c.stream_sequence_number) {
                         // to report only once with greatest SSN
@@ -2659,7 +2704,7 @@ impl Association {
                 break;
             }
 
-            i += 1;
+            i = i.wrapping_add(1);
         }
 
         let mut fwd_tsn = ChunkForwardTsn {
@@ -2781,6 +2826,7 @@ impl Association {
     }
 
     fn close_all_timers(&mut self) {
+        self.forward_tsn_deadline = None;
         // Close all retransmission & ack timers
         for timer in Timer::VALUES {
             self.timers.stop(timer);

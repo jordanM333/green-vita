@@ -53,3 +53,15 @@ fn picture_lifetime_preserves_distinct_receive_submit_and_completion_times() {
     assert_eq!(tracker.pending_count(), 0);
     assert!(!tracker.has_pending());
 }
+
+#[test]
+fn new_track_resets_clock_domain_instead_of_inheriting_old_relative_delay() {
+    let mut probe = clock::RtpClockProbe::new(90_000);
+    probe.receive(1_000_000);
+    probe.reset();
+    assert!(probe.timing().is_none());
+    assert!(probe.age_ms().is_none());
+    probe.receive(12);
+    assert_eq!(probe.timing().unwrap().timestamp, 12);
+    assert_eq!(probe.timing().unwrap().added_delay_ms, 0);
+}

@@ -42,6 +42,13 @@ mod tests {
         association: Option<(AssociationHandle, Association)>,
         incoming: VecDeque<(Instant, Bytes)>,
         received: Vec<(u64, u64)>,
+        delay: Duration,
+        transmitted: usize,
+        forward_tsns: usize,
+        unordered_forward_entries: usize,
+        sacks: usize,
+        last_forward: Option<(u32, Instant)>,
+        duplicate_forward_under_rtt: usize,
     }
 
     impl Side {
@@ -58,6 +65,13 @@ mod tests {
                 association: None,
                 incoming: VecDeque::new(),
                 received: Vec::new(),
+                delay: Duration::from_millis(5),
+                transmitted: 0,
+                forward_tsns: 0,
+                unordered_forward_entries: 0,
+                sacks: 0,
+                last_forward: None,
+                duplicate_forward_under_rtt: 0,
             }
         }
 
@@ -101,13 +115,85 @@ mod tests {
                     && !lose
                 {
                         for packet in packets {
+                            self.transmitted += 1;
+                            self.forward_tsns += usize::from(packet.get(12) == Some(&192));
+                            self.sacks += usize::from(packet.get(12) == Some(&3));
+                            if packet.get(12) == Some(&192) {
+                                let length = u16::from_be_bytes(packet[14..16].try_into().unwrap()) as usize;
+                                for entry in packet[20..12+length].as_chunks::<4>().0 {
+                                    if u16::from_be_bytes(entry[..2].try_into().unwrap()) == 2 {
+                                        self.unordered_forward_entries += 1;
+                                    }
+                                }
+                                let tsn = u32::from_be_bytes(packet[16..20].try_into().unwrap());
+                                if self.last_forward.is_some_and(|(old,at)| old==tsn && now.duration_since(at) < Duration::from_millis(35)) {
+                                    self.duplicate_forward_under_rtt += 1;
+                                }
+                                self.last_forward=Some((tsn, now));
+                            }
                             remote
                                 .incoming
-                                .push_back((now + Duration::from_millis(5), packet));
+                                .push_back((now + self.delay, packet));
                         }
                 }
             }
         }
+    }
+
+    #[test]
+    fn control_traffic_remains_proportional_to_reports_at_measured_home_rtt() {
+        verify_control_traffic(120_000);
+    }
+
+    #[test]
+    fn control_traffic_thirty_virtual_minutes_with_repeated_rtt_stalls() {
+        verify_control_traffic(1_800_000);
+    }
+
+    fn verify_control_traffic(end_ms: u64) {
+        let mut client = Side::new(41000, false);
+        let mut server = Side::new(41001, true);
+        client.delay = Duration::from_millis(35);
+        server.delay = Duration::from_millis(35);
+        client.association = Some(client.endpoint.connect(
+            ClientConfig::new(TransportConfig::default()), server.address).unwrap());
+        let start = Instant::now();
+        let mut reports = 0;
+        let mut windows = Vec::new();
+        let mut previous = 0;
+        for ms in 0..end_ms+1000 {
+            let now = start + Duration::from_millis(ms);
+            // Transient delay step, then a healthy 70ms RTT again. FIFO packets
+            // retain their scheduled delivery; no payload is fabricated.
+            if ms >= 10_000 && ms % 10_000 == 0 { client.delay = Duration::from_millis(350); server.delay = Duration::from_millis(350); }
+            if ms >= 10_000 && ms % 10_000 == 1000 { client.delay = Duration::from_millis(35); server.delay = Duration::from_millis(35); }
+            if ms == 1000 {
+                client.association.as_mut().unwrap().1.open_stream(2, PayloadProtocolIdentifier::Binary)
+                    .unwrap().set_reliability_params(true, ReliabilityType::Rexmit, 0).unwrap();
+            }
+            if (1000..end_ms).contains(&ms) && ms % 8 == 0 {
+                let conn = &mut client.association.as_mut().unwrap().1;
+                if conn.immediate_send_capacity() >= 43 {
+                    let mut bytes = vec![0;43];
+                    bytes[..8].copy_from_slice(&ms.to_le_bytes());
+                    conn.stream(2).unwrap().write_sctp(&Bytes::from(bytes), PayloadProtocolIdentifier::Binary).unwrap();
+                    reports += 1;
+                }
+            }
+            client.drive(&mut server, now, start, false);
+            server.drive(&mut client, now, start, false);
+            if ms % 1000 == 999 {
+                windows.push(client.transmitted - previous);
+                previous = client.transmitted;
+            }
+        }
+        eprintln!("70ms RTT duration={end_ms}ms reports={reports} sent={} forward={} sacks={} maxWindow={} tailWindow={}",
+            client.transmitted,client.forward_tsns,server.sacks, windows.iter().max().unwrap(), windows.last().unwrap());
+        assert_eq!(client.unordered_forward_entries, 0, "RFC3758 C4 forbids unordered SSN entries");
+        eprintln!("duplicate_forward_under_half_rtt={}", client.duplicate_forward_under_rtt);
+        assert_eq!(client.duplicate_forward_under_rtt, 0, "unchanged forward progress must not be amplified by ACKs faster than the path RTT");
+        assert!(client.transmitted < reports * 3, "control chatter grows without new useful work");
+        assert!(*windows.last().unwrap() < 30, "control traffic must settle after reports stop");
     }
 
     #[derive(Clone, Copy)]

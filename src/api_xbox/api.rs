@@ -131,15 +131,6 @@ impl ApiClient {
             .await
     }
 
-    pub async fn get_active_session_paths(&self, kind: StreamKind) -> Result<Vec<String>> {
-        let response: Value = self
-            .get_json(kind, &format!("/v5/sessions/{}/active", kind.as_path()))
-            .await?;
-        let mut paths = Vec::new();
-        collect_session_paths(&response, &mut paths);
-        Ok(paths)
-    }
-
     /// Creates a streaming session. Cloud titles missing from the primary offering are retried
     /// against the free-to-play endpoint when one is available.
     pub async fn start_stream(&self, kind: StreamKind, title_or_server_id: &str) -> Result<Stream> {
@@ -203,14 +194,6 @@ impl ApiClient {
         T: for<'de> Deserialize<'de>,
     {
         self.request_json(self.credentials_for(kind), Method::GET, path, None)
-            .await
-    }
-
-    pub async fn delete_json<T>(&self, kind: StreamKind, path: &str) -> Result<T>
-    where
-        T: for<'de> Deserialize<'de>,
-    {
-        self.request_json(self.credentials_for(kind), Method::DELETE, path, None)
             .await
     }
 
@@ -278,27 +261,6 @@ impl ApiClient {
         }
         serde_json::from_slice::<T>(&bytes)
             .map_err(|_| anyhow::anyhow!("malformed xCloud JSON response"))
-    }
-}
-
-fn collect_session_paths(value: &Value, output: &mut Vec<String>) {
-    match value {
-        Value::Array(items) => {
-            for item in items {
-                collect_session_paths(item, output);
-            }
-        }
-        Value::Object(map) => {
-            for (key, val) in map {
-                if (key == "sessionPath" || key == "path")
-                    && let Some(path) = val.as_str()
-                {
-                    output.push(path.to_owned());
-                }
-                collect_session_paths(val, output);
-            }
-        }
-        _ => {}
     }
 }
 

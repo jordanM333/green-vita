@@ -9,6 +9,9 @@ use std::time::{Duration, Instant};
 // Both limits apply, including to streams made up of very small AUs.
 pub(crate) const AU_QUEUE_CAPACITY: usize = 32;
 pub(crate) const AU_QUEUE_BYTES: usize = 4 * 1024 * 1024;
+// Shared local receive-to-selection ceiling, matching the audio freshness
+// ceiling. This excludes capture/network/kernel delay and is not an end-to-end SLA.
+pub(crate) const MAX_LOCAL_VIDEO_AGE: Duration = Duration::from_millis(240);
 pub(crate) const AU_PRESSURE_AGE: Duration = Duration::from_millis(50);
 
 // Metadata is NOT firmware readiness. Prefer a queued AU (which can also return

@@ -38,11 +38,13 @@ pub struct CatalogPreferences {
     pub recently_played: Vec<String>,
 }
 impl CatalogPreferences {
+    #[cfg(test)]
     pub fn toggle_favorite(&mut self, id: &str) {
         if !self.favorites.remove(id) {
             self.favorites.insert(id.to_owned());
         }
     }
+    #[cfg(test)]
     pub fn record_played(&mut self, id: &str) {
         self.recently_played.retain(|saved| saved != id);
         self.recently_played.insert(0, id.to_owned());

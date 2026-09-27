@@ -89,6 +89,9 @@ impl VideoReceiver {
         ssrc: u32,
     ) {
         if self.ssrc != Some(ssrc) {
+            if self.ssrc.is_some() {
+                self.rtp.source_changed(&self.decoder);
+            }
             self.order.clear();
             self.last_packet_at = None;
         }
@@ -307,9 +310,10 @@ impl VideoReceiver {
         if now.duration_since(self.last_stats_report) < STREAM_STATS_INTERVAL {
             return None;
         }
+        let window = now.saturating_duration_since(self.last_stats_report);
         self.last_stats_report = now;
 
-        let performance = crate::streaming::video::video_performance_summary();
+        let performance = crate::streaming::video::video_performance_summary(window);
         let buffering = self.rtp.buffering_summary();
         let source_fps = self
             .stats
@@ -386,6 +390,8 @@ impl AudioReceiver {
     }
 
     pub(crate) fn open(&mut self, track_id: MediaStreamTrackId) {
+        self.rtp.reset();
+        self.packets.clear();
         self.track_id = Some(track_id);
     }
 

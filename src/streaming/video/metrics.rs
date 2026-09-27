@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) struct VideoMetrics {
+    pub(crate) stale_picture: AtomicU64,
+    pub(crate) expired_access_unit: AtomicU64,
     pub(crate) output_pts_matched: AtomicU64,
     pub(crate) output_pts_unmatched: AtomicU64,
     pub(crate) decoder_age_sum_us: AtomicU64,
@@ -101,6 +103,8 @@ pub(crate) struct VideoMetrics {
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
+    stale_picture: AtomicU64::new(0),
+    expired_access_unit: AtomicU64::new(0),
     output_pts_matched: AtomicU64::new(0),
     output_pts_unmatched: AtomicU64::new(0),
     decoder_age_sum_us: AtomicU64::new(0),
@@ -199,7 +203,9 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     rtc_pump_max_us: AtomicU64::new(0),
 };
 
-pub fn video_performance_summary() -> String {
+pub fn video_performance_summary(window: std::time::Duration) -> String {
+    let window_us = window.as_micros().max(1);
+    let rate = |n: u64| ((u128::from(n) * 1_000_000 + window_us / 2) / window_us) as u64;
     let picture = METRICS.picture_dimensions.load(Ordering::Relaxed);
     let picture_size = if picture == 0 {
         "?".to_owned()
@@ -305,26 +311,30 @@ pub fn video_performance_summary() -> String {
         METRICS.frame_feedback_failed.load(Ordering::Relaxed)
     );
     let poll = format!(
-        "Decoder poll calls/pictures/errors:{}/{}/{}",
+        "Decoder poll calls/pictures/errors:{}/{}/{} expiredAU:{} expiredOrRegressedPicture:{}",
         METRICS.decoder_poll_calls.load(Ordering::Relaxed),
         METRICS.decoder_poll_pictures.load(Ordering::Relaxed),
-        METRICS.decoder_poll_failed.load(Ordering::Relaxed)
+        METRICS.decoder_poll_failed.load(Ordering::Relaxed),
+        METRICS.expired_access_unit.load(Ordering::Relaxed),
+        METRICS.stale_picture.load(Ordering::Relaxed)
     );
+    let ui_fps = rate(paint_count);
+    let window_ms = window.as_millis();
     let base = format!(
         "Q depth/max:{}/{} AUage:{au_age_average}/{au_age_max}ms dec:{decode_average}/{decode_max}ms up:{upload_average}/{upload_max}ms paint:{paint_average}/{paint_max}ms ui:{ui_loop_average}/{ui_loop_max}ms\n\
-         FPS hwCall:{} decoded:{} shown:{} ui:{paint_count} idle:{} pic:{} noPic:{} noOut:{} qFull/s:{} asm:{rtp_average}/{rtp_max}ms\n\
+         FPS hwCall:{} decoded:{} shown:{} ui:{ui_fps} idle:{} pic:{} noPic:{} noOut:{} qFull/s:{} asm:{rtp_average}/{rtp_max}ms window:{window_ms}ms\n\
          Render draw:{draw_average}/{draw_max}ms swap:{present_average}/{present_max}ms GPUwait:{gpu_wait_average}/{gpu_wait_max}ms decodedToGPU:{gpu_age_average}/{gpu_age_max}ms\n\
          Stage texRepl:{} showAge:{display_age_average}/{display_age_max}ms staleAU:{} noDec:{} mailRepl:{} handoffRepl:{} resync:{} reset:{}",
         METRICS.au_queue_depth.load(Ordering::Relaxed),
         METRICS.au_queue_max.load(Ordering::Relaxed),
-        METRICS.decode_calls.swap(0, Ordering::Relaxed),
-        METRICS.decoded.swap(0, Ordering::Relaxed),
-        METRICS.presented.swap(0, Ordering::Relaxed),
-        METRICS.unchanged_frame_skipped.swap(0, Ordering::Relaxed),
+        rate(METRICS.decode_calls.swap(0, Ordering::Relaxed)),
+        rate(METRICS.decoded.swap(0, Ordering::Relaxed)),
+        rate(METRICS.presented.swap(0, Ordering::Relaxed)),
+        rate(METRICS.unchanged_frame_skipped.swap(0, Ordering::Relaxed)),
         picture_size,
-        METRICS.no_picture.swap(0, Ordering::Relaxed),
-        METRICS.skipped.swap(0, Ordering::Relaxed),
-        METRICS.queue_full.swap(0, Ordering::Relaxed),
+        rate(METRICS.no_picture.swap(0, Ordering::Relaxed)),
+        rate(METRICS.skipped.swap(0, Ordering::Relaxed)),
+        rate(METRICS.queue_full.swap(0, Ordering::Relaxed)),
         METRICS.texture_superseded.load(Ordering::Relaxed),
         METRICS.stale_generation.load(Ordering::Relaxed),
         METRICS.decoder_unavailable.load(Ordering::Relaxed),

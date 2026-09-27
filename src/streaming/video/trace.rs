@@ -6,7 +6,11 @@
 //! the submission RTP column and stores the decoder's raw 90 kHz PTS in value.
 //! decoder_poll_output_pts has no submission; its value is the returned PTS.
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{
+    Mutex,
+    atomic::{AtomicU64, Ordering},
+};
+static CONTENDED: AtomicU64 = AtomicU64::new(0);
 use std::time::Instant;
 
 const CAPACITY: usize = 4096;
@@ -22,6 +26,7 @@ struct Trace {
     incidents: VecDeque<(u128, &'static str, u32, u64)>,
     last_au: Option<u128>,
     last_picture: Option<u128>,
+    stages: [Option<(u128, i128, u32)>; 9],
 }
 
 pub(crate) fn reset() {
@@ -33,15 +38,19 @@ pub(crate) fn reset() {
             incidents: VecDeque::with_capacity(INCIDENT_CAPACITY),
             last_au: None,
             last_picture: None,
+            stages: [None; 9],
         });
     }
 }
 
 pub(crate) fn record(stage: &'static str, timestamp: u32, value: u64) {
-    if let Ok(mut trace) = TRACE.lock()
-        && let Some(trace) = trace.as_mut()
-    {
-        trace.push(trace.start.elapsed().as_micros(), stage, timestamp, value);
+    // The flight recorder must never hold up receive, decode, or display.
+    if let Ok(mut trace) = TRACE.try_lock() {
+        if let Some(trace) = trace.as_mut() {
+            trace.push(trace.start.elapsed().as_micros(), stage, timestamp, value);
+        }
+    } else {
+        CONTENDED.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -53,13 +62,32 @@ impl Trace {
         self.incidents.push_back((time, stage, timestamp, value));
     }
     fn push(&mut self, time: u128, stage: &'static str, timestamp: u32, value: u64) {
+        let index = match stage {
+            "video_received" => Some(0),
+            "au_complete" => Some(1),
+            "decode_submit" => Some(2),
+            "picture_output_rtp" => Some(3),
+            "presentation_selected" => Some(4),
+            "receive_to_gpu_done_us" => Some(5),
+            "audio_received" => Some(6),
+            "audio_decoded" => Some(7),
+            "audio_device_submit" => Some(8),
+            _ => None,
+        };
+        if let Some(index) = index {
+            self.stages[index] = Some((time, time as i128 - i128::from(value), timestamp));
+        }
         if self.events.len() == CAPACITY {
             self.events.pop_front();
         }
         self.events.push_back((time, stage, timestamp, value));
         if matches!(
             stage,
-            "recovery_begin"
+            "au_deadline_recovery"
+                | "picture_expired"
+                | "picture_regressed"
+                | "presentation_expired"
+                | "recovery_begin"
                 | "recovery_end_ms"
                 | "au_abandon"
                 | "age_drop"
@@ -99,6 +127,44 @@ impl Trace {
                 );
             }
         }
+    }
+}
+
+/// Ages keep increasing through silence/frozen output. Each column belongs to
+/// its own most recent media item, not a fabricated same-frame end-to-end sum.
+pub(crate) fn progress_summary() -> String {
+    let Ok(trace) = TRACE.try_lock() else {
+        return "Progress: busy".into();
+    };
+    let Some(trace) = trace.as_ref() else {
+        return "Progress: unavailable".into();
+    };
+    trace.progress_at(trace.start.elapsed().as_micros())
+}
+
+impl Trace {
+    fn progress_at(&self, now: u128) -> String {
+        let mut out = format!(
+            "Local media age/quiet ms (not capture/scanout): traceSkip:{}",
+            CONTENDED.load(Ordering::Relaxed)
+        );
+        for (name, sample) in [
+            "Vrx", "AU", "submit", "decoded", "selected", "GPU", "Arx", "PCM", "SDL",
+        ]
+        .iter()
+        .zip(self.stages)
+        {
+            if let Some((event, origin, _rtp)) = sample {
+                out.push_str(&format!(
+                    " {name}:{}/{}",
+                    (now as i128 - origin).max(0) / 1000,
+                    now.saturating_sub(event) / 1000
+                ));
+            } else {
+                out.push_str(&format!(" {name}:?"));
+            }
+        }
+        out
     }
 }
 
@@ -184,6 +250,7 @@ mod tests {
             incidents: VecDeque::new(),
             last_au: None,
             last_picture: None,
+            stages: [None; 9],
         };
         trace.push(0, "au_complete", 1, 0);
         trace.push(0, "receive_to_gpu_done_us", 1, 0);

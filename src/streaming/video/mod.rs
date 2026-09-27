@@ -43,6 +43,8 @@ struct DirectVideoOutputState {
     pending: Option<(usize, u64, Instant, Option<timing::FrameTiming>)>,
     next_generation: u64,
     decoding: Option<usize>,
+    minimum_epoch: u64,
+    latest_media: Option<(u64, u32)>,
 }
 
 /// Synchronizes CDRAM decoder outputs with the SDL/GXM textures owned by the render thread.
@@ -66,6 +68,8 @@ impl DirectVideoOutput {
                 pending: None,
                 next_generation: 0,
                 decoding: None,
+                minimum_epoch: 0,
+                latest_media: None,
             }),
             decode_idle: Condvar::new(),
             presentation: Mutex::new(timing::PresentationState::default()),
@@ -107,6 +111,18 @@ impl DirectVideoOutput {
         }
     }
 
+    pub(crate) fn invalidate_before_epoch(&self, epoch: u64) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.minimum_epoch = state.minimum_epoch.max(epoch);
+        if state
+            .pending
+            .is_some_and(|(_, _, _, timing)| timing.is_some_and(|t| t.epoch < state.minimum_epoch))
+        {
+            state.pending = None;
+            self.frame_signal.set_pending(false);
+        }
+    }
+
     pub(crate) fn has_pending_frame(&self) -> bool {
         // Input/render scheduling must not wait on the decoder's hardware call.
         self.frame_signal.is_pending()
@@ -135,13 +151,49 @@ impl DirectVideoOutput {
         Instant,
         Option<timing::FrameTiming>,
     )> {
+        self.take_latest_at(Instant::now())
+    }
+
+    fn take_latest_at(
+        &self,
+        now: Instant,
+    ) -> Option<(
+        usize,
+        VideoTextureTarget,
+        u64,
+        Instant,
+        Option<timing::FrameTiming>,
+    )> {
         let Ok(mut state) = self.state.lock() else {
             return None;
         };
         let (index, generation, decoded_at, timing) = state.pending.take()?;
         self.frame_signal.set_pending(false);
+        if let Some(timing) = timing
+            && (timing.epoch < state.minimum_epoch
+                || now.saturating_duration_since(timing.received_at) > policy::MAX_LOCAL_VIDEO_AGE)
+        {
+            metrics::METRICS
+                .stale_picture
+                .fetch_add(1, Ordering::Relaxed);
+            trace::record(
+                "presentation_expired",
+                timing.rtp_timestamp,
+                now.saturating_duration_since(timing.received_at)
+                    .as_micros() as u64,
+            );
+            return None;
+        }
         let target = *state.targets.as_ref()?.get(index)?;
         state.displayed = Some(index);
+        if let Some(timing) = timing {
+            trace::record(
+                "presentation_selected",
+                timing.rtp_timestamp,
+                now.saturating_duration_since(timing.received_at)
+                    .as_micros() as u64,
+            );
+        }
         let age_us = decoded_at.elapsed().as_micros() as u64;
         trace::record("texture_take_generation", 0, generation);
         trace::record("texture_wait_us", 0, age_us);
@@ -197,12 +249,37 @@ pub(super) struct DirectVideoTargetGuard<'a> {
 }
 
 impl DirectVideoTargetGuard<'_> {
-    pub(super) fn publish(self, timing: Option<timing::FrameTiming>) -> (usize, u64) {
+    pub(super) fn publish(self, timing: Option<timing::FrameTiming>) -> Option<(usize, u64)> {
         let mut state = self
             .output
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        if let Some(timing) = timing {
+            let age = timing.received_at.elapsed();
+            let regressed = state.latest_media.is_some_and(|(epoch, timestamp)| {
+                timing.epoch < epoch
+                    || (timing.epoch == epoch
+                        && (timing.rtp_timestamp.wrapping_sub(timestamp) as i32) <= 0)
+            });
+            if timing.epoch < state.minimum_epoch || regressed || age > policy::MAX_LOCAL_VIDEO_AGE
+            {
+                metrics::METRICS
+                    .stale_picture
+                    .fetch_add(1, Ordering::Relaxed);
+                trace::record(
+                    if regressed {
+                        "picture_regressed"
+                    } else {
+                        "picture_expired"
+                    },
+                    timing.rtp_timestamp,
+                    age.as_micros() as u64,
+                );
+                return None;
+            }
+            state.latest_media = Some((timing.epoch, timing.rtp_timestamp));
+        }
         if state.pending.is_some() {
             metrics::METRICS
                 .texture_superseded
@@ -214,7 +291,7 @@ impl DirectVideoTargetGuard<'_> {
             state.pending = Some((self.index, generation, Instant::now(), timing));
             self.output.frame_signal.set_pending(true);
         }
-        let result = (self.index, generation);
+        let result = Some((self.index, generation));
         drop(state);
         self.output.frame_signal.wake();
         result
@@ -234,10 +311,8 @@ impl Drop for DirectVideoTargetGuard<'_> {
     }
 }
 
-pub struct DecodedFrame {
-    pub texture_index: usize,
-    pub generation: u64,
-}
+/// Notification only; surface ownership and picture identity live in DirectVideoOutput.
+pub struct DecodedFrame;
 
 #[derive(Clone, Copy)]
 pub struct DecoderConfig {
@@ -263,8 +338,8 @@ mod tests {
             3
         ]);
 
-        let (first, _) = output.lock_decode_target().unwrap().publish(None);
-        let (second, _) = output.lock_decode_target().unwrap().publish(None);
+        let (first, _) = output.lock_decode_target().unwrap().publish(None).unwrap();
+        let (second, _) = output.lock_decode_target().unwrap().publish(None).unwrap();
         assert_ne!(first, second);
         assert_eq!(
             output.take_latest_for_display().map(|(index, ..)| index),
@@ -272,7 +347,7 @@ mod tests {
         );
         assert!(output.take_latest_for_display().is_none());
 
-        let (third, _) = output.lock_decode_target().unwrap().publish(None);
+        let (third, _) = output.lock_decode_target().unwrap().publish(None).unwrap();
         assert_ne!(second, third);
         assert_eq!(
             output.take_latest_for_display().map(|(index, ..)| index),
@@ -292,13 +367,13 @@ mod tests {
             2
         ]);
 
-        let (displayed, _) = output.lock_decode_target().unwrap().publish(None);
+        let (displayed, _) = output.lock_decode_target().unwrap().publish(None).unwrap();
         assert_eq!(
             output.take_latest_for_display().map(|(index, ..)| index),
             Some(displayed)
         );
         for _ in 0..4 {
-            let (next, _) = output.lock_decode_target().unwrap().publish(None);
+            let (next, _) = output.lock_decode_target().unwrap().publish(None).unwrap();
             assert_ne!(next, displayed);
         }
     }

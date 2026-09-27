@@ -431,3 +431,96 @@ fn oversized_replacement_cannot_invalidate_a_playable_reference_chain() {
     assert_eq!(FAKE.lock().unwrap().inputs, [1,2]);
     worker.shutdown();
 }
+
+#[test]
+fn old_matched_picture_is_not_published_as_current_media() {
+    reset();
+    let (output, _pixels) = surfaces();
+    let now = Instant::now();
+    let old = now - Duration::from_secs(22);
+    output.lock_decode_target().unwrap().publish(Some(timing::FrameTiming {
+        rtp_timestamp: 9000, received_at: old, submitted_at: old,
+        decoded_at: now, epoch: 0,
+    }));
+    assert!(!output.has_pending_frame(), "a matched PTS is not proof of freshness");
+}
+
+#[test]
+fn decoded_output_cannot_replace_a_newer_media_timestamp() {
+    reset();
+    let (output, _pixels) = surfaces();
+    let now = Instant::now();
+    for rtp_timestamp in [3000, 1500] {
+        output.lock_decode_target().unwrap().publish(Some(timing::FrameTiming {
+            rtp_timestamp, received_at: now, submitted_at: now, decoded_at: now, epoch: 0,
+        }));
+    }
+    assert_eq!(output.take_latest_for_display().unwrap().4.unwrap().rtp_timestamp, 3000);
+}
+
+#[test]
+fn stale_compressed_work_requests_dependency_safe_recovery_before_hardware() {
+    reset();
+    let (output, _pixels) = surfaces();
+    let mut worker = VideoDecodeWorker::spawn(config(), output.clone()).unwrap();
+    worker.submit_access_unit(vec![1], Instant::now() - Duration::from_secs(2), 9000);
+    wait_for(|| worker.take_recovery_request() || !FAKE.lock().unwrap().inputs.is_empty());
+    worker.shutdown();
+    assert!(FAKE.lock().unwrap().inputs.is_empty(), "obsolete compressed work entered the decoder");
+    assert!(!output.has_pending_frame());
+}
+
+#[test]
+fn pending_texture_expires_during_ui_stall_and_wrap_advances() {
+    reset();
+    let (output, _pixels) = surfaces();
+    let now = Instant::now();
+    for timestamp in [u32::MAX - 100, 1400] {
+        output.lock_decode_target().unwrap().publish(Some(timing::FrameTiming {
+            rtp_timestamp: timestamp, received_at: now, submitted_at: now,
+            decoded_at: now, epoch: 0,
+        })).unwrap();
+    }
+    assert!(output.take_latest_at(now + Duration::from_secs(1)).is_none());
+    assert!(!output.has_pending_frame());
+    output.invalidate_before_epoch(1);
+    // A new random-access epoch may restart the sender clock.
+    output.lock_decode_target().unwrap().publish(Some(timing::FrameTiming {
+        rtp_timestamp: 1, received_at: now, submitted_at: now,
+        decoded_at: now, epoch: 1,
+    })).unwrap();
+    output.invalidate_before_epoch(2);
+    assert!(!output.has_pending_frame(), "refresh revoked the old pending surface");
+}
+
+#[test]
+fn twenty_minute_presentation_schedule_stays_bounded_through_overload() {
+    // Production surface selection with a virtual UI clock. This is NOT an AVC
+    // performance benchmark. Produce 60 and consume 20/60 Hz with periodic stalls.
+    reset();
+    let (output, _pixels) = surfaces();
+    let origin = Instant::now();
+    let mut selected = 0;
+    let mut expired = 0;
+    for tick in 0..72_000u64 {
+        let now = origin + Duration::from_micros(tick * 16_667);
+        let timing = timing::FrameTiming { rtp_timestamp: (tick * 1500) as u32,
+            received_at: now, submitted_at: now, decoded_at: now, epoch: 0 };
+        output.lock_decode_target().unwrap().publish(Some(timing)).unwrap();
+        if tick % 3 == 0 {
+            let at = now + if tick % 600 == 0 { Duration::from_secs(1) } else { Duration::from_millis(30) };
+            match output.take_latest_at(at) {
+                Some((_, _, _, _, Some(frame))) => {
+                    assert_eq!(frame.rtp_timestamp, timing.rtp_timestamp);
+                    assert!(at.duration_since(frame.received_at) <= policy::MAX_LOCAL_VIDEO_AGE);
+                    selected += 1;
+                }
+                None => expired += 1,
+                _ => panic!("missing media identity"),
+            }
+        }
+    }
+    assert_eq!(selected, 23_880);
+    assert_eq!(expired, 120);
+    println!("20 virtual minutes: 72000 outputs, {selected} current selections, {expired} expired selections; no historical walk-through");
+}

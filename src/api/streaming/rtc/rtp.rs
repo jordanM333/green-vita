@@ -80,6 +80,10 @@ pub(super) struct AudioRtp {
 }
 
 impl AudioRtp {
+    pub(super) fn reset(&mut self) {
+        *self = Self::new(self.sample_rate, self.payload_type);
+    }
+
     pub(super) fn new(sample_rate: u32, payload_type: u8) -> Self {
         Self {
             samples: SampleBuilder::new(AUDIO_MAX_LATE_PACKETS, OpusPacket, sample_rate)
@@ -442,6 +446,12 @@ impl VideoRtp {
         }
     }
 
+    pub(super) fn source_changed(&mut self, worker: &VideoDecodeWorker) {
+        let (width, height) = self.decoder_capacity;
+        *self = Self::new(width, height);
+        self.record_damage(worker);
+    }
+
     pub(super) fn refresh(&mut self) {
         // Refresh is not packet loss. Keep the current reference chain and
         // partially assembled AU until an intact replacement keyframe arrives.
@@ -479,6 +489,7 @@ impl VideoRtp {
         self.last_idr_at.map(|at| at.elapsed().as_secs())
     }
 
+    #[cfg(test)]
     pub(super) fn receive(
         &mut self,
         worker: &VideoDecodeWorker,

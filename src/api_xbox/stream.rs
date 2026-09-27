@@ -42,7 +42,6 @@ pub struct Stream {
     kind: StreamKind,
     api_client: ApiClient,
     credentials: EndpointCredentials,
-    pub session_id: String,
     session_path: String,
     pub state: StreamState,
 }
@@ -59,18 +58,10 @@ impl Stream {
         response: StartStreamResponse,
         kind: StreamKind,
     ) -> Self {
-        let session_id = response
-            .session_path
-            .rsplit('/')
-            .next()
-            .unwrap_or(&response.session_path)
-            .to_owned();
-
         Self {
             kind,
             api_client,
             credentials,
-            session_id,
             session_path: response.session_path,
             state: StreamState::New,
         }

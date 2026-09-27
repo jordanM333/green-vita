@@ -281,8 +281,10 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                 .map(|(width, height)| format!("{width}x{height}"))
                 .unwrap_or_else(|| "?".to_owned());
             let microphone = self.backend.microphone_status();
+            let progress = crate::streaming::video::trace::progress_summary();
+            let [sacks, forward_rx, forward_tx, coalesced, t3] = self.peer.sctp_control_counters();
             self.status = format!(
-                "Build: RX Test {} revision {}\nMode:{}\nXbox requested:{requested_width}x{requested_height} server:{server_size}\n{status}\n{link}\n{receive}\n{feedback}\n{microphone}",
+                "Build: RX Test {} revision {}\nMode:{}\nXbox requested:{requested_width}x{requested_height} server:{server_size}\n{status}\n{link}\n{receive}\n{feedback}\n{microphone}\n{progress}\nSCTP totals SACKrx:{sacks} FWD rx/tx:{forward_rx}/{forward_tx} coalesced:{coalesced} T3:{t3}",
                 crate::build_info::NUMBER,
                 crate::build_info::REVISION,
                 self.mode,
@@ -397,10 +399,12 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                         .map(|receiver| receiver.track().kind());
                     match track_kind {
                         Some(RtpCodecKind::Video) => {
+                            self.video_clock.reset();
                             self.video.open(init.track_id, init.receiver_id, init.ssrc);
                             self.status = "Receiving video track".to_owned();
                         }
                         Some(RtpCodecKind::Audio) => {
+                            self.audio_clock.reset();
                             self.audio.open(init.track_id);
                             self.status = "Receiving audio track".to_owned();
                         }
@@ -450,6 +454,11 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                         // but their timestamps do not describe a captured frame.
                         if !packet.payload.is_empty() {
                             self.video_clock.receive(packet.header.timestamp);
+                            crate::streaming::video::trace::record(
+                                "video_received",
+                                packet.header.timestamp,
+                                0,
+                            );
                             if let Some(timing) = self.video_clock.timing() {
                                 let before = self.video_ceiling.target_bps();
                                 self.video_ceiling.receive(
@@ -475,6 +484,11 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                         self.video.receive(packet, &mut keyframe_requested);
                     } else if self.audio.handles(&track_id) {
                         self.audio_clock.receive(packet.header.timestamp);
+                        crate::streaming::video::trace::record(
+                            "audio_received",
+                            packet.header.timestamp,
+                            0,
+                        );
                         self.audio.receive(packet);
                     }
                 }

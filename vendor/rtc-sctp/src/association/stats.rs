@@ -1,6 +1,9 @@
 /// Association statistics
 #[derive(Default, Debug, Copy, Clone)]
 pub struct AssociationStats {
+    pub(crate) forward_sent: u64,
+    pub(crate) forward_received: u64,
+    pub(crate) forward_coalesced: u64,
     n_datas: u64,
     n_sacks: u64,
     n_t3timeouts: u64,
@@ -9,6 +12,17 @@ pub struct AssociationStats {
 }
 
 impl AssociationStats {
+    /// Lifetime authenticated protocol counters: SACK RX, FORWARD-TSN RX/TX,
+    /// duplicate advances coalesced, and T3 timeouts. No payload inspection.
+    pub fn control_counters(&self) -> [u64; 5] {
+        [
+            self.n_sacks,
+            self.forward_received,
+            self.forward_sent,
+            self.forward_coalesced,
+            self.n_t3timeouts,
+        ]
+    }
     pub fn inc_datas(&mut self) {
         self.n_datas += 1;
     }
@@ -50,7 +64,7 @@ impl AssociationStats {
     }
 
     pub fn reset(&mut self) {
-        self.n_datas = 0;
+        *self = Self::default();
         self.n_sacks = 0;
         self.n_t3timeouts = 0;
         self.n_ack_timeouts = 0;

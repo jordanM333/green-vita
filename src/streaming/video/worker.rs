@@ -4,7 +4,7 @@ use super::{DecodedFrame, DecoderConfig, DirectVideoOutput, DirectVideoTargetGua
 use anyhow::{Context, Result};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select_biased};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -35,7 +35,7 @@ pub(crate) enum SubmitResult {
 /// producer's Arc ownership or hold any mutex between native calls.
 struct DecodeState {
     generation: Arc<AtomicU64>,
-    recovery_needed: Arc<AtomicBool>,
+    recovery_needed: Arc<AtomicU64>,
     latest_result: Arc<Mutex<Option<DecodeResult>>>,
     result_ready: Arc<tokio::sync::Notify>,
     direct_output: Arc<DirectVideoOutput>,
@@ -43,6 +43,7 @@ struct DecodeState {
 
 pub struct VideoDecodeWorker {
     thread: Option<std::thread::JoinHandle<()>>,
+    direct_output: Arc<DirectVideoOutput>,
     access_units: Sender<QueuedAccessUnit>,
     // Used only by the single RTP producer to discard queued work once a
     // complete replacement IDR is in hand. The hardware thread may hold one AU.
@@ -50,22 +51,19 @@ pub struct VideoDecodeWorker {
     queued_bytes: Arc<AtomicUsize>,
     commands: Sender<DecoderCommand>,
     generation: Arc<AtomicU64>,
-    recovery_needed: Arc<AtomicBool>,
+    recovery_needed: Arc<AtomicU64>,
     pub(crate) latest_result: Arc<Mutex<Option<DecodeResult>>>,
     pub(crate) result_ready: Arc<tokio::sync::Notify>,
 }
 
 impl VideoDecodeWorker {
     pub fn spawn(config: DecoderConfig, direct_output: Arc<DirectVideoOutput>) -> Result<Self> {
-        let decoder =
-            HwVideoDecoder::new(config).context("failed to create hardware H264 decoder")?;
-        direct_output.decoder_ready.store(true, Ordering::Release);
         let (access_units, worker_access_units) = bounded(AU_QUEUE_CAPACITY);
         let queued_access_units = worker_access_units.clone();
         let (commands, worker_commands) = bounded(1);
         let generation = Arc::new(AtomicU64::new(0));
         let worker_generation = Arc::clone(&generation);
-        let recovery_needed = Arc::new(AtomicBool::new(false));
+        let recovery_needed = Arc::new(AtomicU64::new(0));
         let worker_recovery_needed = Arc::clone(&recovery_needed);
         let latest_result = Arc::new(Mutex::new(None));
         let worker_latest_result = Arc::clone(&latest_result);
@@ -74,11 +72,25 @@ impl VideoDecodeWorker {
         let worker_direct_output = Arc::clone(&direct_output);
 
         let ready_output = Arc::clone(&direct_output);
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let thread = std::thread::Builder::new()
             .name("green-vita-video-decode".to_owned())
             .spawn(move || {
                 #[cfg(target_os = "vita")]
                 pin_decoder_thread();
+                // Native handles are created, used and destroyed by their owner.
+                // No undocumented cross-thread decoder-handle transfer is needed.
+                let decoder = match HwVideoDecoder::new(config) {
+                    Ok(decoder) => decoder,
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(format!("{error:#}")));
+                        return;
+                    }
+                };
+                ready_output.decoder_ready.store(true, Ordering::Release);
+                if ready_tx.send(Ok(())).is_err() {
+                    return;
+                }
                 run_decode_loop(
                     worker_access_units,
                     worker_commands,
@@ -95,9 +107,14 @@ impl VideoDecodeWorker {
                 ready_output.decoder_ready.store(false, Ordering::Release);
             })
             .context("failed to spawn video decode worker")?;
+        if let Err(error) = ready_rx.recv().map_err(|e| e.to_string()).and_then(|r| r) {
+            let _ = thread.join();
+            anyhow::bail!("failed to initialize hardware H264 decoder: {error}");
+        }
 
         Ok(Self {
             thread: Some(thread),
+            direct_output,
             access_units,
             queued_access_units,
             queued_bytes: Arc::new(AtomicUsize::new(0)),
@@ -214,11 +231,13 @@ impl VideoDecodeWorker {
     }
 
     pub(crate) fn take_recovery_request(&self) -> bool {
-        self.recovery_needed.swap(false, Ordering::AcqRel)
+        let requested_epoch = self.recovery_needed.swap(0, Ordering::AcqRel);
+        requested_epoch != 0 && requested_epoch == self.generation.load(Ordering::Acquire)
     }
 
     pub fn begin_resync(&self) {
-        self.generation.fetch_add(1, Ordering::AcqRel);
+        let epoch = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        self.direct_output.invalidate_before_epoch(epoch);
         metrics::METRICS.resyncs.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -343,9 +362,40 @@ fn decode_queued_access_unit(
         return false;
     }
 
-    // Only actual damage invalidates a reference chain. Queue age is pressure,
-    // not corruption: throwing out an intact 52ms-old AU caused a 1.95s freeze.
-    if recovery_needed.load(Ordering::Acquire) {
+    // A short Cloud burst is valid reference work. Once the entire local budget
+    // is exhausted, abandon the epoch once and reacquire a complete IDR; never
+    // drop a P picture and feed its dependants as though nothing happened.
+    if access_unit.received_at.elapsed() > super::policy::MAX_LOCAL_VIDEO_AGE {
+        let epoch = access_unit.generation + 1;
+        if generation
+            .compare_exchange(
+                access_unit.generation,
+                epoch,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return false; // A concurrently admitted replacement IDR owns recovery.
+        }
+        direct_output.invalidate_before_epoch(epoch);
+        recovery_needed.store(epoch, Ordering::Release);
+        metrics::METRICS
+            .expired_access_unit
+            .fetch_add(1, Ordering::Relaxed);
+        super::trace::record(
+            "au_deadline_recovery",
+            access_unit.rtp_timestamp,
+            access_unit.received_at.elapsed().as_micros() as u64,
+        );
+        result_ready.notify_one();
+        return false;
+    }
+
+    // Existing damage recovery also rejects dependants until an intact IDR.
+    if recovery_needed.load(Ordering::Acquire) == access_unit.generation
+        && access_unit.generation != 0
+    {
         super::trace::record("generation_drop", access_unit.rtp_timestamp, 0);
         metrics::METRICS
             .stale_generation
@@ -357,8 +407,9 @@ fn decode_queued_access_unit(
         match HwVideoDecoder::new(config) {
             Ok(new_decoder) => *decoder = Some(new_decoder),
             Err(error) => {
-                generation.fetch_add(1, Ordering::AcqRel);
-                recovery_needed.store(true, Ordering::Release);
+                let epoch = generation.fetch_add(1, Ordering::AcqRel) + 1;
+                direct_output.invalidate_before_epoch(epoch);
+                recovery_needed.store(epoch, Ordering::Release);
                 metrics::METRICS
                     .decoder_unavailable
                     .fetch_add(1, Ordering::Relaxed);
@@ -375,8 +426,9 @@ fn decode_queued_access_unit(
     let Some(direct_target) = direct_output.lock_decode_target() else {
         // Do not decode until the renderer has registered stable CDRAM output buffers.
         metrics::METRICS.skipped.fetch_add(1, Ordering::Relaxed);
-        generation.fetch_add(1, Ordering::AcqRel);
-        recovery_needed.store(true, Ordering::Release);
+        let epoch = generation.fetch_add(1, Ordering::AcqRel) + 1;
+        direct_output.invalidate_before_epoch(epoch);
+        recovery_needed.store(epoch, Ordering::Release);
         result_ready.notify_one();
         return false;
     };
@@ -518,7 +570,9 @@ fn handle_decode_result(
                 .unwrap_or(0);
             super::trace::record("picture_produced_output", output_rtp, output_age);
             metrics::METRICS.decoded.fetch_add(1, Ordering::Relaxed);
-            let (texture_index, generation) = direct_target.publish(picture.timing);
+            let Some((_texture_index, generation)) = direct_target.publish(picture.timing) else {
+                return true; // Hardware work retired, but this picture is obsolete.
+            };
             super::trace::record("picture_generation_output", output_rtp, generation);
             if let Some(input) = input {
                 metrics::METRICS.pipeline_age_us.store(
@@ -526,14 +580,7 @@ fn handle_decode_result(
                     Ordering::Relaxed,
                 );
             }
-            publish_result(
-                latest_result,
-                result_ready,
-                Ok(DecodedFrame {
-                    texture_index,
-                    generation,
-                }),
-            );
+            publish_result(latest_result, result_ready, Ok(DecodedFrame));
             true
         }
         Ok(Ok(None)) => {
@@ -553,8 +600,9 @@ fn handle_decode_result(
             };
             metrics::METRICS.resets.fetch_add(1, Ordering::Relaxed);
             *decoder = None;
-            generation.fetch_add(1, Ordering::AcqRel);
-            recovery_needed.store(true, Ordering::Release);
+            let epoch = generation.fetch_add(1, Ordering::AcqRel) + 1;
+            state.direct_output.invalidate_before_epoch(epoch);
+            recovery_needed.store(epoch, Ordering::Release);
             publish_result(latest_result, result_ready, Err(message));
             false
         }

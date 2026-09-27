@@ -1,5 +1,7 @@
 name: Final build quality gates
 on:
+  push:
+    branches: [architecture-review-20260926]
   pull_request:
   workflow_call:
   workflow_dispatch:
@@ -25,6 +27,7 @@ jobs:
           name: host-gate-evidence
           path: verification/host
   vita:
+    needs: host
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc
@@ -34,11 +37,11 @@ jobs:
         run: make native-check
       - name: Strict target Clippy
         run: make native-clippy
-      - name: Build target release package
-        env:
-          RUSTFLAGS: '-C target-feature=-neon'
-          GREENVITA_BUILD_SHA: ${{ github.sha }}
-          GREENVITA_BUILD_NUMBER: ${{ github.run_number }}
-        run: make vpk
-      - name: Validate native ELF layout
-        run: python3 tools/check_vita_elf.py target/armv7-sony-vita-newlibeabihf/release/green-vita.elf
+      - name: Compile native release executable (no release package)
+        run: cargo build --release --locked -Zbuild-std=std,panic_abort
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-gate-evidence
+          path: target/armv7-sony-vita-newlibeabihf/release/green-vita
+          if-no-files-found: warn

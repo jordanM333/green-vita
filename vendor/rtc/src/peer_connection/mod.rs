@@ -241,8 +241,8 @@ pub mod configuration;
 pub mod event;
 pub(crate) mod handler;
 mod internal;
-mod receive_bandwidth;
 pub mod message;
+mod receive_bandwidth;
 pub mod sdp;
 pub mod state;
 pub mod transport;
@@ -674,6 +674,18 @@ impl<I> RTCPeerConnection<I>
 where
     I: Interceptor,
 {
+    /// Authenticated SCTP counters across active associations: SACK RX,
+    /// FORWARD-TSN RX/TX, duplicate advances coalesced, and T3 timeouts.
+    pub fn sctp_control_counters(&self) -> [u64; 5] {
+        let mut total = [0; 5];
+        for association in self.sctp_transport().sctp_associations.values() {
+            for (sum, value) in total.iter_mut().zip(association.stats().control_counters()) {
+                *sum += value;
+            }
+        }
+        total
+    }
+
     /// Creates an SDP offer to start a new WebRTC connection to a remote peer.
     ///
     /// The offer includes information about the attached media tracks, codecs and options supported
@@ -779,10 +791,13 @@ where
     /// sections. Store the same SDP for signaling-state validation; unrelated
     /// SDP changes must still be rejected by set_local_description.
     pub fn create_offer_with_video_bandwidth(
-        &mut self, options: Option<RTCOfferOptions>, maximum_bps: u32,
+        &mut self,
+        options: Option<RTCOfferOptions>,
+        maximum_bps: u32,
     ) -> Result<RTCSessionDescription> {
         let offer = self.create_offer(options)?;
-        let offer = RTCSessionDescription::offer(receive_bandwidth::limit_video(&offer.sdp, maximum_bps))?;
+        let offer =
+            RTCSessionDescription::offer(receive_bandwidth::limit_video(&offer.sdp, maximum_bps))?;
         self.last_offer.clone_from(&offer.sdp);
         Ok(offer)
     }
