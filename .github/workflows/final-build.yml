@@ -74,5 +74,5 @@ jobs:
         if: always()
         with:
           name: native-gate-evidence
-          path: target/armv7-sony-vita-newlibeabihf/release/green-vita
+          path: target/armv7-sony-vita-newlibeabihf/release/green-vita.elf
           if-no-files-found: warn

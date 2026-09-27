@@ -127,6 +127,7 @@ fn thirty_minutes_of_pcm_overproduction_cannot_build_a_device_archive() {
 }
 
 #[test]
+#[cfg(not(target_os = "vita"))]
 fn sample_clock_mismatch_remains_bounded_and_recovery_discards_old_pcm() {
     // Explicit sample-clock simulation, not a measurement of the Vita DAC.
     // Both clock directions matter: a slow device accumulates samples; a fast
