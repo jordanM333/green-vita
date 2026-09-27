@@ -89,10 +89,18 @@ impl XboxStreamingBackend {
                 RtcWorkerEvent::VideoTiming(timing) => {
                     return Some(PlaybackBackendEvent::VideoTiming(timing));
                 }
-                RtcWorkerEvent::Closed => return Some(PlaybackBackendEvent::Closed),
+                RtcWorkerEvent::Closed => {
+                    if self.refresh_attempt.awaiting_picture() {
+                        self.refresh_attempt.failed();
+                        return Some(PlaybackBackendEvent::MediaRefreshFailed(
+                            "Media connection closed before its first picture. Refresh stream to retry.".into(),
+                        ));
+                    }
+                    return Some(PlaybackBackendEvent::Closed);
+                }
                 RtcWorkerEvent::Error(message) => {
-                    if self.refresh_attempt.active() {
-                        self.refresh_attempt.finish();
+                    if self.refresh_attempt.awaiting_picture() {
+                        self.refresh_attempt.failed();
                         return Some(PlaybackBackendEvent::MediaRefreshFailed(message));
                     }
                     return Some(PlaybackBackendEvent::Error(message));
@@ -194,7 +202,7 @@ impl XboxStreamingBackend {
                 PollJob::Pending(job) => self.retiring_worker = Some(job),
                 PollJob::Done(Ok(())) => self.start_refreshed_worker(),
                 PollJob::Done(Err(error)) => {
-                    self.refresh_attempt.finish();
+                    self.refresh_attempt.failed();
                     self.refresh_events
                         .push_back(PlaybackBackendEvent::MediaRefreshFailed(format!(
                             "Media refresh failed: {error:#}. Refresh stream to retry."
@@ -217,7 +225,7 @@ impl XboxStreamingBackend {
                 self.ice_next_poll_at = Instant::now();
             }
             Err(error) => {
-                self.refresh_attempt.finish();
+                self.refresh_attempt.failed();
                 self.refresh_events
                     .push_back(PlaybackBackendEvent::MediaRefreshFailed(format!(
                         "Media refresh failed: {error:#}. Refresh stream to retry."

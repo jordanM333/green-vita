@@ -5,28 +5,38 @@ use std::time::{Duration, Instant};
 const FIRST_PICTURE_DEADLINE: Duration = Duration::from_secs(15);
 
 #[derive(Default)]
-pub(super) struct RefreshAttempt(Option<Instant>);
+pub(super) struct RefreshAttempt {
+    started_at: Option<Instant>,
+    awaiting_picture: bool,
+}
 
 impl RefreshAttempt {
     pub(super) fn begin(&mut self, now: Instant) -> bool {
-        if self.0.is_some() {
+        if self.started_at.is_some() {
             return false;
         }
-        self.0 = Some(now);
+        self.started_at = Some(now);
+        self.awaiting_picture = true;
         true
     }
-    pub(super) fn active(&self) -> bool {
-        self.0.is_some()
+    pub(super) fn awaiting_picture(&self) -> bool {
+        self.awaiting_picture
     }
     pub(super) fn finish(&mut self) {
-        self.0 = None;
+        self.started_at = None;
+        self.awaiting_picture = false;
+    }
+    pub(super) fn failed(&mut self) {
+        // Unlock explicit retry, but keep late events from this replacement
+        // worker in the recovery path until it actually produces a picture.
+        self.started_at = None;
     }
     pub(super) fn timed_out(&mut self, now: Instant) -> bool {
         if self
-            .0
+            .started_at
             .is_some_and(|at| now.saturating_duration_since(at) >= FIRST_PICTURE_DEADLINE)
         {
-            self.finish();
+            self.failed();
             return true;
         }
         false
@@ -47,10 +57,11 @@ mod tests {
             assert!(!attempt.timed_out(now));
         }
         assert!(attempt.timed_out(start + FIRST_PICTURE_DEADLINE));
+        assert!(attempt.awaiting_picture());
         assert!(!attempt.timed_out(start + FIRST_PICTURE_DEADLINE));
         assert!(attempt.begin(start + FIRST_PICTURE_DEADLINE));
         attempt.finish();
-        assert!(!attempt.active());
+        assert!(!attempt.awaiting_picture());
         assert!(!attempt.timed_out(start + FIRST_PICTURE_DEADLINE * 2));
     }
 }

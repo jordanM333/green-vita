@@ -80,6 +80,7 @@ pub struct Control {
     gate: tokio::sync::Notify,
     session_paths: Mutex<Vec<String>>,
     local_refreshes: AtomicUsize,
+    worker_events: Mutex<Option<std::sync::mpsc::Sender<worker::RtcWorkerEvent>>>,
 }
 pub mod worker {
     use super::*;
@@ -126,8 +127,10 @@ pub mod worker {
         c.active.fetch_add(1, Ordering::SeqCst);
         c.starts.fetch_add(1, Ordering::SeqCst);
         c.session_paths.lock().unwrap().push(stream.session_path());
+        let (events_tx, events_rx) = channel();
+        *c.worker_events.lock().unwrap() = Some(events_tx);
         Ok(RtcWorker {
-            events_rx: channel().1,
+            events_rx,
             audio_rx: channel().1,
             latest_frame: Default::default(),
             direct_video_output: Arc::new(DirectVideoOutput::new(960, 544)),
@@ -289,4 +292,61 @@ async fn cloud_refresh_retains_connection_and_cloud_stop_remains_owned() {
             .unwrap()
             .contains(&(reqwest::Method::DELETE, "/v5/sessions/cloud/owned".into()))
     );
+}
+
+#[tokio::test]
+async fn replacement_error_and_close_before_picture_remain_retryable() {
+    let (mut b, c, _) = start(StreamKind::Home);
+    b.refresh_video();
+    for _ in 0..4 {
+        pump(&mut b).await;
+    }
+    while b.try_recv_event().is_some() {}
+    for event in [
+        worker::RtcWorkerEvent::Error("injected negotiation failure".into()),
+        worker::RtcWorkerEvent::Closed,
+    ] {
+        c.worker_events
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .send(event)
+            .unwrap();
+        assert!(matches!(
+            b.try_recv_event(),
+            Some(api::streaming::PlaybackBackendEvent::MediaRefreshFailed(_))
+        ));
+    }
+    b.refresh_video();
+    for _ in 0..4 {
+        pump(&mut b).await;
+    }
+    assert_eq!(c.starts.load(Ordering::SeqCst), 3);
+    b.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn closure_after_first_replacement_picture_is_a_normal_stream_close() {
+    let (mut b, c, _) = start(StreamKind::Home);
+    b.refresh_video();
+    for _ in 0..4 {
+        pump(&mut b).await;
+    }
+    while b.try_recv_event().is_some() {}
+    b.direct_video_output()
+        .produced
+        .store(true, Ordering::SeqCst);
+    c.worker_events
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .send(worker::RtcWorkerEvent::Closed)
+        .unwrap();
+    assert!(matches!(
+        b.try_recv_event(),
+        Some(api::streaming::PlaybackBackendEvent::Closed)
+    ));
+    b.stop().await.unwrap();
 }
