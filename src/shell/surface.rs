@@ -348,7 +348,9 @@ impl VitaSurface {
         metrics.paint_sum_us.fetch_add(paint_us, Ordering::Relaxed);
         metrics.paint_count.fetch_add(1, Ordering::Relaxed);
         metrics.paint_max_us.fetch_max(paint_us, Ordering::Relaxed);
-        if self.drew_video {
+        if self.displayed_video_texture.is_some() {
+            // Also finish the black/recovery repaint that removes expired
+            // video. draw_scene already cleared its pending video feedback.
             // SDL's Vita present only enqueues a GXM display callback. Bound this queue
             // to one render instead of submitting stale video behind unfinished GPU work.
             // This waits for GPU/callback completion, not for physical panel scanout.
