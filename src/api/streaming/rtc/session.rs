@@ -438,14 +438,14 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             crate::diagnostic::report(report.ssrc, report.rtp_time, report.ntp_time, clock_rate);
             if clock_rate == 90_000 && self.video.is_source(report.ssrc) {
                 self.video_clock.sender_report(&report);
-                if let Ok(mut edge) = self.direct_output.live_edge.lock() {
-                    if !edge.sender_report(report.rtp_time, report.ntp_time, received_at) {
-                        crate::streaming::video::trace::record(
-                            "live_edge_sr_ignored",
-                            report.rtp_time,
-                            u64::from(report.ssrc),
-                        );
-                    }
+                if let Ok(mut edge) = self.direct_output.live_edge.lock()
+                    && !edge.sender_report(report.rtp_time, report.ntp_time, received_at)
+                {
+                    crate::streaming::video::trace::record(
+                        "live_edge_sr_ignored",
+                        report.rtp_time,
+                        u64::from(report.ssrc),
+                    );
                 }
             } else if self.audio.is_source(report.ssrc) {
                 self.audio_clock.sender_report(&report);
