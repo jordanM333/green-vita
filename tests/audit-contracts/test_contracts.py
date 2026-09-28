@@ -14,6 +14,18 @@ spec.loader.exec_module(provenance)
 
 
 class Contracts(unittest.TestCase):
+    def test_live_edge_is_shared_and_not_conditional_on_voice_or_diagnostics(self):
+        session = (ROOT / "src/api/streaming/rtc/session.rs").read_text()
+        media = (ROOT / "src/api/streaming/rtc/media.rs").read_text()
+        surface = (ROOT / "src/shell/surface.rs").read_text()
+        self.assertIn("self.video.poll_live_edge(Instant::now());", session)
+        self.assertIn(".observe_media(", media)
+        self.assertIn(".media_ingress_useful(", media)
+        self.assertIn("output.can_draw(timing, Instant::now())", surface)
+        self.assertNotIn("show_stream_debug_info", media + session)
+        self.assertNotIn("microphone", media)
+        self.assertNotIn("catch_up", session)
+
     def test_scoped_checkout_trust_keeps_revision_and_dirty_checks(self):
         with tempfile.TemporaryDirectory() as directory:
             checkout = Path(directory).resolve()

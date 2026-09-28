@@ -13,6 +13,8 @@ use rtc::rtp::packetizer::Depacketizer;
 use rtc_media::io::sample_builder::SampleBuilder;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
+#[path = "parameters.rs"]
+mod parameters;
 
 const MAX_PENDING_AUDIO_PACKETS: usize = 32;
 const MAX_H264_ACCESS_UNIT_BYTES: usize = 2 * 1024 * 1024;
@@ -76,7 +78,8 @@ pub(super) struct AudioRtp {
     sample_rate: u32,
     last_sequence: Option<u16>,
     latest_timestamp: Option<u32>,
-    arrivals: std::collections::VecDeque<(u32, Instant)>,
+    arrivals: std::collections::VecDeque<(u32, Instant, Instant)>,
+    clock: crate::streaming::video::live_edge::MediaClock,
 }
 
 impl AudioRtp {
@@ -93,6 +96,7 @@ impl AudioRtp {
             last_sequence: None,
             latest_timestamp: None,
             arrivals: Default::default(),
+            clock: crate::streaming::video::live_edge::MediaClock::new(sample_rate),
         }
     }
 
@@ -102,7 +106,7 @@ impl AudioRtp {
         received_at: Instant,
         audio_packets: &mut Vec<TimedAudio<Bytes>>,
     ) {
-        if packet.header.payload_type != self.payload_type {
+        if packet.header.payload_type != self.payload_type || packet.payload.is_empty() {
             return;
         }
 
@@ -126,10 +130,12 @@ impl AudioRtp {
         }
 
         let timestamp = packet.header.timestamp;
+        self.clock.observe(timestamp, sequence, received_at);
         // Retain the first arrival, including duplicates and packets held by
         // SampleBuilder. Never assign a new age when an old sample is released.
-        if !self.arrivals.iter().any(|(ts, _)| *ts == timestamp) {
-            self.arrivals.push_back((timestamp, received_at));
+        if !self.arrivals.iter().any(|(ts, _, _)| *ts == timestamp) {
+            let deadline = self.clock.deadline(timestamp).unwrap_or(received_at);
+            self.arrivals.push_back((timestamp, received_at, deadline));
             if self.arrivals.len() > 128 {
                 self.arrivals.pop_front();
             }
@@ -166,17 +172,25 @@ impl AudioRtp {
             let Some(index) = self
                 .arrivals
                 .iter()
-                .position(|(ts, _)| *ts == sample.packet_timestamp)
+                .position(|(ts, _, _)| *ts == sample.packet_timestamp)
             else {
                 // Unattributable samples cannot pass the local age contract.
                 continue;
             };
-            let (_, received_at) = self.arrivals.remove(index).expect("index found above");
+            let (_, received_at, deadline) =
+                self.arrivals.remove(index).expect("index found above");
             audio_packets.push(TimedAudio {
                 data: sample.data,
                 received_at,
+                media_deadline: Some(deadline),
             });
         }
+    }
+}
+
+impl AudioRtp {
+    pub(super) fn sender_report(&mut self, ts: u32, ntp: u64, at: Instant) {
+        self.clock.sender_report(ts, ntp, at);
     }
 }
 
@@ -197,6 +211,7 @@ pub(super) struct VideoRtp {
     refresh_pending: bool,
     refresh_completed: u64,
     assembly_window: (u64, u64, u64), // count, sum us, max us after first ordered fragment
+    parameters: parameters::Parameters,
 }
 
 struct PendingVideoFrame {
@@ -448,12 +463,14 @@ impl VideoRtp {
             refresh_pending: false,
             refresh_completed: 0,
             assembly_window: (0, 0, 0),
+            parameters: Default::default(),
         }
     }
 
     pub(super) fn source_changed(&mut self, worker: &VideoDecodeWorker) {
         let (width, height) = self.decoder_capacity;
         *self = Self::new(width, height);
+        self.refresh_pending = true;
         self.record_damage(worker);
     }
 
@@ -461,6 +478,15 @@ impl VideoRtp {
         // Refresh is not packet loss. Keep the current reference chain and
         // partially assembled AU until an intact replacement keyframe arrives.
         self.refresh_pending = true;
+    }
+
+    pub(super) fn quarantine(&mut self, worker: &VideoDecodeWorker) {
+        self.pending = None;
+        self.depacketizer = H264Packet::default();
+        self.next_sequence = None;
+        self.refresh_pending = true;
+        self.record_damage(worker);
+        worker.discard_queued();
     }
 
     pub(super) fn waiting_for_keyframe(&self) -> bool {
@@ -699,7 +725,31 @@ impl VideoRtp {
         }
         self.last_frame_timestamp = Some(completed.timestamp);
 
-        let unit = inspect_h264_access_unit(&data);
+        let mut data = data;
+        let mut unit = inspect_h264_access_unit(&data);
+        if unit.malformed {
+            self.parameters = Default::default();
+        } else if unit.resolution.is_some() || unit.has_pps {
+            // Ordinary P AUs keep the existing single inspection pass.
+            self.parameters.observe(&data);
+        }
+        if (self.refresh_pending || worker.media_recovering())
+            && self.recovery.waiting()
+            && unit.has_idr
+            && !unit.malformed
+        {
+            if let Some(mut prefix) = self.parameters.prefix_for_idr(&data)
+                && prefix.len() + data.len() <= MAX_H264_ACCESS_UNIT_BYTES
+            {
+                prefix.extend_from_slice(&data);
+                data = Bytes::from(prefix);
+                unit = inspect_h264_access_unit(&data);
+            } else {
+                stats.record_drop(DropReason::IdrWait);
+                *keyframe_requested = true;
+                return stats;
+            }
+        }
         if let Some(summary) = unit.buffering
             && self.sps_buffering.as_ref() != Some(&summary)
         {
@@ -758,6 +808,14 @@ impl VideoRtp {
             return stats;
         }
 
+        let random_access = unit.has_idr && unit.resolution.is_some() && unit.has_pps;
+        if !worker.media_admits(completed.timestamp, random_access, Instant::now()) {
+            self.record_damage(worker);
+            stats.record_drop(DropReason::IdrWait);
+            crate::streaming::video::trace::record("stale_au_rejected", completed.timestamp, 0);
+            return stats;
+        }
+
         // A complete random-access AU may replace queued old references. Include
         // parameter sets so skipping a queued SPS/PPS update cannot break it.
         // Otherwise continue decoding normally, even while a refresh is pending.
@@ -765,6 +823,9 @@ impl VideoRtp {
             && unit.resolution.is_some()
             && unit.has_pps
             && (self.refresh_pending || worker.queued_frames() >= 8);
+        // Transition before publishing to the decoder thread. A failed enqueue
+        // returns to keyframe wait through record_damage; the clock is retained.
+        worker.media_submitted(completed.timestamp, random_access, Instant::now());
         let submitted = if cutover {
             worker.submit_refresh_access_unit(
                 data.to_vec(),
@@ -816,6 +877,7 @@ impl VideoRtp {
     }
 
     fn record_damage(&mut self, worker: &VideoDecodeWorker) {
+        worker.media_damage();
         if self.recovery.damage() {
             crate::streaming::video::trace::record("recovery_begin", 0, 0);
             worker.begin_resync();

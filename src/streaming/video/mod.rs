@@ -1,8 +1,8 @@
 mod buffer_contract;
-pub(crate) mod catch_up;
 mod decoder;
 mod frame_signal;
 pub(crate) mod freshness;
+pub(crate) mod live_edge;
 mod memory;
 pub(crate) mod metrics;
 pub(crate) mod policy;
@@ -53,6 +53,7 @@ pub(crate) struct DirectVideoOutput {
     state: Mutex<DirectVideoOutputState>,
     decode_idle: Condvar,
     pub(crate) presentation: Mutex<timing::PresentationState>,
+    pub(crate) live_edge: Mutex<live_edge::LiveEdge>,
     frame_signal: frame_signal::FrameSignal,
     pub(crate) decoder_ready: AtomicBool,
     pub(crate) width: u32,
@@ -73,6 +74,7 @@ impl DirectVideoOutput {
             }),
             decode_idle: Condvar::new(),
             presentation: Mutex::new(timing::PresentationState::default()),
+            live_edge: Mutex::new(live_edge::LiveEdge::default()),
             frame_signal: frame_signal::FrameSignal::default(),
             decoder_ready: AtomicBool::new(false),
             width,
@@ -128,6 +130,51 @@ impl DirectVideoOutput {
         self.frame_signal.is_pending()
     }
 
+    pub(crate) fn media_useful(&self, timestamp: u32, now: Instant) -> bool {
+        self.live_edge
+            .lock()
+            .is_ok_and(|edge| edge.useful(timestamp, now))
+    }
+
+    pub(crate) fn can_present_media(&self, timestamp: u32, now: Instant) -> bool {
+        self.live_edge
+            .lock()
+            .is_ok_and(|edge| edge.can_present(timestamp, now))
+    }
+
+    pub(crate) fn live_edge_state(&self) -> live_edge::State {
+        self.live_edge
+            .lock()
+            .map_or(live_edge::State::ClockUncertain, |edge| edge.state())
+    }
+
+    // Revalidate an already uploaded picture every draw, including its epoch.
+    // A texture is not a continuing authorization to display historical video.
+    pub(crate) fn can_draw(&self, timing: timing::FrameTiming, now: Instant) -> bool {
+        self.state.lock().is_ok_and(|state| {
+            timing.epoch >= state.minimum_epoch
+                && now.saturating_duration_since(timing.received_at) <= policy::MAX_LOCAL_VIDEO_AGE
+                && self.can_present_media(timing.rtp_timestamp, now)
+        })
+    }
+
+    pub(crate) fn confirm_presentation(&self, frame: timing::PresentedFrame) {
+        // Match the active decode epoch before allowing a completion racing a
+        // resync to close the new incident. Feedback may still report the fact
+        // that the old frame was drawn; that fact is not a recovery declaration.
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if frame.timing.epoch >= state.minimum_epoch
+            && let Ok(mut edge) = self.live_edge.lock()
+            && edge.presented(frame.timing.rtp_timestamp, frame.rendered_at)
+        {
+            trace::record(
+                "live_edge_recovered",
+                frame.timing.rtp_timestamp,
+                frame.timing.epoch,
+            );
+        }
+    }
+
     pub(crate) fn has_produced_frame(&self) -> bool {
         self.state
             .lock()
@@ -171,7 +218,8 @@ impl DirectVideoOutput {
         self.frame_signal.set_pending(false);
         if let Some(timing) = timing
             && (timing.epoch < state.minimum_epoch
-                || now.saturating_duration_since(timing.received_at) > policy::MAX_LOCAL_VIDEO_AGE)
+                || now.saturating_duration_since(timing.received_at) > policy::MAX_LOCAL_VIDEO_AGE
+                || !self.can_present_media(timing.rtp_timestamp, now))
         {
             metrics::METRICS
                 .stale_picture
@@ -262,7 +310,12 @@ impl DirectVideoTargetGuard<'_> {
                     || (timing.epoch == epoch
                         && (timing.rtp_timestamp.wrapping_sub(timestamp) as i32) <= 0)
             });
-            if timing.epoch < state.minimum_epoch || regressed || age > policy::MAX_LOCAL_VIDEO_AGE
+            if timing.epoch < state.minimum_epoch
+                || regressed
+                || age > policy::MAX_LOCAL_VIDEO_AGE
+                || !self
+                    .output
+                    .can_present_media(timing.rtp_timestamp, Instant::now())
             {
                 metrics::METRICS
                     .stale_picture

@@ -107,6 +107,13 @@ impl ReceiveBudget {
                 self.healthy_since = None;
                 return;
             }
+            // A stale plateau is not healthy spare capacity. Use the same
+            // 240 ms ingress ceiling as the live-edge contract. Do not spend a
+            // fixed offset as repeated evidence for additional bitrate cuts.
+            if delay_ms > 240 {
+                self.healthy_since = None;
+                return;
+            }
             let healthy = *self.healthy_since.get_or_insert(now);
             if now.saturating_duration_since(healthy) >= SETTLED_RECOVERY_INTERVAL {
                 self.target = self.target.saturating_add(100_000).min(self.maximum);
@@ -169,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn growing_delay_reduces_but_settled_offset_and_idle_do_not_pin_quality() {
+    fn stale_plateau_cannot_raise_bitrate_and_idle_is_not_recovery() {
         let start = Instant::now();
         let mut budget = ReceiveBudget::new(2_000_000);
         for tick in 0..=150 {
@@ -179,12 +186,12 @@ mod tests {
         for tick in 151..=211 {
             budget.receive(25_000, 1500, start + Duration::from_millis(tick * 200));
         }
-        assert_eq!(budget.target(), MIN_BPS + 100_000);
+        assert_eq!(budget.target(), MIN_BPS);
         budget.receive(25_000, 70, start + Duration::from_secs(80));
         budget.receive(25_000, 70, start + Duration::from_secs(100));
         assert_eq!(
             budget.target(),
-            MIN_BPS + 100_000,
+            MIN_BPS,
             "idle time cannot recover bandwidth"
         );
     }

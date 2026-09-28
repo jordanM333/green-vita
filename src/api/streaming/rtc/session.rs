@@ -94,7 +94,6 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     audio_ingress: IngressProbe,
     video_rate: super::feedback::ReceiveRate,
     video_ceiling: super::feedback::VideoCeiling,
-    catch_up: crate::streaming::video::catch_up::CatchUp,
     direct_output: Arc<DirectVideoOutput>,
 }
 
@@ -130,7 +129,6 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             audio_ingress: IngressProbe::new(i64::from(config.audio_sample_rate)),
             video_rate: super::feedback::ReceiveRate::new(),
             video_ceiling: Default::default(),
-            catch_up: Default::default(),
             direct_output,
         })
     }
@@ -179,7 +177,6 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     pub(crate) fn refresh_video(&mut self) {
         self.video.refresh();
         let now = Instant::now();
-        self.catch_up.requested(now);
         self.request_keyframe(true, now);
     }
 
@@ -192,6 +189,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             &mut self.peer,
             self.connection_state == RTCPeerConnectionState::Connected,
         );
+        self.video.poll_live_edge(Instant::now());
         self.video.drain_decoder(&mut keyframe_requested);
         self.video.request_missing_packets(&mut self.peer);
 
@@ -204,6 +202,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             .ok()
             .and_then(|mut state| state.take());
         if let Some(frame) = presented {
+            self.direct_output.confirm_presentation(frame);
             let sent = self.backend.send_rendered_frame(&mut self.peer, frame);
             let counter = if sent {
                 &METRICS.frame_feedback_sent
@@ -227,24 +226,6 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             self.transport.twcc_sent(),
             now,
         );
-        if let Some(sample) = self.video_clock.timing()
-            && self.catch_up.observe(
-                sample.timestamp,
-                sample.received_at,
-                sample.added_delay_ms,
-                self.video.decoder.queued_frames(),
-                self.video.recovering(),
-                now,
-            )
-        {
-            crate::streaming::video::trace::record(
-                "lag_keyframe_request",
-                sample.timestamp,
-                sample.added_delay_ms,
-            );
-            self.video.refresh();
-            keyframe_requested = true;
-        }
         // rtc-rs is sans-I/O, so its expired internal timer must be advanced by our pump.
         if let Some(deadline) = self.peer.poll_timeout()
             && now >= deadline
@@ -278,10 +259,14 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             let rate = self.video_rate.summary(now);
             let ceiling = self.video_ceiling.summary(self.video_rate.latest_kbps);
             let feedback = format!(
-                "Video payload:{rate}\n{ceiling}\n{}\n{}\nCatch-up requests:{}\nSDP video ceiling:{}k",
+                "Video payload:{rate}\n{ceiling}\n{}\n{}\n{}\nSDP video ceiling:{}k",
                 super::reports::summary(),
                 self.video.repair_summary(),
-                self.catch_up.requests(),
+                self.direct_output
+                    .live_edge
+                    .lock()
+                    .map(|edge| edge.summary())
+                    .unwrap_or_default(),
                 super::bandwidth::VIDEO_CEILING_BPS / 1000
             );
             let (requested_width, requested_height) = self.requested_video_size;
@@ -419,7 +404,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                             crate::diagnostic::track(2, init.ssrc);
                             self.audio_clock.reset();
                             self.audio_ingress.reset();
-                            self.audio.open(init.track_id);
+                            self.audio.open(init.track_id, init.ssrc);
                             self.status = "Receiving audio track".to_owned();
                         }
                         _ => {}
@@ -449,12 +434,21 @@ impl<B: RtcSessionBackend> RtcSession<B> {
 
     fn handle_peer_messages(&mut self) -> bool {
         let mut keyframe_requested = false;
-        for (clock_rate, report) in super::reports::take_clock_reports() {
+        for (clock_rate, report, received_at) in super::reports::take_clock_reports() {
             crate::diagnostic::report(report.ssrc, report.rtp_time, report.ntp_time, clock_rate);
-            if clock_rate == 90_000 {
+            if clock_rate == 90_000 && self.video.is_source(report.ssrc) {
                 self.video_clock.sender_report(&report);
-            } else {
+                if let Ok(mut edge) = self.direct_output.live_edge.lock() {
+                    edge.sender_report(report.rtp_time, report.ntp_time, received_at);
+                }
+            } else if self.audio.is_source(report.ssrc) {
                 self.audio_clock.sender_report(&report);
+                self.audio.sender_report(
+                    report.ssrc,
+                    report.rtp_time,
+                    report.ntp_time,
+                    received_at,
+                );
             }
         }
         while let Some((dequeued_at, message)) = self.peer.poll_read_with_timestamp() {
@@ -497,10 +491,19 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                                 dequeued_at.elapsed().as_micros() as u64,
                             );
                             if let Some(timing) = self.video_clock.timing() {
+                                let delay = self
+                                    .direct_output
+                                    .live_edge
+                                    .lock()
+                                    .ok()
+                                    .and_then(|edge| {
+                                        edge.added_delay_ms(packet.header.timestamp, delivered_at)
+                                    })
+                                    .unwrap_or(timing.added_delay_ms);
                                 let before = self.video_ceiling.target_bps();
                                 self.video_ceiling.receive(
                                     packet.payload.len(),
-                                    timing.added_delay_ms,
+                                    delay,
                                     Instant::now(),
                                 );
                                 let after = self.video_ceiling.target_bps();
@@ -582,7 +585,22 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         let cooldown_elapsed = self.last_keyframe_request.is_none_or(|requested_at| {
             now.duration_since(requested_at) >= KEYFRAME_REQUEST_COOLDOWN
         });
-        if !requested || !cooldown_elapsed {
+        if !cooldown_elapsed {
+            return;
+        }
+        let requested = self
+            .direct_output
+            .live_edge
+            .lock()
+            .map(|mut edge| {
+                if edge.recovering() {
+                    edge.request_due(now)
+                } else {
+                    requested
+                }
+            })
+            .unwrap_or(false);
+        if !requested {
             return;
         }
 

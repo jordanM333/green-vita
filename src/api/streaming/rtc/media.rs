@@ -97,6 +97,7 @@ impl VideoReceiver {
             self.order.clear();
             self.order_window = (0, 0, 0);
             self.last_packet_at = None;
+            self.decoder.reset_media_clock();
         }
         self.track_id = Some(track_id);
         self.receiver_id = Some(receiver_id);
@@ -147,8 +148,16 @@ impl VideoReceiver {
         self.rtp.refresh();
     }
 
-    pub(crate) fn recovering(&self) -> bool {
-        self.rtp.waiting_for_keyframe()
+    pub(crate) fn poll_live_edge(&mut self, now: Instant) {
+        if self.decoder.poll_media(now) {
+            self.order.clear();
+            self.rtp.quarantine(&self.decoder);
+            crate::streaming::video::trace::record("live_edge_quarantine_idle", 0, 0);
+        }
+    }
+
+    pub(crate) fn is_source(&self, ssrc: u32) -> bool {
+        self.ssrc == Some(ssrc)
     }
 
     pub(crate) fn handles(&self, track_id: &MediaStreamTrackId) -> bool {
@@ -167,6 +176,35 @@ impl VideoReceiver {
         self.received_packet = true;
         self.stats.packets = self.stats.packets.saturating_add(1);
         let now = Instant::now();
+        if !packet.payload.is_empty() {
+            if self.decoder.observe_media(
+                packet.header.timestamp,
+                packet.header.sequence_number,
+                received_at,
+                now,
+            ) {
+                self.order.clear();
+                self.rtp.quarantine(&self.decoder);
+                crate::streaming::video::trace::record(
+                    "live_edge_quarantine",
+                    packet.header.timestamp,
+                    0,
+                );
+            }
+            if !self
+                .decoder
+                .media_ingress_useful(packet.header.timestamp, now)
+            {
+                self.rtp.quarantine(&self.decoder);
+                self.stats.dropped += 1;
+                crate::streaming::video::trace::record(
+                    "stale_rtp_rejected",
+                    packet.header.timestamp,
+                    0,
+                );
+                return;
+            }
+        }
         if let Some(last) = self.last_packet_at.replace(now) {
             let gap = now.saturating_duration_since(last).as_micros() as u64;
             if gap > 20_000 {
@@ -217,6 +255,15 @@ impl VideoReceiver {
         delivered_at: Instant,
         keyframe_requested: &mut bool,
     ) {
+        if !packet.payload.is_empty()
+            && !self
+                .decoder
+                .media_ingress_useful(packet.header.timestamp, Instant::now())
+        {
+            self.rtp.quarantine(&self.decoder);
+            self.stats.dropped += 1;
+            return;
+        }
         crate::diagnostic::packet(
             "ordered",
             crate::diagnostic::Identity {
@@ -415,23 +462,38 @@ impl VideoReceiver {
 
 pub(crate) struct AudioReceiver {
     track_id: Option<MediaStreamTrackId>,
+    ssrc: Option<u32>,
     rtp: rtp::AudioRtp,
     pub(crate) packets: Vec<TimedAudio<Bytes>>,
 }
 
 impl AudioReceiver {
+    pub(crate) fn is_source(&self, ssrc: u32) -> bool {
+        self.ssrc == Some(ssrc)
+    }
+
     pub(crate) fn new(sample_rate: u32, payload_type: u8) -> Self {
         Self {
             track_id: None,
+            ssrc: None,
             rtp: rtp::AudioRtp::new(sample_rate, payload_type),
             packets: Vec::new(),
         }
     }
 
-    pub(crate) fn open(&mut self, track_id: MediaStreamTrackId) {
-        self.rtp.reset();
-        self.packets.clear();
+    pub(crate) fn open(&mut self, track_id: MediaStreamTrackId, ssrc: u32) {
+        if self.ssrc != Some(ssrc) {
+            self.rtp.reset();
+            self.packets.clear();
+        }
         self.track_id = Some(track_id);
+        self.ssrc = Some(ssrc);
+    }
+
+    pub(crate) fn sender_report(&mut self, ssrc: u32, ts: u32, ntp: u64, at: Instant) {
+        if self.ssrc == Some(ssrc) {
+            self.rtp.sender_report(ts, ntp, at);
+        }
     }
 
     pub(crate) fn handles(&self, track_id: &MediaStreamTrackId) -> bool {

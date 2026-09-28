@@ -25,10 +25,10 @@ pub(crate) fn video_arrival_packets() -> u64 {
 }
 // The app owns one active RTC session. Keep only the latest report per SSRC;
 // the inner interceptor consumes RTCP, so observing RTCMessage is too late.
-static CLOCK_REPORTS: Mutex<Vec<(u32, rtc::rtcp::sender_report::SenderReport)>> =
+static CLOCK_REPORTS: Mutex<Vec<(u32, rtc::rtcp::sender_report::SenderReport, Instant)>> =
     Mutex::new(Vec::new());
 
-pub(crate) fn take_clock_reports() -> Vec<(u32, rtc::rtcp::sender_report::SenderReport)> {
+pub(crate) fn take_clock_reports() -> Vec<(u32, rtc::rtcp::sender_report::SenderReport, Instant)> {
     CLOCK_REPORTS
         .lock()
         .map(|mut reports| std::mem::take(&mut *reports))
@@ -138,9 +138,9 @@ impl Protocol<TaggedPacket, TaggedPacket, ()> for ReceiveReports {
                         if let Some(clock) = self.bound.get(&sr.ssrc)
                             && let Ok(mut reports) = CLOCK_REPORTS.lock()
                         {
-                            reports.retain(|(_, previous)| previous.ssrc != sr.ssrc);
+                            reports.retain(|(_, previous, _)| previous.ssrc != sr.ssrc);
                             if reports.len() < 8 {
-                                reports.push((*clock, sr.clone()));
+                                reports.push((*clock, sr.clone(), msg.now));
                             }
                         }
                     }
@@ -400,5 +400,9 @@ mod tests {
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].0, 90000);
         assert_eq!(reports[0].1.rtp_time, sr.rtp_time);
+        assert_eq!(
+            reports[0].2, now,
+            "SR calibration must retain original dequeue time"
+        );
     }
 }

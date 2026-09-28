@@ -198,6 +198,66 @@ impl VideoDecodeWorker {
         self.access_units.len()
     }
 
+    pub(crate) fn media_admits(&self, timestamp: u32, random_access: bool, now: Instant) -> bool {
+        self.direct_output
+            .live_edge
+            .lock()
+            .is_ok_and(|edge| edge.admit(timestamp, random_access, now))
+    }
+
+    pub(crate) fn media_submitted(&self, timestamp: u32, random_access: bool, now: Instant) {
+        if let Ok(mut edge) = self.direct_output.live_edge.lock() {
+            edge.submitted(timestamp, random_access, now);
+        }
+    }
+
+    pub(crate) fn media_damage(&self) {
+        if let Ok(mut edge) = self.direct_output.live_edge.lock() {
+            edge.damage();
+        }
+    }
+
+    pub(crate) fn media_recovering(&self) -> bool {
+        self.direct_output
+            .live_edge
+            .lock()
+            .map_or(true, |edge| edge.recovering())
+    }
+
+    pub(crate) fn reset_media_clock(&self) {
+        if let Ok(mut edge) = self.direct_output.live_edge.lock() {
+            *edge = Default::default();
+        }
+    }
+
+    pub(crate) fn observe_media(&self, ts: u32, seq: u16, received: Instant, now: Instant) -> bool {
+        self.direct_output
+            .live_edge
+            .lock()
+            .is_ok_and(|mut edge| edge.observe(ts, seq, received, now))
+    }
+
+    pub(crate) fn poll_media(&self, now: Instant) -> bool {
+        self.direct_output
+            .live_edge
+            .lock()
+            .is_ok_and(|mut edge| edge.poll(now))
+    }
+
+    pub(crate) fn media_ingress_useful(&self, ts: u32, now: Instant) -> bool {
+        self.direct_output
+            .live_edge
+            .lock()
+            .is_ok_and(|edge| edge.ingress_useful(ts, now))
+    }
+
+    pub(crate) fn discard_queued(&self) {
+        while let Ok(old) = self.queued_access_units.try_recv() {
+            drop(old);
+        }
+        metrics::METRICS.au_queue_depth.store(0, Ordering::Relaxed);
+    }
+
     /// Caller must supply an intact, size-checked IDR with its SPS/PPS. Never
     /// use this for a P picture: the retained suffix must be independently decodable.
     pub(crate) fn submit_refresh_access_unit(
@@ -365,7 +425,9 @@ fn decode_queued_access_unit(
     // A short Cloud burst is valid reference work. Once the entire local budget
     // is exhausted, abandon the epoch once and reacquire a complete IDR; never
     // drop a P picture and feed its dependants as though nothing happened.
-    if access_unit.received_at.elapsed() > super::policy::MAX_LOCAL_VIDEO_AGE {
+    if access_unit.received_at.elapsed() > super::policy::MAX_LOCAL_VIDEO_AGE
+        || !direct_output.media_useful(access_unit.rtp_timestamp, Instant::now())
+    {
         let epoch = access_unit.generation + 1;
         if generation
             .compare_exchange(

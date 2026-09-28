@@ -52,6 +52,15 @@ pub(crate) fn show(
                     "DIAGNOSTIC — progressive latency not yet fixed",
                 );
                 ui.colored_label(theme.text_bright, crate::diagnostic::status());
+                use crate::streaming::video::live_edge::State;
+                let message = match streaming.direct_video_output().live_edge_state() {
+                    State::AwaitingKeyframe => Some("Video delayed — waiting for a current keyframe. Controls and audio remain active."),
+                    State::AwaitingPicture => Some("Decoding current video — recovery not yet confirmed."),
+                    State::ClockUncertain => Some("Video clock is uncertain — stale playback is blocked."),
+                    State::Live if streaming.video_lag.needs_help(std::time::Instant::now()) => Some("Video is unavailable or delayed — controls remain active."),
+                    _ => None,
+                };
+                if let Some(message) = message { ui.colored_label(theme.text_bright, message); }
             });
 
         // Keep collecting metrics when hidden so the quick menu can restore the live overlay
@@ -96,7 +105,7 @@ pub(crate) fn show(
                             .measured_delay_ms()
                             .map(|ms| format!("{ms}ms"))
                             .unwrap_or_else(|| "n/a".to_owned());
-                        let recovery = format!("delay:{measured} · catch-up:auto");
+                        let recovery = format!("relative delay:{measured}");
                         ui.label(
                             egui::RichText::new(format!(
                                 "RX Test {} · {mode} · {recovery}\n{compact}",
@@ -307,10 +316,7 @@ pub(crate) fn show(
             });
     }
 
-    if streaming.media_reconnecting
-        || streaming.media_refresh_failed
-        || (streaming.can_refresh() && streaming.video_lag.needs_help(std::time::Instant::now()))
-    {
+    if streaming.media_reconnecting || streaming.media_refresh_failed {
         egui::Area::new(egui::Id::new("video_lag_help"))
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 36.0))
             .interactable(false)

@@ -17,6 +17,8 @@ pub struct VitaSurface {
     video_textures: Option<Vec<Texture>>,
     video_output_buffers: Option<Vec<CdramBlock>>,
     displayed_video_texture: Option<usize>,
+    displayed_video_timing: Option<crate::streaming::video::timing::FrameTiming>,
+    drew_video: bool,
     // Output generation, not submission RTP timestamp: AVCDEC may buffer an input.
     pending_video_present: Option<(
         u64,
@@ -60,6 +62,8 @@ impl VitaSurface {
             video_textures: None,
             video_output_buffers: None,
             displayed_video_texture: None,
+            displayed_video_timing: None,
+            drew_video: false,
             pending_video_present: None,
             direct_video_output: None,
             video_width: 0,
@@ -166,6 +170,7 @@ impl VitaSurface {
             .video_upload_max_us
             .fetch_max(upload_us, Ordering::Relaxed);
         self.displayed_video_texture = Some(index);
+        self.displayed_video_timing = timing;
         self.pending_video_present = Some((generation, decoded_at, timing));
         Ok(())
     }
@@ -241,6 +246,7 @@ impl VitaSurface {
         self.video_output_buffers = Some(buffers);
         self.video_textures = Some(textures);
         self.displayed_video_texture = None;
+        self.displayed_video_timing = None;
         self.pending_video_present = None;
         self.direct_video_output = Some(output);
         self.video_width = width;
@@ -255,6 +261,7 @@ impl VitaSurface {
         self.video_output_buffers = None;
         self.video_textures = None;
         self.displayed_video_texture = None;
+        self.displayed_video_timing = None;
         self.pending_video_present = None;
         self.video_width = 0;
         self.video_height = 0;
@@ -263,8 +270,14 @@ impl VitaSurface {
     pub fn draw_scene(&mut self, show_video: bool) -> Result<()> {
         self.canvas.set_draw_color(sdl2::pixels::Color::BLACK);
         self.canvas.clear();
+        self.drew_video = false;
 
         if show_video
+            && self.displayed_video_timing.is_some_and(|timing| {
+                self.direct_video_output
+                    .as_ref()
+                    .is_some_and(|output| output.can_draw(timing, Instant::now()))
+            })
             && let Some(index) = self.displayed_video_texture
             && let Some(texture) = self
                 .video_textures
@@ -276,6 +289,10 @@ impl VitaSurface {
                 .copy(texture, None, destination)
                 .map_err(anyhow::Error::msg)
                 .context("failed to draw SDL YUV video frame")?;
+            self.drew_video = true;
+        }
+        if !self.drew_video {
+            self.pending_video_present = None;
         }
 
         Ok(())
@@ -320,7 +337,7 @@ impl VitaSurface {
         metrics.paint_sum_us.fetch_add(paint_us, Ordering::Relaxed);
         metrics.paint_count.fetch_add(1, Ordering::Relaxed);
         metrics.paint_max_us.fetch_max(paint_us, Ordering::Relaxed);
-        if self.displayed_video_texture.is_some() {
+        if self.drew_video {
             // SDL's Vita present only enqueues a GXM display callback. Bound this queue
             // to one render instead of submitting stale video behind unfinished GPU work.
             // This waits for GPU/callback completion, not for physical panel scanout.

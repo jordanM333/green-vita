@@ -6,11 +6,16 @@ extern crate self as rtc;
 pub use rtp;
 #[path = "../../../src/streaming/video/policy.rs"]
 pub mod policy;
+#[path = "../../../src/streaming/video/live_edge.rs"]
+pub(crate) mod live_edge;
+#[cfg(test)]
+mod live_edge_replay;
 
 mod streaming {
     pub(crate) use crate::audio_timing;
     pub mod video {
         pub(crate) use crate::policy;
+        pub(crate) use crate::live_edge;
         pub mod trace {
             pub fn record(_: &'static str, _: u32, _: u64) {}
         }
@@ -26,8 +31,18 @@ mod streaming {
             pub submitted_times: Mutex<Vec<(std::time::Instant, u32)>>,
             pub cutovers: std::sync::atomic::AtomicUsize,
             pub queued: std::sync::atomic::AtomicUsize,
+            pub edge: Mutex<live_edge::LiveEdge>,
         }
         impl VideoDecodeWorker {
+            pub fn media_admits(&self, ts: u32, idr: bool, at: std::time::Instant) -> bool {
+                self.edge.lock().unwrap().admit(ts, idr, at)
+            }
+            pub fn media_submitted(&self, ts: u32, idr: bool, at: std::time::Instant) {
+                self.edge.lock().unwrap().submitted(ts, idr, at);
+            }
+            pub fn media_damage(&self) { self.edge.lock().unwrap().damage(); }
+            pub fn media_recovering(&self) -> bool { self.edge.lock().unwrap().recovering() }
+            pub fn discard_queued(&self) { self.queued.store(0, std::sync::atomic::Ordering::Relaxed); }
             pub fn begin_resync(&self) {}
             pub fn take_recovery_request(&self) -> bool {
                 false
@@ -547,6 +562,42 @@ mod repair_integration {
         assert_eq!(worker.submitted.lock().unwrap().len(), 5);
         assert!(!keyframe);
         assert!(!video.waiting_for_keyframe());
+    }
+
+    #[test]
+    fn live_edge_quarantine_requires_current_idr_and_reuses_only_matching_parameter_sets() {
+        let worker = streaming::video::VideoDecodeWorker::default();
+        let mut video = video_rtp::VideoRtp::new(1280, 720);
+        let mut request = false;
+        for (seq, marker, nal) in [(10, false, SPS), (11, false, PPS), (12, true, IDR)] {
+            video.receive(&worker, packet(seq, 0, marker, nal), &mut request);
+        }
+        let submitted = worker.submitted.lock().unwrap().len();
+        assert_eq!(submitted, 1);
+        let now = Instant::now();
+        {
+            let mut edge = worker.edge.lock().unwrap();
+            edge.observe(0, 10, now - Duration::from_secs(2), now - Duration::from_secs(2));
+            assert!(edge.observe(1500, 13, now, now));
+        }
+        video.quarantine(&worker);
+        // A fully assembled old IDR with cached parameters is still stale.
+        assert_eq!(video.receive(&worker, packet(13, 1500, true, IDR), &mut request).submitted, 0);
+        worker.edge.lock().unwrap().observe(180_000, 14, now, now);
+        assert_eq!(video.receive(&worker, packet(14, 180_000, true, &[0x61, 0xaa]), &mut request).submitted, 0);
+        let stats = video.receive(&worker, packet(15, 181_500, true, IDR), &mut request);
+        assert_eq!(stats.submitted, 1);
+        let bytes = worker.submitted.lock().unwrap().last().unwrap().clone();
+        assert!(bytes.windows(SPS.len()).any(|w| w == SPS));
+        assert!(bytes.windows(PPS.len()).any(|w| w == PPS));
+        assert!(bytes.ends_with(IDR));
+        assert_eq!(worker.edge.lock().unwrap().state(), live_edge::State::AwaitingPicture);
+        // An unknown PPS ID must not borrow unrelated cached sets.
+        video.quarantine(&worker);
+        assert_eq!(video.receive(&worker, packet(16, 183_000, true, &[0x65, 0xb4]), &mut request).submitted, 0);
+        video.source_changed(&worker);
+        video.quarantine(&worker);
+        assert_eq!(video.receive(&worker, packet(17, 184_500, true, IDR), &mut request).submitted, 0);
     }
 
     // libx264 baseline, 1280x720/60; synthesized black frame parameter sets.

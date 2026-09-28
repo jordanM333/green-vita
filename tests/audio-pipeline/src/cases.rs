@@ -4,6 +4,7 @@ fn packet(at: Instant) -> TimedAudio<Bytes> {
     TimedAudio {
         data: Bytes::from_static(&[0xf8, 0xff, 0xfe]),
         received_at: at,
+        media_deadline: None,
     }
 }
 fn wait_for(mut ready: impl FnMut() -> bool) {
@@ -62,6 +63,25 @@ fn already_decoded_pcm_expires_in_the_handoff_too() {
     renderer.samples_rx = original;
 }
 #[test]
+fn media_stale_at_dequeue_is_decoded_but_never_queued_and_current_audio_resumes() {
+    let sdl = sdl2::init().unwrap();
+    let audio = sdl.audio().unwrap();
+    let mut renderer = AudioRenderer::new(&audio).unwrap();
+    let before = METRICS.audio_pcm_discarded.load(Ordering::Relaxed);
+    let mut stale = packet(Instant::now());
+    stale.media_deadline = Some(Instant::now() - Duration::from_millis(1115));
+    renderer.submit_packets(vec![stale], 100);
+    wait_for(|| METRICS.audio_pcm_discarded.load(Ordering::Relaxed) > before);
+    renderer.submit_packets(vec![], 100);
+    assert_eq!(renderer.queue.size(), 0);
+    let mut current = packet(Instant::now());
+    current.media_deadline = Some(Instant::now() + Duration::from_millis(480));
+    renderer.submit_packets(vec![current], 100);
+    wait_for(|| METRICS.audio_pcm_pending.load(Ordering::Relaxed) > 0);
+    renderer.submit_packets(vec![], 100);
+    assert_eq!(renderer.queue.size(), 3840);
+}
+#[test]
 fn repeated_start_stop_joins_workers_and_clears_output() {
     for _ in 0..100 {
         let sdl = sdl2::init().unwrap();
@@ -104,6 +124,7 @@ fn thirty_minutes_of_pcm_overproduction_cannot_build_a_device_archive() {
         METRICS.audio_pcm_pending.fetch_add(1, Ordering::Relaxed);
         tx.send(TimedAudio {
             data: vec![0; 1920],
+            media_deadline: None,
             received_at: Instant::now()
                 - if tick % 1000 == 0 {
                     Duration::from_secs(6)
@@ -156,6 +177,7 @@ fn sample_clock_mismatch_remains_bounded_and_recovery_discards_old_pcm() {
             tx.send(TimedAudio {
                 data: vec![7; 1920],
                 received_at: Instant::now(),
+                media_deadline: None,
             })
             .unwrap();
             renderer.submit_packets(vec![], 100);

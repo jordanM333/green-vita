@@ -76,6 +76,48 @@ fn unknown_picture_identity_never_borrows_the_submitted_inputs_epoch() {
     worker.shutdown();
     assert!(!output.has_pending_frame(), "unknown old pictures must never be displayed as current");
 }
+#[test]
+fn stale_before_socket_is_rejected_by_real_worker_with_fresh_local_arrival() {
+    reset();
+    let (output, _pixels) = surfaces();
+    let mut worker = VideoDecodeWorker::spawn(config(), output.clone()).unwrap();
+    let now = Instant::now();
+    worker.observe_media(0, 0, now - Duration::from_secs(2), now - Duration::from_secs(2));
+    worker.observe_media(1500, 1, now, now);
+    let expired = metrics::METRICS.expired_access_unit.load(Ordering::Relaxed);
+    worker.submit_access_unit(vec![1], now, 1500);
+    wait_for(|| metrics::METRICS.expired_access_unit.load(Ordering::Relaxed) > expired);
+    assert!(FAKE.lock().unwrap().inputs.is_empty());
+    assert!(!output.has_pending_frame());
+    worker.shutdown();
+}
+
+#[test]
+fn uploaded_texture_expires_and_old_epoch_completion_cannot_close_new_recovery() {
+    reset();
+    let (output, _pixels) = surfaces();
+    let now = Instant::now();
+    output.live_edge.lock().unwrap().observe(0, 0, now, now);
+    let timing = timing::FrameTiming { rtp_timestamp: 0, received_at: now,
+        submitted_at: now, decoded_at: now, epoch: 0 };
+    assert!(output.can_draw(timing, now));
+    assert!(!output.can_draw(timing, now + Duration::from_millis(241)));
+    let later = now + Duration::from_secs(2);
+    {
+        let mut edge = output.live_edge.lock().unwrap();
+        edge.observe(1500, 1, later, later);
+        edge.observe(180_000, 2, later, later);
+        edge.submitted(180_000, true, later);
+    }
+    output.invalidate_before_epoch(1);
+    let fresh = timing::FrameTiming { rtp_timestamp: 180_000, received_at: later, ..timing };
+    output.confirm_presentation(timing::PresentedFrame { timing: fresh, rendered_at: later });
+    assert_eq!(output.live_edge_state(), live_edge::State::AwaitingPicture);
+    assert!(!output.can_draw(fresh, later));
+    output.confirm_presentation(timing::PresentedFrame { timing: timing::FrameTiming { epoch: 1, ..fresh }, rendered_at: later });
+    assert_eq!(output.live_edge_state(), live_edge::State::Live);
+}
+
 fn surfaces()->(Arc<DirectVideoOutput>,Vec<Vec<u8>>) {
     let mut pixels=vec![vec![0;960*544*2];3];
     let output=Arc::new(DirectVideoOutput::new(960,544));
