@@ -32,7 +32,7 @@ def main():
     if results[-1]["exit_code"] == 0:
         run("feedback", [feedback, "--nocapture"])
     for name in ["rtc-reports", "frame-metadata", "rtc-transport", "frame-signal", "rtp-order",
-                 "decoder-pump", "feature-foundations", "voice-codec", "audio-pipeline", "session-lifecycle", "release-hardening"]:
+                 "decoder-pump", "feature-foundations", "voice-codec", "audio-pipeline", "session-lifecycle", "release-hardening", "presentation"]:
         run(name, ["cargo", "test", "--locked", "--target", "x86_64-unknown-linux-gnu",
                    "--manifest-path", f"tests/{name}/Cargo.toml", "--", "--test-threads=1", "--nocapture"])
         if args.clippy:

@@ -1,0 +1,9 @@
+SPS:1280x720 decoder:1280x720 output:960x544 source-fps:40
+H264: Main level:32 refs:1 reorder:0 dpb:1
+Recovery wait:0ms max:0ms IDRadmitted:0 (not live-edge proof)
+Q depth/max:0/3 AUage:0/14ms dec:3/8ms up:0/1ms paint:3/5ms ui:9/11ms
+FPS hwCall:38 decoded:35 shown:35 ui:46 idle:40 pic:960x544 noPic:5 noOut:0 qFull/s:0 socketToAU:1/6ms window:1000ms
+Render draw:3/4ms swap:0/0ms GPUwait:3/3ms decodedToGPU:12/17ms
+PTS matched/unmatched:35/0 frameReport:35/0
+Frame age: decoder:71/81ms receiveToGPU:86/95ms
+Input local:1/7ms RTCpump:0/55ms

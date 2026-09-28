@@ -170,6 +170,7 @@ impl HwVideoDecoder {
         submitted_at: Instant,
         epoch: u64,
     ) -> Result<Option<DecodedPicture>> {
+        crate::diagnostic::display_probe::encoded(access_unit, epoch, rtp_timestamp);
         let pts = self
             .pictures
             .submit(rtp_timestamp, received_at, submitted_at, epoch);
@@ -337,6 +338,15 @@ impl HwVideoDecoder {
             let output_pts =
                 (u64::from(picture.info.pts.upper) << 32) | u64::from(picture.info.pts.lower);
             let timing = self.pictures.output(output_pts, Instant::now());
+            // Observations only: do not silently assume the SDK retained the
+            // caller's picture pointer, pixel buffer or output stride.
+            super::trace::record(
+                "decoder_buffer_contract",
+                timing.map_or(0, |t| t.rtp_timestamp),
+                u64::from(std::ptr::eq(picture_ptr, &picture))
+                    | (u64::from(picture.frame.pPicture[0] == output_ptr.cast()) << 1)
+                    | (u64::from(picture.frame.framePitch == output_pitch) << 2),
+            );
             super::trace::record(
                 if submission.is_some() {
                     "decoder_output_pts"

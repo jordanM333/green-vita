@@ -16,6 +16,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 import analyze_diagnostic as analyzer
+import analyze_display
 from export_diagnostic import export
 from correlate_observer import correlate
 
@@ -39,7 +40,8 @@ class CaptureTest(unittest.TestCase):
         cls.root = Path(cls.tmp.name)
         binary = cls.root / "capture-tests"
         subprocess.run(["rustc", "--edition=2024", "-O", "--test", str(ROOT / "tests/diagnostic-capture/harness.rs"), "-o", str(binary)], check=True)
-        env = dict(os.environ, GREENVITA_DIAGNOSTIC_FIXTURES=str(cls.root / "device"))
+        env = dict(os.environ, GREENVITA_DIAGNOSTIC_FIXTURES=str(cls.root / "device"),
+                   GREENVITA_DISPLAY_FIXTURE=str(cls.root / "display-device"))
         started = time.perf_counter()
         subprocess.run([str(binary), "--nocapture"], env=env, check=True)
         print(json.dumps({"diagnostic_host_fixture_seconds": time.perf_counter()-started,
@@ -59,6 +61,35 @@ class CaptureTest(unittest.TestCase):
         self.assertEqual(digest, hashlib.sha256(archive.read_bytes()).hexdigest())
         self.assertEqual(analyzer.read_bundle(target), analyzer.read_bundle(archive))
         return archive
+
+    def test_display_capture_delayed_export_and_ambiguous_pixels_remain_unknown(self):
+        target = self.root / "display-desktop"
+        shutil.copytree(self.root / "display-device", target, dirs_exist_ok=True)
+        result = analyze_display.analyze(target)
+        self.assertEqual(result["outcome"], "INCONCLUSIVE_BLACKOUT_ORIGIN")
+        self.assertFalse(result["encoded_replay_complete"])
+        self.assertEqual(len(result["observations"]), 40)
+        first = result["observations"][0]
+        self.assertEqual((first["decode_epoch"], first["rtp"]), (7, 4294967295))
+        self.assertEqual(first["matching_submitted_aus"], 1)
+        self.assertIsNone(first["framebuffer_nonblack"])
+        self.assertEqual(first["upload_mismatches"], 0)
+
+    def test_display_capture_finds_same_generation_upload_corruption(self):
+        target = self.root / "display-corrupt-copy"
+        shutil.copytree(self.root / "display-device", target, dirs_exist_ok=True)
+        pixels = target / "pixels.csv"
+        with pixels.open() as handle:
+            rows = list(csv.DictReader(handle))
+        rows[0]["uploaded_bgr565"] = "0000" * 576
+        with pixels.open("w") as handle:
+            writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+        result = analyze_display.analyze(target)
+        self.assertEqual(result["outcome"], "SELECTED_PIXEL_COPY_MISMATCH")
+        self.assertEqual(result["observations"][0]["upload_mismatches"], 576)
+        self.assertFalse(result["physical_scanout_verified"])
 
     def test_full_delayed_export_has_onset_baseline_aftermath_audio_and_feedback(self):
         result = analyzer.analyze(self.exported("upstream"))

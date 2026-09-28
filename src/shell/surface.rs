@@ -29,6 +29,7 @@ pub struct VitaSurface {
     video_width: u32,
     video_height: u32,
     egui_painter: SdlEguiPainter,
+    pending_probe: Option<crate::diagnostic::display_probe::Sample>,
 }
 
 impl Drop for VitaSurface {
@@ -69,6 +70,7 @@ impl VitaSurface {
             video_width: 0,
             video_height: 0,
             egui_painter: SdlEguiPainter::default(),
+            pending_probe: None,
         })
     }
 
@@ -121,6 +123,9 @@ impl VitaSurface {
             .and_then(|textures| textures.get_mut(index))
             .context("decoder returned an unregistered texture slot")?;
         let upload_started = Instant::now();
+        let mut probe = timing.and_then(|t| {
+            crate::diagnostic::display_probe::reserve(t.epoch, t.rtp_timestamp, generation)
+        });
         texture
             .with_lock(None, |pixels, pitch| {
                 let width_bytes = (self.video_width as usize) * 2;
@@ -139,6 +144,22 @@ impl VitaSurface {
                 {
                     anyhow::bail!("decoder output does not fit SDL video texture");
                 }
+                if let Some(sample) = probe.as_mut() {
+                    let started = Instant::now();
+                    // SAFETY: the displayed target lease excludes decoder writes;
+                    // source_len was checked against its live CDRAM allocation above.
+                    let source =
+                        unsafe { std::slice::from_raw_parts(target.ptr as *const u8, source_len) };
+                    if let Some(values) = crate::diagnostic::display_probe::sample_565(
+                        source,
+                        source_pitch,
+                        self.video_width as usize,
+                        height,
+                    ) {
+                        sample.source = values;
+                    }
+                    sample.add_cost(started.elapsed().as_micros() as u64);
+                }
                 if source_pitch == pitch {
                     // A DMA copy keeps the non-cached decoder output off the CPU copy path.
                     // SAFETY: this displayed slot is excluded from decoder writes;
@@ -152,6 +173,18 @@ impl VitaSurface {
                         )
                     };
                     if result >= 0 {
+                        if let Some(sample) = probe.as_mut() {
+                            let started = Instant::now();
+                            if let Some(values) = crate::diagnostic::display_probe::sample_565(
+                                pixels,
+                                pitch,
+                                self.video_width as usize,
+                                height,
+                            ) {
+                                sample.uploaded = values;
+                            }
+                            sample.add_cost(started.elapsed().as_micros() as u64);
+                        }
                         return Ok(());
                     }
                 }
@@ -166,6 +199,18 @@ impl VitaSurface {
                         &source[row * source_pitch..row * source_pitch + width_bytes],
                     );
                     dst[width_bytes..].fill(0);
+                }
+                if let Some(sample) = probe.as_mut() {
+                    let started = Instant::now();
+                    if let Some(values) = crate::diagnostic::display_probe::sample_565(
+                        pixels,
+                        pitch,
+                        self.video_width as usize,
+                        height,
+                    ) {
+                        sample.uploaded = values;
+                    }
+                    sample.add_cost(started.elapsed().as_micros() as u64);
                 }
                 Ok(())
             })
@@ -183,6 +228,7 @@ impl VitaSurface {
         self.displayed_video_texture = Some(index);
         self.displayed_video_timing = timing;
         self.pending_video_present = Some((generation, decoded_at, timing));
+        self.pending_probe = probe;
         Ok(())
     }
 
@@ -266,6 +312,7 @@ impl VitaSurface {
     }
 
     fn detach_direct_video_output(&mut self) {
+        self.pending_probe = None;
         if let Some(output) = self.direct_video_output.take() {
             output.clear_targets();
         }
@@ -369,6 +416,9 @@ impl VitaSurface {
             metrics.gpu_wait_count.fetch_add(1, Ordering::Relaxed);
             metrics.gpu_wait_max_us.fetch_max(gpu_us, Ordering::Relaxed);
             crate::streaming::video::trace::record("gpu_queue_wait_us", 0, gpu_us);
+            if let Some(sample) = self.pending_probe.take() {
+                crate::diagnostic::display_probe::finish(sample, self.drew_video);
+            }
             if let Some((generation, decoded_at, timing)) = self.pending_video_present.take() {
                 let rendered_at = Instant::now();
                 if let Some(output) = self.direct_video_output.as_ref()

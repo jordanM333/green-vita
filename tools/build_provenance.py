@@ -55,7 +55,7 @@ def inspect(vpk, revision, number, diagnostic=False, acceptance=False):
                 raise ValueError("diagnostic SFO title missing")
             if executable[:4] != b"SCE\x00":
                 raise ValueError("packaged executable is not a Vita SELF")
-            if not number.startswith("DIAG03-"):
+            if not number.startswith(("DIAG03-", "DISPLAY01-")):
                 raise ValueError("diagnostic build number missing")
             for asset in ("sce_sys/icon0.png", "sce_sys/livearea/contents/template.xml"):
                 if not archive.read(asset):

@@ -9,7 +9,11 @@ use std::sync::{
 };
 use std::time::Instant;
 
-pub(crate) const LABEL: &str = "HARDWARE ACCEPTANCE CANDIDATE — PHYSICAL VITA ACCEPTANCE PENDING";
+#[path = "display_probe.rs"]
+pub(crate) mod display_probe;
+
+pub(crate) const LABEL: &str =
+    "DIAGNOSTIC BUILD — DISPLAY CAPTURE — PROGRESSIVE LATENCY NOT YET FIXED";
 const PRE_US: u64 = 12_000_000;
 const POST_US: u64 = 10_000_000;
 const LIMIT_US: u64 = 180_000_000;
@@ -320,6 +324,7 @@ fn destination() -> PathBuf {
 }
 
 pub(crate) fn begin_stream() {
+    display_probe::begin();
     let Ok(mut state) = CAPTURE.lock() else {
         return;
     };
@@ -440,11 +445,15 @@ pub(crate) fn snapshot(status: &str) {
     with_capture(|c| c.snapshot(c.us(Instant::now()), status));
 }
 pub(crate) fn status() -> &'static str {
+    display_probe::status()
+}
+#[allow(dead_code)]
+fn latency_status() -> &'static str {
     match STATE.load(Ordering::Relaxed) {
         1 => "Capture: recording (up to 3 minutes)",
         2 => "Capture: delay detected - collecting 10 seconds",
         3 => "Capture complete - exit stream to save",
-        4 => "Not reproduced during capture - exit stream to save",
+        4 => "Latency trigger not observed - exit stream to save",
         5 => "Capture saved - ready to copy with VitaShell",
         6 => "Capture SAVE FAILED - check free storage; partial folder retained",
         7 => "Previous capture preserved - copy latency folder with VitaShell",
@@ -453,6 +462,7 @@ pub(crate) fn status() -> &'static str {
     }
 }
 pub(crate) fn save() {
+    display_probe::save();
     let capture = {
         let Ok(mut state) = CAPTURE.lock() else {
             return;

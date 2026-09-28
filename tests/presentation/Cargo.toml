@@ -1,0 +1,10 @@
+[package]
+name = "presentation-tests"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+egui = "0.31"
+sdl2 = { version = "0.38", features = ["unsafe_textures"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
