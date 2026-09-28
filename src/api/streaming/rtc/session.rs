@@ -497,7 +497,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                                     .lock()
                                     .ok()
                                     .and_then(|edge| {
-                                        edge.added_delay_ms(packet.header.timestamp, delivered_at)
+                                        edge.added_delay_ms(timing.timestamp, delivered_at)
                                     })
                                     .unwrap_or(timing.added_delay_ms);
                                 let before = self.video_ceiling.target_bps();
@@ -510,13 +510,13 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                                 if after != before {
                                     crate::streaming::video::trace::record(
                                         "receiver_ceiling_bps",
-                                        packet.header.timestamp,
+                                        timing.timestamp,
                                         u64::from(after),
                                     );
                                     crate::streaming::video::trace::record(
                                         "receiver_ceiling_delay_ms",
-                                        packet.header.timestamp,
-                                        timing.added_delay_ms,
+                                        timing.timestamp,
+                                        delay,
                                     );
                                 }
                             }
