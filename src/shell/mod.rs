@@ -5,6 +5,7 @@ unsafe extern "C" {}
 
 mod egui_painter;
 mod surface;
+mod texture;
 
 use crate::app::ui::build_ui;
 use crate::input::{

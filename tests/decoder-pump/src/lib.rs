@@ -25,6 +25,33 @@ use std::{
 mod video {
     include!(concat!(env!("OUT_DIR"), "/video.rs"));
 }
+mod app {
+    pub struct StreamingSession(pub std::sync::Arc<crate::video::DirectVideoOutput>);
+    impl StreamingSession {
+        pub fn direct_video_output(&self) -> std::sync::Arc<crate::video::DirectVideoOutput> {
+            self.0.clone()
+        }
+    }
+}
+#[path = "../../../src/shell/egui_painter.rs"]
+mod egui_painter;
+#[path = "../../../src/shell/texture.rs"]
+mod texture;
+mod shell {
+    pub(crate) use crate::egui_painter;
+    pub(crate) use crate::texture;
+    pub(crate) mod surface {
+        include!(concat!(env!("OUT_DIR"), "/surface.rs"));
+    }
+}
+
+/// # Safety
+/// The caller must supply nonoverlapping, readable/writable ranges of `size` bytes.
+/// This substitutes synchronous host memory copying, not Vita DMA hardware.
+pub unsafe fn sceDmacMemcpy(dst: *mut c_void, src: *const c_void, size: u32) -> i32 {
+    std::ptr::copy_nonoverlapping(src.cast::<u8>(), dst.cast::<u8>(), size as usize);
+    0
+}
 
 pub type SceUID = i32;
 pub const SCE_AVCDEC_PIXELFORMAT_RGBA565: u32 = 1;
@@ -123,6 +150,8 @@ struct Fake {
     memory: HashMap<i32, Box<[u8]>>,
     decoders: HashMap<u32, VecDeque<u64>>,
     inputs: Vec<u64>,
+    capture_encoded: bool,
+    encoded: Vec<Vec<u8>>,
     outputs: Vec<u64>,
     polls: usize,
     deletes: usize,
@@ -241,6 +270,9 @@ pub unsafe fn sceAvcdecDecode(
         }
     } else {
         assert!(!au.es.pBuf.is_null());
+        if f.capture_encoded {
+            f.encoded.push(std::slice::from_raw_parts(au.es.pBuf.cast::<u8>(), au.es.size as usize).to_vec());
+        }
         let pts = (u64::from(au.pts.upper) << 32) | u64::from(au.pts.lower);
         f.inputs.push(pts);
         f.decoders.get_mut(&(*c).handle).unwrap().push_back(pts);

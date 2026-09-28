@@ -7,6 +7,11 @@ mod fonts;
 pub mod mic_button;
 #[path = "../../../src/shell/egui_painter.rs"]
 mod painter;
+#[path = "../../../src/shell/texture.rs"]
+mod texture;
+mod shell {
+    pub(crate) use crate::texture;
+}
 #[path = "../../../src/app/ui/screens/streaming.rs"]
 mod streaming_screen;
 #[path = "../../../src/app/ui/theme.rs"]

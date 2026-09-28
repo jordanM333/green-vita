@@ -176,6 +176,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn photographed_password_prompt_is_actionable_and_never_retried_as_media_recovery() {
+        let api = api_xbox::api::ApiClient::default();
+        api.1.lock().unwrap().push_back(serde_json::json!({"state":"Failed", "detailedSessionState":0,
+            "errorDetails":{"code":"SigninBlockedByPasswordPrompt","message":"private"}}));
+        let mut stream = Stream::new(api.clone(), api_xbox::auth::EndpointCredentials,
+            stream::StartStreamResponse { session_path: "/v5/sessions/home/owned".into() },
+            session_kind::StreamKind::Home);
+        let error = stream.poll_provisioning(&mut api_xbox::auth::MsalAuth).await.unwrap_err();
+        let failure = error.downcast_ref::<stream::ProvisioningFailure>().unwrap();
+        assert_eq!(failure.message_key(), "error-home-signin-required");
+        assert!(failure.to_string().contains("SigninBlockedByPasswordPrompt"));
+        assert!(failure.to_string().contains("connect accepted=false"));
+        stream.stop().await.unwrap();
+        assert_eq!(*api.0.lock().unwrap(), [(reqwest::Method::GET, "/v5/sessions/home/owned/state".to_owned())]);
+    }
+
+    #[tokio::test]
     async fn repeated_media_sdp_exchange_uses_the_existing_session_endpoint_only() {
         let api = api_xbox::api::ApiClient::default();
         let stream = stream::Stream::new(

@@ -11,6 +11,8 @@ bytes = "1"
 rtp = { package = "rtc-rtp", version = "=0.20.0-rc.2" }
 rtc-media = "=0.20.0-rc.2"
 h264-reader = "0.8"
+egui = "0.31"
+sdl2 = { version = "0.38", features = ["unsafe_textures"] }
 shared = { package = "rtc-shared", version = "=0.20.0-rc.2", default-features = false }
 
 [workspace]

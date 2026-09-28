@@ -1,9 +1,10 @@
 use crate::app::StreamingSession;
 use crate::shell::egui_painter::SdlEguiPainter;
+use crate::shell::texture::OwnedTexture;
 use crate::streaming::video::{CdramBlock, DirectVideoOutput, VideoTextureTarget};
 use anyhow::{Context, Result};
 use sdl2::pixels::PixelFormatEnum;
-use sdl2::render::{Canvas, Texture};
+use sdl2::render::Canvas;
 use sdl2::video::Window;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -14,7 +15,7 @@ pub const HEIGHT: u32 = 544;
 
 pub struct VitaSurface {
     pub(crate) canvas: Canvas<Window>,
-    video_textures: Option<Vec<Texture>>,
+    video_textures: Option<Vec<OwnedTexture>>,
     video_output_buffers: Option<Vec<CdramBlock>>,
     displayed_video_texture: Option<usize>,
     displayed_video_timing: Option<crate::streaming::video::timing::FrameTiming>,
@@ -251,8 +252,7 @@ impl VitaSurface {
         self.detach_direct_video_output();
         let (width, height) = (output.width, output.height);
         let create_texture = || {
-            self.canvas
-                .create_texture_streaming(PixelFormatEnum::BGR565, width, height)
+            OwnedTexture::streaming(&self.canvas, PixelFormatEnum::BGR565, width, height)
                 .map_err(anyhow::Error::msg)
                 .context("failed to create direct SDL BGR565 video texture")
         };

@@ -1,3 +1,4 @@
+use crate::shell::texture::OwnedTexture;
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -12,7 +13,7 @@ pub struct SdlEguiPainter {
 }
 
 struct SdlEguiTexture {
-    texture: sdl2::render::Texture,
+    texture: OwnedTexture,
     uv_scale: egui::Vec2,
 }
 
@@ -149,14 +150,14 @@ impl SdlEguiPainter {
         if delta.pos.is_none() || !textures.contains_key(&texture_id) {
             let pot_width = width.next_power_of_two();
             let pot_height = height.next_power_of_two();
-            let mut texture = canvas
-                .create_texture_streaming(
-                    PixelFormatEnum::RGBA32,
-                    pot_width as u32,
-                    pot_height as u32,
-                )
-                .map_err(anyhow::Error::msg)
-                .context("failed to create SDL egui texture")?;
+            let mut texture = OwnedTexture::streaming(
+                canvas,
+                PixelFormatEnum::RGBA32,
+                pot_width as u32,
+                pot_height as u32,
+            )
+            .map_err(anyhow::Error::msg)
+            .context("failed to create SDL egui texture")?;
             texture.set_blend_mode(BlendMode::Blend);
             texture
                 .update(

@@ -243,9 +243,11 @@ impl App {
                 let session_gone = message.contains("404");
                 let too_many_failures =
                     session.consecutive_failures >= MAX_CONSECUTIVE_POLL_FAILURES;
-                let terminal = error
-                    .downcast_ref::<crate::api_xbox::stream::ProvisioningFailure>()
-                    .is_some();
+                let provisioning =
+                    error.downcast_ref::<crate::api_xbox::stream::ProvisioningFailure>();
+                let terminal = provisioning.is_some();
+                let message_key =
+                    provisioning.map_or("error-stream-state", |failure| failure.message_key());
                 if terminal || session_gone || too_many_failures {
                     if let Some(job) = wait_estimate_job {
                         crate::jobs::cancel(job).await;
@@ -253,7 +255,7 @@ impl App {
                     if session.stream.stop().await.is_err() {
                         eprintln!("Session cleanup failed after provisioning error");
                     }
-                    Ok(self.localized_error_state("error-stream-state", format!("{error:#}")))
+                    Ok(self.localized_error_state(message_key, format!("{error:#}")))
                 } else {
                     Ok(AppState::Connecting {
                         session,

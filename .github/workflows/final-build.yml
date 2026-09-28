@@ -16,7 +16,7 @@ jobs:
         run: |
           rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
           rustup default 1.98.1
-          sudo apt-get update && sudo apt-get install -y libopus-dev libsdl2-dev
+          sudo apt-get update && sudo apt-get install -y libopus-dev libsdl2-dev ffmpeg
       - name: Formatting
         run: cargo fmt --all -- --check
       - name: Vendored SCTP protocol tests
@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: "-C target-feature=-neon"
-      GREENVITA_BUILD_NUMBER: "DISPLAY01-${{ github.run_number }}"
+      GREENVITA_BUILD_NUMBER: "HA03-${{ github.run_number }}"
       GREENVITA_BUILD_SHA: ${{ github.sha }}
     container:
       image: ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc
@@ -47,29 +47,29 @@ jobs:
         run: make native-clippy
       - name: Compile native release executable
         run: cargo build --release --locked -Zbuild-std=std,panic_abort
-      - name: Package display diagnostic
-        if: github.event_name == 'push' && github.ref == 'refs/heads/architecture-review-20260926' && contains(github.event.head_commit.message, '[display-diagnostic-vpk]')
+      - name: Package hardware acceptance candidate
+        if: github.event_name == 'push' && github.ref == 'refs/heads/architecture-review-20260926' && contains(github.event.head_commit.message, '[hardware-acceptance-vpk]')
         run: |
           make vpk
           python3 tools/check_vita_elf.py target/armv7-sony-vita-newlibeabihf/release/green-vita.elf
       - name: Verify packaged identity and source provenance
-        if: github.event_name == 'push' && github.ref == 'refs/heads/architecture-review-20260926' && contains(github.event.head_commit.message, '[display-diagnostic-vpk]')
+        if: github.event_name == 'push' && github.ref == 'refs/heads/architecture-review-20260926' && contains(github.event.head_commit.message, '[hardware-acceptance-vpk]')
         env:
           GREENVITA_SDK_IMAGE: ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc
           GIT_CONFIG_COUNT: "1"
           GIT_CONFIG_KEY_0: safe.directory
           GIT_CONFIG_VALUE_0: ${{ github.workspace }}
         run: |
-          python3 tools/build_provenance.py target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk --revision "$GITHUB_SHA" --number "$GREENVITA_BUILD_NUMBER" --diagnostic --checkout > display-provenance.json
-          sha256sum target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk > display-sha256.txt
+          python3 tools/build_provenance.py target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk --revision "$GITHUB_SHA" --number "$GREENVITA_BUILD_NUMBER" --hardware-acceptance --checkout > acceptance-provenance.json
+          sha256sum target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk > acceptance-sha256.txt
       - uses: actions/upload-artifact@v4
-        if: github.event_name == 'push' && github.ref == 'refs/heads/architecture-review-20260926' && contains(github.event.head_commit.message, '[display-diagnostic-vpk]')
+        if: github.event_name == 'push' && github.ref == 'refs/heads/architecture-review-20260926' && contains(github.event.head_commit.message, '[hardware-acceptance-vpk]')
         with:
-          name: GreenVita-DISPLAY01-${{ github.sha }}
+          name: GreenVita-HA03-${{ github.sha }}
           path: |
             target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk
-            display-provenance.json
-            display-sha256.txt
+            acceptance-provenance.json
+            acceptance-sha256.txt
           if-no-files-found: error
           retention-days: 30
       - uses: actions/upload-artifact@v4

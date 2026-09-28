@@ -12,8 +12,7 @@ use std::time::Instant;
 #[path = "display_probe.rs"]
 pub(crate) mod display_probe;
 
-pub(crate) const LABEL: &str =
-    "DIAGNOSTIC BUILD — DISPLAY CAPTURE — PROGRESSIVE LATENCY NOT YET FIXED";
+pub(crate) const LABEL: &str = "HARDWARE ACCEPTANCE CANDIDATE — PHYSICAL VITA ACCEPTANCE PENDING — CLOUD BLACKOUT NOT YET VERIFIED";
 const PRE_US: u64 = 12_000_000;
 const POST_US: u64 = 10_000_000;
 const LIMIT_US: u64 = 180_000_000;

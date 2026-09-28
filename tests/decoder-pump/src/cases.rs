@@ -3,8 +3,71 @@ use std::{sync::Arc, time::{Duration,Instant}};
 use crate::FAKE;
 #[path = "burst_replay.rs"]
 mod burst_replay;
+#[path = "codec_roundtrip.rs"]
+mod codec_roundtrip;
 fn config()->DecoderConfig { DecoderConfig{decode_width:1280,decode_height:720,output_width:960,output_height:544} }
 fn reset() { *FAKE.lock().unwrap()=Default::default(); }
+
+#[test]
+fn production_surface_upload_draw_and_pixels_survive_startup_expiry_and_restart() {
+    // Run the actual upload, texture selection, drawing, egui painter and
+    // presentation bookkeeping. SDL software, host memory and synchronous memcpy
+    // replace GXM/CDRAM/DMA; this does not emulate Vita firmware or panel scanout.
+    reset();
+    let sdl = sdl2::init().unwrap();
+    let subsystem = sdl.video().unwrap();
+    let mut surface = crate::shell::surface::VitaSurface::software_fixture(&subsystem);
+    let colors = [0x001fu16, 0x07e0, 0xf800]; // BGR565: red, green, blue.
+    let expected = [[255, 0, 0], [0, 255, 0], [0, 0, 255]];
+    let mut closed_allocations = Vec::new();
+    for session_number in 0..2 {
+        let output = Arc::new(DirectVideoOutput::new(960, 544));
+        output.decoder_ready.store(true, Ordering::Release);
+        let session = crate::app::StreamingSession(output.clone());
+        surface.sync_video_frame(Some(&session)).unwrap();
+        let start = Instant::now();
+        for frame in 0..120u32 {
+            let now = Instant::now();
+            let timestamp = 0xffff_0000u32.wrapping_add((now.duration_since(start).as_micros() * 90 / 1000) as u32);
+            output.live_edge.lock().unwrap().observe(timestamp, frame as u16, now, now);
+            let lease = output.lock_decode_target().unwrap();
+            let target = lease.target;
+            let color = colors[(frame as usize + session_number) % colors.len()];
+            // SAFETY: the exclusive output lease owns the initialized fake CDRAM
+            // allocation for its full advertised capacity until publication.
+            let bytes = unsafe { std::slice::from_raw_parts_mut(target.ptr as *mut u8, target.capacity as usize) };
+            for pixel in bytes.as_chunks_mut::<2>().0 { pixel.copy_from_slice(&color.to_le_bytes()); }
+            let timing = timing::FrameTiming { rtp_timestamp: timestamp, received_at: now,
+                submitted_at: now, decoded_at: now, epoch: 0 };
+            lease.publish(Some(timing)).unwrap();
+            surface.sync_video_frame(Some(&session)).unwrap();
+            surface.draw_scene(true).unwrap();
+            surface.paint_egui(1.0, &[], &egui::TexturesDelta::default()).unwrap();
+            let pixels = surface.canvas.read_pixels(sdl2::rect::Rect::new(480, 272, 1, 1), sdl2::pixels::PixelFormatEnum::RGB24).unwrap();
+            assert_eq!(pixels, expected[(frame as usize + session_number) % expected.len()], "session {session_number}, frame {frame}");
+            let presented = output.presentation.lock().unwrap().take().unwrap();
+            assert_eq!(presented.timing.rtp_timestamp, timestamp);
+            output.confirm_presentation(presented);
+            assert_eq!(output.live_edge_state(), live_edge::State::Live);
+            std::thread::sleep(Duration::from_millis(17));
+        }
+        assert!(start.elapsed() > Duration::from_secs(1));
+        std::thread::sleep(policy::MAX_LOCAL_VIDEO_AGE + Duration::from_millis(10));
+        assert!(surface.needs_expiry_redraw());
+        surface.draw_scene(true).unwrap();
+        surface.paint_egui(1.0, &[], &egui::TexturesDelta::default()).unwrap();
+        assert_eq!(surface.canvas.read_pixels(sdl2::rect::Rect::new(480, 272, 1, 1), sdl2::pixels::PixelFormatEnum::RGB24).unwrap(), [0, 0, 0]);
+        assert!(output.presentation.lock().unwrap().take().is_none());
+        surface.sync_video_frame(None).unwrap();
+        assert!(FAKE.lock().unwrap().memory.is_empty());
+        // SDL's allocator counter observes real texture allocations, unlike
+        // the fake CDRAM handle count above.
+        closed_allocations.push(unsafe { sdl2::sys::SDL_GetNumAllocations() });
+    }
+    assert!(closed_allocations.iter().all(|&count| count > 0), "SDL allocation tracking unavailable");
+    println!("SDL allocations after production surface detach: {closed_allocations:?}");
+    assert!(closed_allocations[1] <= closed_allocations[0], "SDL allocations grew after stream exit: {closed_allocations:?}");
+}
 
 #[test]
 fn undersized_output_is_rejected_before_native_decode() {
