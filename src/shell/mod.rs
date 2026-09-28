@@ -373,6 +373,7 @@ async fn run_inner(app: &mut App) -> Result<()> {
         // until the decoder has a newer frame. Refresh the UI periodically even if video stalls.
         let skip_unchanged_stream = matches!(&app.state, AppState::Streaming(streaming) if !streaming.paused)
             && surface.has_displayed_video_frame()
+            && !surface.needs_expiry_redraw()
             && !surface.has_pending_video_frame()
             && egui_events.is_empty()
             && hold_progress.is_none()

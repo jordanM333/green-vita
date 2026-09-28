@@ -82,6 +82,9 @@ is silently treated as an external network timestamp. The recorded rapid
 5. Declare recovery only after an actual matched picture from the active epoch
    completes rendering within the media deadline. A queued IDR or an old render
    completion cannot declare LIVE. Every repeat draw rechecks age and epoch.
+   Expiry also bypasses the scheduler's 250 ms unchanged-frame paint skip on the
+   next input-loop pass (normally 4 ms); once black is drawn, idle GPU work stays
+   suppressed. This is software scheduling, not a measured panel scanout bound.
 
 If only stale data arrives, video becomes visibly unavailable with a recovery
 message. This avoids ongoing stale gameplay but **is not successful recovery**.

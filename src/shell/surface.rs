@@ -87,6 +87,17 @@ impl VitaSurface {
         self.displayed_video_texture.is_some()
     }
 
+    pub(crate) fn needs_expiry_redraw(&self) -> bool {
+        // Only the first black/recovery repaint is urgent. Once that has been
+        // drawn, ordinary status refresh can remain idle and save GPU work.
+        self.drew_video
+            && self.displayed_video_timing.is_some_and(|timing| {
+                self.direct_video_output
+                    .as_ref()
+                    .is_none_or(|output| !output.can_draw(timing, Instant::now()))
+            })
+    }
+
     pub fn sync_video_frame(&mut self, streaming: Option<&StreamingSession>) -> Result<()> {
         let Some(streaming) = streaming else {
             self.detach_direct_video_output();
