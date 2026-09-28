@@ -2,12 +2,21 @@
 //! Production adapter, worker, metadata and texture ownership run unchanged.
 #![allow(dead_code, unused_imports, non_snake_case, unsafe_op_in_unsafe_fn)]
 #[allow(dead_code)]
-#[path = "../../../src/diagnostic.rs"]
-mod diagnostic;
-#[allow(dead_code)]
 #[path = "../../../src/build_info.rs"]
 mod build_info;
+#[allow(dead_code)]
+#[path = "../../../src/diagnostic.rs"]
+mod diagnostic;
+extern crate self as rtc;
 extern crate self as vitasdk_sys;
+pub use rtp;
+#[path = "../../../src/streaming/audio_timing.rs"]
+mod audio_timing;
+mod streaming {
+    pub(crate) use crate::{audio_timing, video};
+}
+#[path = "../../../src/api/streaming/rtc/rtp.rs"]
+mod video_rtp;
 use std::{
     collections::{HashMap, VecDeque},
     ffi::{c_char, c_void},

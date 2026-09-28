@@ -33,7 +33,7 @@ def sfo_strings(data):
     return result
 
 
-def inspect(vpk, revision, number, diagnostic=False):
+def inspect(vpk, revision, number, diagnostic=False, acceptance=False):
     with zipfile.ZipFile(vpk) as archive:
         if len(archive.namelist()) != len(set(archive.namelist())):
             raise ValueError("duplicate package entries")
@@ -60,11 +60,22 @@ def inspect(vpk, revision, number, diagnostic=False):
             for asset in ("sce_sys/icon0.png", "sce_sys/livearea/contents/template.xml"):
                 if not archive.read(asset):
                     raise ValueError(f"empty install asset {asset}")
+        if acceptance:
+            if b"HARDWARE ACCEPTANCE CANDIDATE" not in executable or b"PHYSICAL VITA ACCEPTANCE PENDING" not in executable:
+                raise ValueError("packaged hardware acceptance warning missing")
+            if sfo.get("TITLE") != "GreenVita Acceptance" or not number.startswith("HA02-"):
+                raise ValueError("hardware acceptance identity missing")
+            if executable[:4] != b"SCE\x00":
+                raise ValueError("packaged executable is not a Vita SELF")
+            for asset in ("sce_sys/icon0.png", "sce_sys/livearea/contents/template.xml", "sce_sys/livearea/contents/bg0.png", "sce_sys/livearea/contents/startup.png"):
+                if not archive.read(asset):
+                    raise ValueError(f"empty install asset {asset}")
         if sfo.get("TITLE_ID") != "GRNVTEST1":
             raise ValueError("unexpected install title ID")
     return {"source_commit": revision, "build_number": number,
             "vpk_sha256": sha256(Path(vpk).read_bytes()), "eboot_sha256": sha256(executable),
             "sfo": sfo, "embedded_identity_checked": True, "diagnostic_only": diagnostic,
+            "hardware_acceptance_candidate": acceptance,
             "progressive_latency_fixed": False, "zip_crc_checked": True}
 
 
@@ -79,8 +90,11 @@ def main():
     parser.add_argument("--number", required=True)
     parser.add_argument("--checkout", action="store_true")
     parser.add_argument("--diagnostic", action="store_true")
+    parser.add_argument("--hardware-acceptance", action="store_true")
     args = parser.parse_args()
-    result = inspect(args.vpk, args.revision, args.number, args.diagnostic)
+    if args.diagnostic and args.hardware_acceptance:
+        parser.error("choose one package intent")
+    result = inspect(args.vpk, args.revision, args.number, args.diagnostic, args.hardware_acceptance)
     if args.checkout:
         if git("rev-parse", "HEAD") != args.revision:
             raise SystemExit("workflow checkout does not match embedded revision")

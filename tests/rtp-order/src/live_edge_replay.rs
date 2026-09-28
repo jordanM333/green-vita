@@ -16,7 +16,11 @@ fn returned_diag03_8_onset_blocks_stale_video_and_preserves_current_audio() {
     let mut video_max = 0;
     let mut video_packets = 0;
     let mut audio_packets = 0;
-    for line in include_str!("../fixtures/diag03-8-onset.csv").lines().filter(|l| !l.starts_with('#')).skip(1) {
+    for line in include_str!("../fixtures/diag03-8-onset.csv")
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .skip(1)
+    {
         let fields: Vec<u64> = line.split(',').map(|v| v.parse().unwrap()).collect();
         let d = start + Duration::from_micros(fields[1]);
         let l = start + Duration::from_micros(fields[2]);
@@ -24,6 +28,12 @@ fn returned_diag03_8_onset_blocks_stale_video_and_preserves_current_audio() {
         let seq = fields[4] as u16;
         if fields[0] == 1 {
             video_packets += 1;
+            // This retained window begins well after successful playback in the
+            // original device history. Seed its first observed playable point;
+            // the fixture has no payload/render events to manufacture startup.
+            if video_packets == 1 {
+                video.establish(ts, d, d);
+            }
             if video.observe(ts, seq, d, l) {
                 incident.get_or_insert(fields[1]);
                 incident_lag.get_or_insert(video.added_delay_ms(ts, l).unwrap());
@@ -31,9 +41,15 @@ fn returned_diag03_8_onset_blocks_stale_video_and_preserves_current_audio() {
             requests += u32::from(video.request_due(l));
             let lag = video.added_delay_ms(ts, l).unwrap();
             video_max = video_max.max(lag);
-            if !video.admit(ts, true, l) { rejected += 1; }
+            if !video.admit(ts, true, l) {
+                rejected += 1;
+            }
             if fields[1] > 116_000_000 {
-                assert!(!video.admit(ts, true, l), "old video passed at {}us", fields[1]);
+                assert!(
+                    !video.admit(ts, true, l),
+                    "old video passed at {}us",
+                    fields[1]
+                );
                 assert!(!video.can_present(ts, l));
             }
         } else {
@@ -55,5 +71,10 @@ fn returned_diag03_8_onset_blocks_stale_video_and_preserves_current_audio() {
     // Up to three initial requests plus one bounded rearm if current timestamps
     // return. Payloads are absent, so we cannot submit/confirm a real IDR here.
     assert!((3..=6).contains(&requests));
-    println!("DIAG03-8: video packets={video_packets}, audio packets={audio_packets}, quarantine D={}us at {}ms, max relative video={video_max}ms, audio={}us, rejected={rejected}, requests={requests}; actual live recovery=UNPROVEN (no payload/counterfactual sender)", incident.unwrap(), incident_lag.unwrap(), audio_max.as_micros());
+    println!(
+        "DIAG03-8: video packets={video_packets}, audio packets={audio_packets}, quarantine D={}us at {}ms, max relative video={video_max}ms, audio={}us, rejected={rejected}, requests={requests}; actual live recovery=UNPROVEN (no payload/counterfactual sender)",
+        incident.unwrap(),
+        incident_lag.unwrap(),
+        audio_max.as_micros()
+    );
 }

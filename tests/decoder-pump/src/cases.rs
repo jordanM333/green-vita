@@ -82,6 +82,7 @@ fn stale_before_socket_is_rejected_by_real_worker_with_fresh_local_arrival() {
     let (output, _pixels) = surfaces();
     let mut worker = VideoDecodeWorker::spawn(config(), output.clone()).unwrap();
     let now = Instant::now();
+    output.live_edge.lock().unwrap().establish(0, now - Duration::from_secs(2), now - Duration::from_secs(2));
     worker.observe_media(0, 0, now - Duration::from_secs(2), now - Duration::from_secs(2));
     worker.observe_media(1500, 1, now, now);
     let expired = metrics::METRICS.expired_access_unit.load(Ordering::Relaxed);
@@ -97,6 +98,7 @@ fn uploaded_texture_expires_and_old_epoch_completion_cannot_close_new_recovery()
     reset();
     let (output, _pixels) = surfaces();
     let now = Instant::now();
+    output.live_edge.lock().unwrap().establish(0, now, now);
     output.live_edge.lock().unwrap().observe(0, 0, now, now);
     let timing = timing::FrameTiming { rtp_timestamp: 0, received_at: now,
         submitted_at: now, decoded_at: now, epoch: 0 };
@@ -123,6 +125,54 @@ fn surfaces()->(Arc<DirectVideoOutput>,Vec<Vec<u8>>) {
     let output=Arc::new(DirectVideoOutput::new(960,544));
     output.set_targets(pixels.iter_mut().map(|p|VideoTextureTarget {ptr:p.as_mut_ptr()as usize,pitch:1920,capacity:p.len()as u32}).collect());
     (output,pixels)
+}
+
+#[test]
+fn normal_startup_assembly_decode_and_presentation_survive_setup_and_bad_sr() {
+    // Real RTP/parameter parser, queue, decoder adapter and output ownership.
+    // Only hardware decode and the final display callback are substituted.
+    reset();
+    let (output, _pixels) = surfaces();
+    let mut worker = VideoDecodeWorker::spawn(config(), output.clone()).unwrap();
+    let mut assembly = crate::video_rtp::VideoRtp::new(1280, 720);
+    let setup = Instant::now() - Duration::from_secs(2);
+    worker.observe_media(0, 0, setup, setup);
+    worker.poll_media(Instant::now());
+    assert_eq!(output.live_edge_state(), live_edge::State::Unmeasured);
+    let sps: &[u8] = &[0x67,0x42,0xc0,0x20,0xda,0x01,0x40,0x16,0xec,0x04,0x40,0,0,3,0,0x40,0,0,0x1e,0x23,0xc6,0x0c,0xa8];
+    let pps: &[u8] = &[0x68,0xce,0x0f,0xc8];
+    let idr: &[u8] = &[0x65,0xbb,0xcc];
+    let mut seq = 1u16;
+    for frame in 0..180u32 {
+        let now = Instant::now();
+        let ts = 0xffff0000u32.wrapping_add(frame * 1500);
+        let nals: Vec<&[u8]> = if frame == 0 { vec![sps,pps,idr] } else { vec![&[0x61,0xaa,0xbb]] };
+        for (i,nal) in nals.iter().enumerate() {
+            worker.observe_media(ts, seq, now, now);
+            let packet = crate::rtp::Packet { header: crate::rtp::header::Header {
+                timestamp: ts, sequence_number: seq, marker: i + 1 == nals.len(), ..Default::default()
+            }, payload: bytes::Bytes::copy_from_slice(nal) };
+            let _stats = assembly.receive_at(&worker, packet, now, &mut false);
+            seq = seq.wrapping_add(1);
+        }
+        wait_for(|| output.has_pending_frame());
+        let (_,_,_,_,timing) = output.take_latest_for_display().expect("fresh picture");
+        let timing = timing.unwrap();
+        let rendered_at = Instant::now();
+        assert_eq!(timing.rtp_timestamp, ts);
+        assert!(output.can_draw(timing, rendered_at));
+        output.confirm_presentation(timing::PresentedFrame { timing, rendered_at });
+        let mut edge = output.live_edge.lock().unwrap();
+        if frame == 0 { edge.sender_report(ts, 1u64 << 32, now); }
+        if frame == 60 { edge.sender_report(ts - 1500, 2u64 << 32, now); }
+        assert!(edge.can_present(ts, rendered_at));
+        assert_eq!(edge.state(), live_edge::State::Live);
+        assert_eq!(edge.incidents, 0);
+        drop(edge);
+        std::thread::sleep(Duration::from_millis(16));
+    }
+    worker.shutdown();
+    assert_eq!(FAKE.lock().unwrap().inputs.len(), 180);
 }
 fn wait_for(mut check:impl FnMut()->bool) {
     let end=Instant::now()+Duration::from_secs(2);

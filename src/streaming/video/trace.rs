@@ -91,6 +91,8 @@ impl Trace {
                 | "recovery_begin"
                 | "live_edge_quarantine"
                 | "live_edge_quarantine_idle"
+                | "live_edge_established"
+                | "live_edge_sr_ignored"
                 | "live_edge_recovered"
                 | "recovery_idr_admitted_ms"
                 | "au_abandon"

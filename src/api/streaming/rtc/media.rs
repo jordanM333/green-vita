@@ -48,7 +48,6 @@ pub(crate) struct VideoReceiver {
     pub(crate) decoder: VideoDecodeWorker,
     pub(crate) latest_frame: Option<(u64, DecodedFrame)>,
     next_frame_id: u64,
-    pub(crate) received_packet: bool,
     last_stats_report: Instant,
     stats: VideoStats,
     decoder_config: DecoderConfig,
@@ -73,7 +72,6 @@ impl VideoReceiver {
             decoder: VideoDecodeWorker::spawn(config, direct_output)?,
             latest_frame: None,
             next_frame_id: 0,
-            received_packet: false,
             last_stats_report: Instant::now(),
             stats: VideoStats::default(),
             decoder_config: config,
@@ -173,7 +171,6 @@ impl VideoReceiver {
     ) {
         self.order
             .enable_repair(self.nack_payloads.contains(&packet.header.payload_type));
-        self.received_packet = true;
         self.stats.packets = self.stats.packets.saturating_add(1);
         let now = Instant::now();
         if !packet.payload.is_empty() {

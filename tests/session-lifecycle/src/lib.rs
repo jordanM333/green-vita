@@ -48,7 +48,10 @@ pub mod api_xbox {
     }
     pub mod api {
         #[derive(Debug, Clone, Default)]
-        pub struct ApiClient(pub std::sync::Arc<std::sync::Mutex<Vec<(reqwest::Method, String)>>>);
+        pub struct ApiClient(
+            pub std::sync::Arc<std::sync::Mutex<Vec<(reqwest::Method, String)>>>,
+            pub std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<serde_json::Value>>>,
+        );
         impl ApiClient {
             pub async fn request_json<T: serde::de::DeserializeOwned>(
                 &self,
@@ -61,7 +64,13 @@ pub mod api_xbox {
                     .lock()
                     .unwrap()
                     .push((method.clone(), path.to_owned()));
-                let value = if method == reqwest::Method::GET && path.ends_with("/sdp") {
+                let value = if method == reqwest::Method::GET && path.ends_with("/state") {
+                    self.1
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .expect("scripted state response")
+                } else if method == reqwest::Method::GET && path.ends_with("/sdp") {
                     serde_json::json!({"exchangeResponse": "{\"sdp\":\"v=0\\r\\n\"}"})
                 } else {
                     serde_json::json!({})
@@ -74,6 +83,98 @@ pub mod api_xbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn ready_to_connect_is_one_handshake_per_owned_session_across_mode_changes() {
+        let api = api_xbox::api::ApiClient::default();
+        // Actual Stream methods, scripted service boundary; no claim of Xbox auth.
+        for (kind, name) in [
+            (session_kind::StreamKind::Cloud, "cloud"),
+            (session_kind::StreamKind::Home, "home"),
+            (session_kind::StreamKind::Home, "home"),
+        ] {
+            let mut stream = Stream::new(
+                api.clone(),
+                api_xbox::auth::EndpointCredentials,
+                stream::StartStreamResponse {
+                    session_path: format!("/v5/sessions/{name}/owned"),
+                },
+                kind,
+            );
+            for state in [
+                "Provisioning",
+                "ReadyToConnect",
+                "ReadyToConnect",
+                "Provisioned",
+            ] {
+                api.1
+                    .lock()
+                    .unwrap()
+                    .push_back(serde_json::json!({"state":state}));
+                stream
+                    .poll_provisioning(&mut api_xbox::auth::MsalAuth)
+                    .await
+                    .unwrap();
+                // The app clones state into each background polling job.
+                stream = stream.clone();
+            }
+            stream.send_sdp_offer("v=0\r\n").await.unwrap();
+            stream.stop().await.unwrap();
+        }
+        let requests = api.0.lock().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|(m, p)| *m == reqwest::Method::POST && p.ends_with("/connect"))
+                .count(),
+            3
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|(m, _)| *m == reqwest::Method::DELETE)
+                .count(),
+            1
+        );
+        assert!(
+            requests
+                .iter()
+                .filter(|(m, _)| *m == reqwest::Method::DELETE)
+                .all(|(_, p)| p.contains("/cloud/"))
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_home_state_keeps_service_code_and_terminal_identity() {
+        let api = api_xbox::api::ApiClient::default();
+        api.1.lock().unwrap().push_back(serde_json::json!({"state":"Failed", "detailedSessionState":17,
+            "errorDetails":{"code":"AgentCommandError","message":"private server text must not leak"}}));
+        let mut stream = Stream::new(
+            api.clone(),
+            api_xbox::auth::EndpointCredentials,
+            stream::StartStreamResponse {
+                session_path: "/v5/sessions/home/owned".into(),
+            },
+            session_kind::StreamKind::Home,
+        );
+        let error = stream
+            .poll_provisioning(&mut api_xbox::auth::MsalAuth)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<stream::ProvisioningFailure>()
+                .is_some()
+        );
+        let text = error.to_string();
+        assert!(
+            text.contains("AgentCommandError")
+                && text.contains("detail=17")
+                && text.contains("connect accepted=false")
+        );
+        assert!(!text.contains("private"));
+        assert_eq!(api.0.lock().unwrap().len(), 1);
+    }
+
     #[tokio::test]
     async fn repeated_media_sdp_exchange_uses_the_existing_session_endpoint_only() {
         let api = api_xbox::api::ApiClient::default();

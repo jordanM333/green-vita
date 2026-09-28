@@ -165,13 +165,24 @@ impl DirectVideoOutput {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if frame.timing.epoch >= state.minimum_epoch
             && let Ok(mut edge) = self.live_edge.lock()
-            && edge.presented(frame.timing.rtp_timestamp, frame.rendered_at)
         {
-            trace::record(
-                "live_edge_recovered",
+            if edge.establish(
                 frame.timing.rtp_timestamp,
-                frame.timing.epoch,
-            );
+                frame.timing.received_at,
+                frame.rendered_at,
+            ) {
+                trace::record(
+                    "live_edge_established",
+                    frame.timing.rtp_timestamp,
+                    frame.timing.epoch,
+                );
+            } else if edge.presented(frame.timing.rtp_timestamp, frame.rendered_at) {
+                trace::record(
+                    "live_edge_recovered",
+                    frame.timing.rtp_timestamp,
+                    frame.timing.epoch,
+                );
+            }
         }
     }
 

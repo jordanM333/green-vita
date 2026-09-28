@@ -243,7 +243,10 @@ impl App {
                 let session_gone = message.contains("404");
                 let too_many_failures =
                     session.consecutive_failures >= MAX_CONSECUTIVE_POLL_FAILURES;
-                if session_gone || too_many_failures {
+                let terminal = error
+                    .downcast_ref::<crate::api_xbox::stream::ProvisioningFailure>()
+                    .is_some();
+                if terminal || session_gone || too_many_failures {
                     if let Some(job) = wait_estimate_job {
                         crate::jobs::cancel(job).await;
                     }

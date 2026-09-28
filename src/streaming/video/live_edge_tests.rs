@@ -1,11 +1,95 @@
 use super::*;
 
 #[test]
+fn auxiliary_sender_report_mismatch_must_not_kill_healthy_video() {
+    let start = Instant::now();
+    let mut edge = LiveEdge::default();
+    for frame in 0..180u32 {
+        let now = start + Duration::from_micros(u64::from(frame) * 1_000_000 / 60);
+        let ts = 123_456u32.wrapping_add(frame * 1500);
+        if frame == 0 {
+            edge.establish(ts, now, now);
+        }
+        edge.observe(ts, frame as u16, now, now);
+        if frame == 0 {
+            edge.sender_report(ts, 1u64 << 32, now);
+        }
+        // An optional SR clock observation is inconsistent by one frame.
+        // It is not evidence that continuously advancing RTP became stale.
+        if frame == 60 {
+            edge.sender_report(ts - 1500, 2u64 << 32, now);
+        }
+        assert!(
+            edge.can_present(ts, now),
+            "frame {frame}: {}",
+            edge.summary()
+        );
+    }
+}
+
+#[test]
+fn setup_packets_are_not_a_playback_clock_establishment() {
+    let start = Instant::now();
+    let mut edge = LiveEdge::default();
+    edge.observe(0, 1, start, start);
+    edge.poll(start + Duration::from_secs(1));
+    assert_eq!(edge.state(), State::Unmeasured);
+    let now = start + Duration::from_secs(1);
+    edge.observe(0xd0000000, 2, now, now);
+    assert!(edge.can_present(0xd0000000, now));
+    assert_eq!(edge.incidents, 0);
+}
+
+#[test]
+fn fast_forward_catchup_is_an_earlier_edge_not_an_invalid_clock() {
+    let start = Instant::now();
+    let mut edge = LiveEdge::default();
+    edge.establish(0, start, start);
+    // A compressed burst advances media by 600ms in 20ms of dequeue time.
+    // That reduces existing unknown path delay; it cannot mean stale media.
+    let now = start + Duration::from_millis(20);
+    edge.observe(54_000, 1, now, now);
+    assert_eq!(edge.state(), State::Live);
+    assert!(edge.can_present(54_000, now));
+    // This earlier baseline still rejects a subsequent real delay.
+    let delayed = now + Duration::from_secs(2);
+    assert!(edge.observe(55_500, 2, delayed, delayed));
+    assert!(!edge.can_present(55_500, delayed));
+    assert!(
+        !edge.establish(55_500, delayed, delayed),
+        "recovery cannot rebase"
+    );
+}
+
+#[test]
+fn rejected_audio_report_cannot_mute_fresh_samples_or_excuse_delayed_audio() {
+    let start = Instant::now();
+    let mut clock = MediaClock::new(48_000);
+    for packet in 0..150u32 {
+        let now = start + Duration::from_millis(u64::from(packet) * 20);
+        let ts = packet * 960;
+        clock.observe(ts, packet as u16, now);
+        if packet == 0 {
+            clock.sender_report(ts, 1u64 << 32, now);
+        }
+        if packet == 50 {
+            clock.sender_report(ts - 960, 2u64 << 32, now);
+        }
+        assert!(clock.valid());
+        assert!(now + Duration::from_millis(140) <= clock.deadline(ts).unwrap());
+    }
+    let now = start + Duration::from_millis(4595);
+    clock.observe(144_000, 151, now);
+    assert!(clock.deadline(144_000).unwrap() < now);
+}
+
+#[test]
 fn frozen_timestamps_and_a_silent_stream_expire_without_repeated_flushes() {
     let start = Instant::now();
     for duplicate_packets in [false, true] {
         let mut edge = LiveEdge::default();
         edge.observe(123, 1, start, start);
+        edge.establish(123, start, start);
         let mut transitions = 0;
         let mut requests = 0;
         for tick in 1..=6000u16 {
@@ -41,6 +125,9 @@ fn observed_deficit_cannot_become_persistent_stale_playback_even_with_empty_queu
             .min(1_595_000);
         let now = start + Duration::from_micros(u64::from(frame) * 1_000_000 / 60 + lag_us);
         let ts = frame * 1500;
+        if frame == 0 {
+            edge.establish(ts, now, now);
+        }
         if edge.observe(ts, frame as u16, now, now) {
             detected_at.get_or_insert(lag_us);
         }
@@ -90,6 +177,9 @@ fn legitimate_jitter_duplicates_reorder_bursts_and_idle_do_not_rebase_or_trigger
     for frame in 0..3600u32 {
         let nominal = start + Duration::from_micros(u64::from(frame) * 1_000_000 / 60);
         let now = nominal + Duration::from_millis(if frame % 120 < 6 { 60 } else { 0 });
+        if frame == 0 {
+            edge.establish(0, now, now);
+        }
         edge.observe(frame * 1500, frame as u16, now, now);
         if frame > 10 {
             edge.observe((frame - 2) * 1500, (frame - 2) as u16, now, now);
@@ -108,6 +198,7 @@ fn legitimate_jitter_duplicates_reorder_bursts_and_idle_do_not_rebase_or_trigger
 fn timestamp_and_sequence_wrap_are_not_resets_but_discontinuity_is_unknown() {
     let start = Instant::now();
     let mut edge = LiveEdge::default();
+    edge.establish(u32::MAX - 1499, start, start);
     edge.observe(u32::MAX - 1499, u16::MAX, start, start);
     let now = start + Duration::from_micros(16_667);
     edge.observe(0, 0, now, now);
@@ -127,6 +218,7 @@ fn timestamp_and_sequence_wrap_are_not_resets_but_discontinuity_is_unknown() {
 fn failed_or_expired_keyframe_does_not_report_recovery_or_restart_request_budget() {
     let start = Instant::now();
     let mut edge = LiveEdge::default();
+    edge.establish(0, start, start);
     edge.observe(0, 0, start, start);
     let now = start + Duration::from_secs(2);
     edge.observe(1500, 1, now, now);
@@ -151,6 +243,9 @@ fn six_hour_clock_skew_is_calibrated_without_forgiving_media_lag() {
             let wall_ns = (i128::from(media_ns) * 1_000_000 / i128::from(1_000_000 + ppm)) as u64;
             let now = start + Duration::from_nanos(wall_ns);
             let ts = (frame * 1500) as u32;
+            if frame == 0 {
+                edge.establish(ts, now, now);
+            }
             edge.observe(ts, frame as u16, now, now);
             if frame % 60 == 0 {
                 let ntp = (u128::from(media_ns) * (1u128 << 32) / 1_000_000_000) as u64;
@@ -178,6 +273,9 @@ fn delayed_sender_reports_cannot_calibrate_away_a_stale_plateau() {
             Duration::from_millis(1595)
         };
         let now = start + media + lag;
+        if frame == 0 {
+            edge.establish(0, now, now);
+        }
         edge.observe(frame * 1500, frame as u16, now, now);
         if frame % 60 == 0 {
             edge.sender_report(frame * 1500, (u64::from(frame) / 60) << 32, now);

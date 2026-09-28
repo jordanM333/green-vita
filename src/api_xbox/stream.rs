@@ -44,11 +44,42 @@ pub struct Stream {
     credentials: EndpointCredentials,
     session_path: String,
     pub state: StreamState,
+    connect_accepted: bool,
+    provisioning_failure: Option<String>,
+    startup_history: Vec<String>,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct StateResponse {
     state: String,
+    #[serde(default)]
+    error_details: Value,
+    #[serde(default)]
+    detailed_session_state: Value,
+}
+
+#[derive(Debug)]
+pub struct ProvisioningFailure(String);
+impl std::fmt::Display for ProvisioningFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for ProvisioningFailure {}
+
+fn service_code(value: &Value) -> String {
+    // Only a bounded identifier, never arbitrary service text/URLs/tokens.
+    value
+        .as_str()
+        .filter(|s| {
+            !s.is_empty()
+                && s.len() <= 96
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+        })
+        .unwrap_or("unreported")
+        .to_owned()
 }
 
 impl Stream {
@@ -64,6 +95,9 @@ impl Stream {
             credentials,
             session_path: response.session_path,
             state: StreamState::New,
+            connect_accepted: false,
+            provisioning_failure: None,
+            startup_history: vec![format!("{:?}: session creation accepted", kind)],
         }
     }
 
@@ -89,24 +123,94 @@ impl Stream {
                 None,
             )
             .await?;
+        let previous = self.state;
         self.state = StreamState::from_api(&response.state);
+        if self.state == StreamState::Error {
+            self.provisioning_failure = Some(format!(
+                "{:?} provisioning failed: state={}, service code={}, detail={}, connect accepted={}",
+                self.kind,
+                service_code(&Value::String(response.state)),
+                service_code(&response.error_details["code"]),
+                response
+                    .detailed_session_state
+                    .as_i64()
+                    .map_or_else(|| "unreported".into(), |n| n.to_string()),
+                self.connect_accepted
+            ));
+        }
+        if self.state != previous {
+            self.record_startup(self.provisioning_failure.clone().unwrap_or_else(|| {
+                format!(
+                    "state={:?}, connect accepted={}",
+                    self.state, self.connect_accepted
+                )
+            }));
+        }
         Ok(self.state)
     }
 
     pub async fn poll_provisioning(&mut self, auth: &mut MsalAuth) -> Result<StreamState> {
         let state = self.refresh_state().await?;
         match state {
-            StreamState::ReadyToConnect => {
+            StreamState::ReadyToConnect if !self.connect_accepted => {
                 let passport_token = auth.get_passport_token().await?;
                 self.send_msal_auth(&passport_token).await?;
+                self.connect_accepted = true;
+                self.record_startup("connect POST accepted; waiting for Provisioned".into());
             }
-            StreamState::Error => anyhow::bail!("stream session entered an error state"),
-            StreamState::New
+            StreamState::Error => {
+                return Err(
+                    ProvisioningFailure(self.provisioning_failure.clone().unwrap_or_else(|| {
+                        "stream provisioning failed without service details".into()
+                    }))
+                    .into(),
+                );
+            }
+            StreamState::ReadyToConnect
+            | StreamState::New
             | StreamState::Provisioning
             | StreamState::WaitingForResources
             | StreamState::Provisioned => {}
         }
         Ok(state)
+    }
+
+    fn record_startup(&mut self, message: String) {
+        if self.startup_history.len() == 32 {
+            self.startup_history.remove(0);
+        }
+        self.startup_history.push(message);
+        // This is the low-rate REST setup path, never the media receive loop.
+        // Separate per-mode files remain available even when a packet incident
+        // is immutable or Home fails before any RTC receiver is constructed.
+        #[cfg(target_os = "vita")]
+        {
+            use std::io::Write;
+            let path = format!(
+                "ux0:data/green-vita-540-test/startup-{}-{}.txt",
+                crate::build_info::NUMBER,
+                self.kind.as_path()
+            );
+            let pending = format!("{path}.partial");
+            let saved = (|| -> std::io::Result<()> {
+                let mut file = std::fs::File::create(&pending)?;
+                writeln!(
+                    file,
+                    "Build:{} source:{}",
+                    crate::build_info::NUMBER,
+                    crate::build_info::REVISION
+                )?;
+                for line in &self.startup_history {
+                    writeln!(file, "{line}")?;
+                }
+                file.sync_all()?;
+                drop(file);
+                std::fs::rename(pending, path)
+            })();
+            if saved.is_err() {
+                eprintln!("Could not save bounded session-startup evidence");
+            }
+        }
     }
 
     pub async fn send_sdp_offer(&self, sdp: &str) -> Result<String> {

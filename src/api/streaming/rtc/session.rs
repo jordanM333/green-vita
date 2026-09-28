@@ -233,7 +233,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             let _ = self.peer.handle_timeout(now);
         }
         if self.initial_video_keyframe_due(now) {
-            eprintln!("No initial video RTP after WebRTC connected; requesting a keyframe");
+            eprintln!("No playable video picture after WebRTC connected; requesting a keyframe");
             keyframe_requested = true;
         }
         self.request_keyframe(keyframe_requested, now);
@@ -343,7 +343,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     }
 
     fn initial_video_keyframe_due(&mut self, now: Instant) -> bool {
-        if self.video.received_packet {
+        if self.direct_output.has_produced_frame() {
             self.initial_video_watchdog_started_at = None;
             self.last_initial_video_keyframe_request = None;
             return false;
@@ -439,7 +439,13 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             if clock_rate == 90_000 && self.video.is_source(report.ssrc) {
                 self.video_clock.sender_report(&report);
                 if let Ok(mut edge) = self.direct_output.live_edge.lock() {
-                    edge.sender_report(report.rtp_time, report.ntp_time, received_at);
+                    if !edge.sender_report(report.rtp_time, report.ntp_time, received_at) {
+                        crate::streaming::video::trace::record(
+                            "live_edge_sr_ignored",
+                            report.rtp_time,
+                            u64::from(report.ssrc),
+                        );
+                    }
                 }
             } else if self.audio.is_source(report.ssrc) {
                 self.audio_clock.sender_report(&report);

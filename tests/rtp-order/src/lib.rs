@@ -4,18 +4,18 @@
 #![allow(dead_code)]
 extern crate self as rtc;
 pub use rtp;
-#[path = "../../../src/streaming/video/policy.rs"]
-pub mod policy;
 #[path = "../../../src/streaming/video/live_edge.rs"]
 pub(crate) mod live_edge;
 #[cfg(test)]
 mod live_edge_replay;
+#[path = "../../../src/streaming/video/policy.rs"]
+pub mod policy;
 
 mod streaming {
     pub(crate) use crate::audio_timing;
     pub mod video {
-        pub(crate) use crate::policy;
         pub(crate) use crate::live_edge;
+        pub(crate) use crate::policy;
         pub mod trace {
             pub fn record(_: &'static str, _: u32, _: u64) {}
         }
@@ -40,9 +40,15 @@ mod streaming {
             pub fn media_submitted(&self, ts: u32, idr: bool, at: std::time::Instant) {
                 self.edge.lock().unwrap().submitted(ts, idr, at);
             }
-            pub fn media_damage(&self) { self.edge.lock().unwrap().damage(); }
-            pub fn media_recovering(&self) -> bool { self.edge.lock().unwrap().recovering() }
-            pub fn discard_queued(&self) { self.queued.store(0, std::sync::atomic::Ordering::Relaxed); }
+            pub fn media_damage(&self) {
+                self.edge.lock().unwrap().damage();
+            }
+            pub fn media_recovering(&self) -> bool {
+                self.edge.lock().unwrap().recovering()
+            }
+            pub fn discard_queued(&self) {
+                self.queued.store(0, std::sync::atomic::Ordering::Relaxed);
+            }
             pub fn begin_resync(&self) {}
             pub fn take_recovery_request(&self) -> bool {
                 false
@@ -487,12 +493,32 @@ mod repair_integration {
         // Arrive out of sequence across u16 wrap; the earliest socket timestamp
         // belongs to a later fragment. Completion must preserve the minimum.
         let now = Instant::now();
-        let first = order.push(u16::MAX - 1,
-            (packet(u16::MAX - 1, 1234, false, &[0x7c, 0x85, 0x88]), old + Duration::from_millis(10)), now).unwrap();
+        let first = order
+            .push(
+                u16::MAX - 1,
+                (
+                    packet(u16::MAX - 1, 1234, false, &[0x7c, 0x85, 0x88]),
+                    old + Duration::from_millis(10),
+                ),
+                now,
+            )
+            .unwrap();
         video.receive_at(&worker, first.0, first.1, &mut keyframe);
-        assert!(order.push(0, (packet(0, 1234, true, &[0x7c, 0x45, 0xaa]), old), now).is_none());
-        let middle = order.push(u16::MAX,
-            (packet(u16::MAX, 1234, false, &[0x7c, 0x05, 0x99]), old + Duration::from_millis(20)), now).unwrap();
+        assert!(
+            order
+                .push(0, (packet(0, 1234, true, &[0x7c, 0x45, 0xaa]), old), now)
+                .is_none()
+        );
+        let middle = order
+            .push(
+                u16::MAX,
+                (
+                    packet(u16::MAX, 1234, false, &[0x7c, 0x05, 0x99]),
+                    old + Duration::from_millis(20),
+                ),
+                now,
+            )
+            .unwrap();
         video.receive_at(&worker, middle.0, middle.1, &mut keyframe);
         let last = order.pop_ready(now).unwrap();
         video.receive_at(&worker, last.0, last.1, &mut keyframe);
@@ -577,27 +603,68 @@ mod repair_integration {
         let now = Instant::now();
         {
             let mut edge = worker.edge.lock().unwrap();
-            edge.observe(0, 10, now - Duration::from_secs(2), now - Duration::from_secs(2));
+            edge.establish(
+                0,
+                now - Duration::from_secs(2),
+                now - Duration::from_secs(2),
+            );
+            edge.observe(
+                0,
+                10,
+                now - Duration::from_secs(2),
+                now - Duration::from_secs(2),
+            );
             assert!(edge.observe(1500, 13, now, now));
         }
         video.quarantine(&worker);
         // A fully assembled old IDR with cached parameters is still stale.
-        assert_eq!(video.receive(&worker, packet(13, 1500, true, IDR), &mut request).submitted, 0);
+        assert_eq!(
+            video
+                .receive(&worker, packet(13, 1500, true, IDR), &mut request)
+                .submitted,
+            0
+        );
         worker.edge.lock().unwrap().observe(180_000, 14, now, now);
-        assert_eq!(video.receive(&worker, packet(14, 180_000, true, &[0x61, 0xaa]), &mut request).submitted, 0);
+        assert_eq!(
+            video
+                .receive(
+                    &worker,
+                    packet(14, 180_000, true, &[0x61, 0xaa]),
+                    &mut request
+                )
+                .submitted,
+            0
+        );
         let stats = video.receive(&worker, packet(15, 181_500, true, IDR), &mut request);
         assert_eq!(stats.submitted, 1);
         let bytes = worker.submitted.lock().unwrap().last().unwrap().clone();
         assert!(bytes.windows(SPS.len()).any(|w| w == SPS));
         assert!(bytes.windows(PPS.len()).any(|w| w == PPS));
         assert!(bytes.ends_with(IDR));
-        assert_eq!(worker.edge.lock().unwrap().state(), live_edge::State::AwaitingPicture);
+        assert_eq!(
+            worker.edge.lock().unwrap().state(),
+            live_edge::State::AwaitingPicture
+        );
         // An unknown PPS ID must not borrow unrelated cached sets.
         video.quarantine(&worker);
-        assert_eq!(video.receive(&worker, packet(16, 183_000, true, &[0x65, 0xb4]), &mut request).submitted, 0);
+        assert_eq!(
+            video
+                .receive(
+                    &worker,
+                    packet(16, 183_000, true, &[0x65, 0xb4]),
+                    &mut request
+                )
+                .submitted,
+            0
+        );
         video.source_changed(&worker);
         video.quarantine(&worker);
-        assert_eq!(video.receive(&worker, packet(17, 184_500, true, IDR), &mut request).submitted, 0);
+        assert_eq!(
+            video
+                .receive(&worker, packet(17, 184_500, true, IDR), &mut request)
+                .submitted,
+            0
+        );
     }
 
     // libx264 baseline, 1280x720/60; synthesized black frame parameter sets.
@@ -675,11 +742,14 @@ mod repair_integration {
     }
 }
 
-
 // Convenience belongs to this harness; production supplies socket-dequeue time.
 impl video_rtp::VideoRtp {
-    fn receive(&mut self, worker: &streaming::video::VideoDecodeWorker,
-        packet: rtp::Packet, keyframe: &mut bool) -> video_rtp::VideoSampleStats {
+    fn receive(
+        &mut self,
+        worker: &streaming::video::VideoDecodeWorker,
+        packet: rtp::Packet,
+        keyframe: &mut bool,
+    ) -> video_rtp::VideoSampleStats {
         self.receive_at(worker, packet, std::time::Instant::now(), keyframe)
     }
 }

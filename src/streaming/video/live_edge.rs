@@ -25,6 +25,7 @@ pub(crate) struct MediaClock {
     valid: bool,
     ppm: i64,
     report: Option<(u32, u64, Instant)>,
+    rejected_reports: u64,
 }
 
 #[cfg(test)]
@@ -41,6 +42,7 @@ impl MediaClock {
             valid: rate > 0,
             ppm: 0,
             report: None,
+            rejected_reports: 0,
         }
     }
 
@@ -104,10 +106,8 @@ impl MediaClock {
             self.valid = false;
             return false;
         };
-        if expected > at + MEDIA_BUDGET {
-            self.valid = false;
-            return false;
-        }
+        // Fast catch-up can deliver many media ticks in a single socket burst.
+        // An earlier arrival improves the baseline; it is not a discontinuity.
         // Earlier delivery improves the path baseline; later delivery NEVER
         // moves it forward. Pause, recovery, stale IDRs and shallow queues cannot
         // forgive accumulated delay. RTP elapsed time handles legitimate pauses.
@@ -142,7 +142,12 @@ impl MediaClock {
         let media_us = u64::from(rtp_delta) * 1_000_000 / u64::from(self.rate);
         // Validate the nominal RTP/NTP mapping independently of delivery jitter.
         if ntp_us >= 1_000_000 && media_us.abs_diff(ntp_us) > ntp_us / 1000 + 1000 {
-            self.valid = false;
+            // SRs are optional oscillator-calibration observations. Reject an
+            // inconsistent pair, not the independently measured RTP timeline.
+            // Otherwise one report could permanently blank healthy video (and
+            // mute audio) even though both continue advancing normally.
+            self.rejected_reports += 1;
+            self.report = Some((timestamp, ntp, at));
             return;
         }
         let wall_us = at.saturating_duration_since(old_at).as_micros() as i128;
@@ -222,6 +227,12 @@ impl LiveEdge {
     }
 
     fn evaluate(&mut self, now: Instant, advanced: bool) -> bool {
+        // Parameter/probe/startup packets do not prove that playback exists.
+        // The first matched presented picture establishes the relative edge
+        // from its ORIGINAL dequeue time, never its render/decode completion.
+        if self.state == State::Unmeasured {
+            return false;
+        }
         if !self.clock.valid() {
             let changed = self.state != State::ClockUncertain;
             self.state = State::ClockUncertain;
@@ -230,9 +241,6 @@ impl LiveEdge {
         let Some((ts, _)) = self.clock.anchor else {
             return false;
         };
-        if self.state == State::Unmeasured {
-            self.state = State::Live;
-        }
         let delay = self.clock.delay(ts, now).unwrap_or(Duration::MAX);
         if matches!(self.state, State::Live | State::AwaitingPicture) {
             if delay <= INGRESS_BUDGET {
@@ -261,8 +269,10 @@ impl LiveEdge {
         false
     }
 
-    pub(crate) fn sender_report(&mut self, ts: u32, ntp: u64, at: Instant) {
+    pub(crate) fn sender_report(&mut self, ts: u32, ntp: u64, at: Instant) -> bool {
+        let rejected = self.clock.rejected_reports;
         self.clock.sender_report(ts, ntp, at);
+        self.clock.rejected_reports == rejected
     }
 
     pub(crate) fn recovering(&self) -> bool {
@@ -318,6 +328,21 @@ impl LiveEdge {
         false
     }
 
+    pub(crate) fn establish(&mut self, ts: u32, received: Instant, rendered: Instant) -> bool {
+        if self.state != State::Unmeasured
+            || rendered.saturating_duration_since(received) > super::policy::MAX_LOCAL_VIDEO_AGE
+        {
+            return false;
+        }
+        // This happens once per source, not once per IDR or recovery. Delay
+        // before the first playable picture remains unknown, not measured live.
+        self.clock = MediaClock::new(90_000);
+        self.clock.anchor = Some((ts, received));
+        self.clock.last_received = Some(received);
+        self.state = State::Live;
+        true
+    }
+
     pub(crate) fn damage(&mut self) {
         if self.state == State::AwaitingPicture {
             self.state = State::AwaitingKeyframe;
@@ -347,10 +372,11 @@ impl LiveEdge {
             .zip(self.clock.last_received)
             .map(|((ts, _), received)| {
                 format!(
-                    " ingress+{}ms newest+{}ms skew:{}ppm",
+                    " ingress+{}ms newest+{}ms skew:{}ppm SRignored:{}",
                     self.added_delay_ms(ts, received).unwrap_or(u64::MAX),
                     self.added_delay_ms(ts, Instant::now()).unwrap_or(u64::MAX),
-                    self.clock.ppm
+                    self.clock.ppm,
+                    self.clock.rejected_reports
                 )
             })
             .unwrap_or_default();
