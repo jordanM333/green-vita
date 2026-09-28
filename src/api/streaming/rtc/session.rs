@@ -455,7 +455,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             let delivered_at = Instant::now();
             match message {
                 RTCMessage::RtpPacket(track_id, packet) => {
-                    if self.video.handles(&track_id) {
+                    if self.video.handles(&track_id) && self.video.is_source(packet.header.ssrc) {
                         crate::diagnostic::packet(
                             "rtc",
                             crate::diagnostic::Identity {
@@ -527,7 +527,9 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                             delivered_at,
                             &mut keyframe_requested,
                         );
-                    } else if self.audio.handles(&track_id) {
+                    } else if self.audio.handles(&track_id)
+                        && self.audio.is_source(packet.header.ssrc)
+                    {
                         crate::diagnostic::packet(
                             "rtc",
                             crate::diagnostic::Identity {

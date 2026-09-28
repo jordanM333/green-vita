@@ -28,6 +28,10 @@ class Contracts(unittest.TestCase):
         self.assertNotIn("show_stream_debug_info", media + session)
         self.assertNotIn("microphone", media)
         self.assertNotIn("catch_up", session)
+        # OnOpen events are drained before queued messages. Late packets of a
+        # prior SSRC must not initialize the replacement stream's media clock.
+        self.assertIn("self.video.is_source(packet.header.ssrc)", session)
+        self.assertIn("self.audio.is_source(packet.header.ssrc)", session)
 
     def test_scoped_checkout_trust_keeps_revision_and_dirty_checks(self):
         with tempfile.TemporaryDirectory() as directory:

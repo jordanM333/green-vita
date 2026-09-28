@@ -33,6 +33,8 @@ duplicate/reordered packets never move that timeline forward. A later dequeue
 does not rebase `E`. Normal recovery, IDR receipt, a pause, shallow queues, and
 diagnostic toggling cannot forgive accumulated lag. Only an explicit new stream
 identity/lifecycle starts a new timeline. Empty probes are not media samples.
+Queued packets must match both the active track and SSRC before any clock or
+assembly observation; a prior source cannot initialize its replacement's clock.
 
 Added media age at a boundary at time `t` is `max(0, t - E(r))`. This is a relative
 lower-baseline measure, **not absolute capture age**. A session already delayed
