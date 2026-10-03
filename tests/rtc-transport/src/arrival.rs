@@ -289,12 +289,14 @@ fn encrypted_feedback(accept: bool, growing: bool) {
                 delivered += 1;
                 ceiling.observe_payload(packet.header.payload_type);
                 // Inject a controller observation, not simulated network delay.
+                // It is shared-path delay (audio equally late), the only kind
+                // that lowers the request since HA07.
                 let delay = if growing {
                     start.elapsed().as_millis() as u64 / 10
                 } else {
                     1991
                 };
-                ceiling.receive(packet.payload.len(), delay, Instant::now());
+                ceiling.receive(packet.payload.len(), delay, Some(delay), Instant::now());
             }
         }
         let now = Instant::now();

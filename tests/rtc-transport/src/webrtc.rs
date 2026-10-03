@@ -641,7 +641,8 @@ fn microphone_reuses_audio_mline_and_mute_blocks_rtp_over_real_dtls() {
         "chat must enable audio sending: {audio_section}"
     );
     assert!(offer.sdp.contains("greenvita-voice"));
-    assert!(offer.sdp.contains("b=AS:2000\r\nb=TIAS:2000000"));
+    // HA07 production ceiling: 3 Mbps for the video section only.
+    assert!(offer.sdp.contains("b=AS:3000\r\nb=TIAS:3000000"));
     assert!(
         mic.begin_capture().is_none(),
         "no voice before Xbox accepts chat"

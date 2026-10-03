@@ -172,6 +172,79 @@ fn production_surface_holds_the_last_good_frame_through_recovery_until_session_e
 }
 
 #[test]
+fn production_surface_draws_catch_up_pictures_live_and_holds_only_after_a_decoder_stall() {
+    // HA06-22: after a sender drain, AVCDEC output pictures whose AUs had
+    // completed 240-330 ms earlier. Each was held, then expired, so the screen
+    // stopped for up to 0.66 s. HA07 draws and presents a picture that is
+    // behind but freshly decoded; the hold begins only MAX_LOCAL_VIDEO_AGE
+    // after the decoder's last picture.
+    reset();
+    let sdl = sdl2::init().unwrap();
+    let subsystem = sdl.video().unwrap();
+    let mut surface = crate::shell::surface::VitaSurface::software_fixture(&subsystem);
+    let output = Arc::new(DirectVideoOutput::new(960, 544));
+    output.decoder_ready.store(true, Ordering::Release);
+    let session = crate::app::StreamingSession(output.clone());
+    surface.sync_video_frame(Some(&session)).unwrap();
+    let center = sdl2::rect::Rect::new(480, 272, 1, 1);
+    let pixel = |surface: &crate::shell::surface::VitaSurface| {
+        surface.canvas.read_pixels(center, sdl2::pixels::PixelFormatEnum::RGB24).unwrap()
+    };
+    let colors = [0x001fu16, 0x07e0]; // BGR565: red, green.
+    let expected = [[255, 0, 0], [0, 255, 0]];
+    // A drain burst: 40 AUs complete together and the decoder works through
+    // them one at a time.
+    let burst = Instant::now();
+    for frame in 0..40u16 {
+        output.live_edge.lock().unwrap().observe(u32::from(frame) * 3000, frame, burst, burst);
+    }
+    let mut caught_up = 0;
+    for frame in 0..40u32 {
+        std::thread::sleep(Duration::from_millis(10));
+        let now = Instant::now();
+        let lease = output.lock_decode_target().unwrap();
+        let target = lease.target;
+        // SAFETY: the exclusive output lease owns the initialized fake CDRAM
+        // allocation for its full advertised capacity until publication.
+        let bytes = unsafe { std::slice::from_raw_parts_mut(target.ptr as *mut u8, target.capacity as usize) };
+        let color = colors[frame as usize % colors.len()];
+        for value in bytes.as_chunks_mut::<2>().0 { value.copy_from_slice(&color.to_le_bytes()); }
+        let timing = timing::FrameTiming { rtp_timestamp: frame * 3000, received_at: burst,
+            submitted_at: burst, decoded_at: now, epoch: 0 };
+        lease.publish(Some(timing)).unwrap();
+        surface.sync_video_frame(Some(&session)).unwrap();
+        surface.draw_scene(true).unwrap();
+        surface.paint_egui(1.0, &[], &egui::TexturesDelta::default()).unwrap();
+        assert_eq!(pixel(&surface), expected[frame as usize % expected.len()], "frame {frame}");
+        assert!(!output.video_held(Instant::now()), "frame {frame} held while catching up");
+        let presented = output.presentation.lock().unwrap().take().expect("catch-up picture presented");
+        assert_eq!(presented.timing.rtp_timestamp, frame * 3000);
+        output.confirm_presentation(presented);
+        if now.duration_since(burst) > policy::MAX_LOCAL_VIDEO_AGE {
+            caught_up += 1;
+        }
+    }
+    assert!(caught_up >= 10, "only {caught_up} pictures exercised catch-up");
+    assert_eq!(output.live_edge_state(), live_edge::State::Live);
+    let last = expected[39 % expected.len()];
+    // Within the stall limit of the last decode, the picture stays live.
+    std::thread::sleep(policy::MAX_LOCAL_VIDEO_AGE / 2);
+    assert!(!surface.needs_expiry_redraw());
+    assert!(!output.video_held(Instant::now()));
+    // Nothing newer from the decoder: hold the last good frame.
+    std::thread::sleep(policy::MAX_LOCAL_VIDEO_AGE / 2 + Duration::from_millis(20));
+    assert!(surface.needs_expiry_redraw(), "the switch to the held frame is urgent");
+    surface.draw_scene(true).unwrap();
+    surface.paint_egui(1.0, &[], &egui::TexturesDelta::default()).unwrap();
+    assert_eq!(pixel(&surface), last);
+    assert!(output.video_held(Instant::now()));
+    assert!(output.presentation.lock().unwrap().take().is_none(), "held frame re-presented");
+    println!("catch-up burst: 40 pictures drawn live, {caught_up} more than {} ms after their AUs completed", policy::MAX_LOCAL_VIDEO_AGE.as_millis());
+    surface.sync_video_frame(None).unwrap();
+    assert!(FAKE.lock().unwrap().memory.is_empty());
+}
+
+#[test]
 fn undersized_output_is_rejected_before_native_decode() {
     reset();
     let (output, _pixels) = surfaces();
@@ -721,10 +794,59 @@ fn stale_compressed_work_requests_dependency_safe_recovery_before_hardware() {
     reset();
     let (output, _pixels) = surfaces();
     let mut worker = VideoDecodeWorker::spawn(config(), output.clone()).unwrap();
-    worker.submit_access_unit(vec![1], Instant::now() - Duration::from_secs(2), 9000);
+    // Beyond the HA07 catch-up limit, not merely behind the stall limit.
+    let received = Instant::now() - policy::MAX_LOCAL_CATCH_UP - Duration::from_millis(500);
+    worker.submit_access_unit(vec![1], received, 9000);
     wait_for(|| worker.take_recovery_request() || !FAKE.lock().unwrap().inputs.is_empty());
     worker.shutdown();
     assert!(FAKE.lock().unwrap().inputs.is_empty(), "obsolete compressed work entered the decoder");
+    assert!(!output.has_pending_frame());
+}
+
+#[test]
+fn catch_up_decodes_and_shows_work_that_waited_past_the_stall_limit() {
+    // HA06-22: while the Xbox drained a backlog, AUs reached AVCDEC 240-330 ms
+    // after they completed. The 240 ms rule expired each one, which stopped
+    // the screen and forced keyframe waits. HA07 decodes and shows them.
+    reset();
+    let (output, _pixels) = surfaces();
+    let mut worker = VideoDecodeWorker::spawn(config(), output.clone()).unwrap();
+    let expired = metrics::METRICS.expired_access_unit.load(Ordering::Relaxed);
+    let stale = metrics::METRICS.stale_picture.load(Ordering::Relaxed);
+    worker.submit_access_unit(vec![1], Instant::now() - Duration::from_secs(1), 9000);
+    wait_for(|| output.has_pending_frame());
+    assert!(!worker.take_recovery_request(), "catch-up work is not an incident");
+    worker.shutdown();
+    assert_eq!(FAKE.lock().unwrap().inputs, [9000]);
+    let timing = output.take_latest_for_display().unwrap().4.unwrap();
+    let now = Instant::now();
+    assert!(now.duration_since(timing.received_at) > policy::MAX_LOCAL_VIDEO_AGE);
+    assert!(output.can_draw(timing, now), "behind but freshly decoded is current");
+    // With nothing newer from the decoder, the stall limit still applies.
+    let stalled = timing.decoded_at + policy::MAX_LOCAL_VIDEO_AGE + Duration::from_millis(1);
+    assert!(!output.can_draw(timing, stalled));
+    assert!(!output.can_draw(timing, timing.received_at + policy::MAX_LOCAL_CATCH_UP + Duration::from_millis(1)));
+    assert_eq!(metrics::METRICS.expired_access_unit.load(Ordering::Relaxed), expired);
+    assert_eq!(metrics::METRICS.stale_picture.load(Ordering::Relaxed), stale);
+}
+
+#[test]
+fn a_picture_past_the_catch_up_limit_is_neither_published_nor_selected() {
+    reset();
+    let (output, _pixels) = surfaces();
+    let now = Instant::now();
+    let late = now - policy::MAX_LOCAL_CATCH_UP - Duration::from_millis(1);
+    assert!(output.lock_decode_target().unwrap().publish(Some(timing::FrameTiming {
+        rtp_timestamp: 3000, received_at: late, submitted_at: late, decoded_at: now, epoch: 0,
+    })).is_none());
+    assert!(!output.has_pending_frame());
+    // Published within the limit, then taken by the UI after it, while still
+    // within the stall limit of its decode.
+    let behind = now - policy::MAX_LOCAL_CATCH_UP + Duration::from_millis(100);
+    output.lock_decode_target().unwrap().publish(Some(timing::FrameTiming {
+        rtp_timestamp: 6000, received_at: behind, submitted_at: behind, decoded_at: now, epoch: 0,
+    })).unwrap();
+    assert!(output.take_latest_at(now + Duration::from_millis(200)).is_none());
     assert!(!output.has_pending_frame());
 }
 
@@ -755,22 +877,30 @@ fn pending_texture_expires_during_ui_stall_and_wrap_advances() {
 fn twenty_minute_presentation_schedule_stays_bounded_through_overload() {
     // Production surface selection with a virtual UI clock. This is NOT an AVC
     // performance benchmark. Produce 60 and consume 20/60 Hz with periodic stalls.
+    // HA07: every 20 s, 100 outputs come from a decoder catching up on AUs
+    // that completed 330 ms earlier (HA06-22's drains); they are selected.
     reset();
     let (output, _pixels) = surfaces();
     let origin = Instant::now();
     let mut selected = 0;
+    let mut caught_up = 0;
     let mut expired = 0;
     for tick in 0..72_000u64 {
         let now = origin + Duration::from_micros(tick * 16_667);
+        let received_at = if tick % 1200 < 100 { now - Duration::from_millis(330) } else { now };
         let timing = timing::FrameTiming { rtp_timestamp: (tick * 1500) as u32,
-            received_at: now, submitted_at: now, decoded_at: now, epoch: 0 };
+            received_at, submitted_at: received_at, decoded_at: now, epoch: 0 };
         output.lock_decode_target().unwrap().publish(Some(timing)).unwrap();
         if tick % 3 == 0 {
             let at = now + if tick % 600 == 0 { Duration::from_secs(1) } else { Duration::from_millis(30) };
             match output.take_latest_at(at) {
                 Some((_, _, _, _, Some(frame))) => {
                     assert_eq!(frame.rtp_timestamp, timing.rtp_timestamp);
-                    assert!(at.duration_since(frame.received_at) <= policy::MAX_LOCAL_VIDEO_AGE);
+                    assert!(at.duration_since(frame.decoded_at) <= policy::MAX_LOCAL_VIDEO_AGE);
+                    assert!(at.duration_since(frame.received_at) <= policy::MAX_LOCAL_CATCH_UP);
+                    if at.duration_since(frame.received_at) > policy::MAX_LOCAL_VIDEO_AGE {
+                        caught_up += 1;
+                    }
                     selected += 1;
                 }
                 None => expired += 1,
@@ -779,6 +909,7 @@ fn twenty_minute_presentation_schedule_stays_bounded_through_overload() {
         }
     }
     assert_eq!(selected, 23_880);
+    assert_eq!(caught_up, 1_980);
     assert_eq!(expired, 120);
-    println!("20 virtual minutes: 72000 outputs, {selected} current selections, {expired} expired selections; no historical walk-through");
+    println!("20 virtual minutes: 72000 outputs, {selected} current selections ({caught_up} catching up), {expired} expired selections; no historical walk-through");
 }

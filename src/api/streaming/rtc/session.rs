@@ -23,6 +23,9 @@ use std::time::{Duration, Instant};
 
 const INITIAL_VIDEO_GRACE: Duration = Duration::from_millis(500);
 const INITIAL_VIDEO_KEYFRAME_INTERVAL: Duration = Duration::from_millis(500);
+/// Audio this recent is evidence about the shared path; Xbox audio arrives
+/// every 20 ms even in silence.
+const AUDIO_PATH_EVIDENCE: Duration = Duration::from_secs(1);
 
 pub(crate) struct RtcSessionConfig {
     pub mode: &'static str,
@@ -509,10 +512,15 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                                     })
                                     .unwrap_or(timing.added_delay_ms);
                                 let before = self.video_ceiling.target_bps();
+                                let now = Instant::now();
+                                // HA07: only delay audio shares lowers the request.
+                                let audio_delay =
+                                    self.audio_ingress.recent_delay_ms(now, AUDIO_PATH_EVIDENCE);
                                 self.video_ceiling.receive(
                                     packet.payload.len(),
                                     delay,
-                                    Instant::now(),
+                                    audio_delay,
+                                    now,
                                 );
                                 let after = self.video_ceiling.target_bps();
                                 if after != before {
@@ -524,7 +532,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                                     crate::streaming::video::trace::record(
                                         "receiver_ceiling_delay_ms",
                                         timing.timestamp,
-                                        delay,
+                                        self.video_ceiling.path_delay_ms(),
                                     );
                                 }
                             }

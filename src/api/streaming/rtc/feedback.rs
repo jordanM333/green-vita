@@ -64,6 +64,18 @@ pub(crate) struct VideoCeiling {
     over_windows: u64,
     arrival: ArrivalFeedback,
     delay_ms: u64,
+    path_delay_ms: u64,
+}
+
+/// Only delay that audio shares is evidence of a congested path (HA07).
+/// Audio and video arrive on one BUNDLE flow, so a Wi-Fi, driver or socket
+/// queue delays both. Video that arrives late while audio is current is
+/// queued inside the Xbox (its pacer prioritizes audio). Lowering the REMB
+/// then slows that pacer without shrinking the encoder's frames, so the
+/// backlog persists: HA06-22 sat about 1.3 s behind for over a minute at
+/// 500 kbps. Without recent audio there is no shared-path evidence.
+pub(crate) fn shared_path_delay_ms(video_ms: u64, audio_ms: Option<u64>) -> u64 {
+    audio_ms.map_or(0, |audio| video_ms.min(audio))
 }
 
 /// Observability only: extensions and successful TWCC sends prove local activity,
@@ -109,14 +121,28 @@ impl Default for VideoCeiling {
             over_windows: 0,
             arrival: Default::default(),
             delay_ms: 0,
+            path_delay_ms: 0,
         }
     }
 }
 
 impl VideoCeiling {
-    pub(crate) fn receive(&mut self, bytes: usize, delay_ms: u64, now: Instant) {
-        self.delay_ms = delay_ms;
-        self.budget.receive(bytes, delay_ms, now);
+    /// `video_delay_ms` is the video's added arrival delay; `audio_delay_ms`
+    /// the latest audio packet's, if audio is flowing. Only their shared part
+    /// can lower the request.
+    pub(crate) fn receive(
+        &mut self,
+        bytes: usize,
+        video_delay_ms: u64,
+        audio_delay_ms: Option<u64>,
+        now: Instant,
+    ) {
+        self.delay_ms = video_delay_ms;
+        self.path_delay_ms = shared_path_delay_ms(video_delay_ms, audio_delay_ms);
+        self.budget.receive(bytes, self.path_delay_ms, now);
+    }
+    pub(crate) fn path_delay_ms(&self) -> u64 {
+        self.path_delay_ms
     }
     pub(crate) fn target_bps(&self) -> u32 {
         self.budget.target()
@@ -181,9 +207,10 @@ impl VideoCeiling {
             "waiting-video"
         };
         format!(
-            "REMB:{state} target:{}k delay:{}ms cuts:{} queued:{} fail:{} over-windows:{}",
+            "REMB:{state} target:{}k delay:{}ms path:{}ms cuts:{} queued:{} fail:{} over-windows:{}",
             self.target_bps() / 1000,
             self.delay_ms,
+            self.path_delay_ms,
             self.budget.reductions,
             self.queued,
             self.failed,
@@ -274,7 +301,7 @@ mod tests {
         for tick in 0..=100 {
             let now = start + Duration::from_millis(tick * 100);
             cap.update_arrival_feedback(tick * 10, tick, now);
-            cap.receive(25_000, tick * 10, now);
+            cap.receive(25_000, tick * 10, Some(tick * 10), now);
         }
         assert!(cap.budget.reductions > 0);
         assert!(cap.target_bps() < VIDEO_CEILING_BPS);
@@ -305,7 +332,8 @@ mod tests {
             let delay = (queued / capacity * 1000.0) as u64;
             let now = start + Duration::from_millis(tick * 100);
             cap.update_arrival_feedback(tick * 10, tick, now);
-            cap.receive((delivered / 8.0) as usize, delay, now);
+            // A shared bottleneck delays audio as much as video.
+            cap.receive((delivered / 8.0) as usize, delay, Some(delay), now);
             sender_bps = previous;
             previous = cap.target_bps();
             if tick >= 600 {
@@ -340,14 +368,15 @@ mod tests {
             } else {
                 50_000
             };
-            cap.receive(bytes, if tick < 100 { 5 } else { 1991 }, now);
+            let delay = if tick < 100 { 5 } else { 1991 };
+            cap.receive(bytes, delay, Some(delay), now);
             assert_eq!(cap.target_bps(), VIDEO_CEILING_BPS);
         }
         assert_eq!(cap.budget.reductions, 0);
-        assert!(
-            cap.summary(980)
-                .starts_with("REMB:twcc+adaptive target:2000k")
-        );
+        assert!(cap.summary(980).starts_with(&format!(
+            "REMB:twcc+adaptive target:{}k",
+            VIDEO_CEILING_BPS / 1000
+        )));
         assert!(
             cap.summary(980).contains("delay:1991ms"),
             "do not hide latency"
@@ -361,7 +390,12 @@ mod tests {
         cap.answer("m=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 goog-remb");
         cap.observe_payload(102);
         for tick in 0..=100 {
-            cap.receive(25_000, tick * 10, start + Duration::from_millis(tick * 100));
+            cap.receive(
+                25_000,
+                tick * 10,
+                Some(tick * 10),
+                start + Duration::from_millis(tick * 100),
+            );
         }
         assert_eq!(
             cap.target_bps(),
@@ -376,6 +410,77 @@ mod tests {
             !cap.due(now),
             "counter transitions do not change feedback pacing"
         );
+    }
+
+    #[test]
+    fn shared_path_delay_is_the_part_audio_shares() {
+        assert_eq!(shared_path_delay_ms(1_400, Some(4)), 4);
+        assert_eq!(shared_path_delay_ms(30, Some(250)), 30);
+        assert_eq!(shared_path_delay_ms(1_400, None), 0);
+    }
+
+    #[test]
+    fn a_sender_side_video_backlog_never_lowers_the_request() {
+        // HA06-22 shape: video falls 1.3-1.9 s behind within three seconds
+        // and stays there for over a minute while audio stays current. HA06
+        // cut this to 500 kbps, which slowed the Xbox's pacer.
+        let start = Instant::now();
+        let mut cap = VideoCeiling::default();
+        cap.answer("m=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 goog-remb");
+        cap.observe_payload(102);
+        for tick in 0..=900u64 {
+            let now = start + Duration::from_millis(tick * 100);
+            cap.update_arrival_feedback(tick * 10, tick, now);
+            let video = match tick {
+                0..=50 => 3,
+                51..=80 => (tick - 50) * 45,
+                _ => 1_350 + (tick % 7) * 80,
+            };
+            cap.receive(25_000, video, Some(tick % 9), now);
+        }
+        assert_eq!(cap.budget.reductions, 0);
+        assert_eq!(cap.target_bps(), VIDEO_CEILING_BPS);
+        assert!(cap.path_delay_ms() < 10);
+        let summary = cap.summary(1_200);
+        assert!(summary.contains("path:"), "{summary}");
+        assert!(
+            !summary.contains("delay:0ms"),
+            "the video delay stays visible: {summary}"
+        );
+    }
+
+    #[test]
+    fn congestion_that_delays_audio_too_still_lowers_the_request() {
+        let start = Instant::now();
+        let mut cap = VideoCeiling::default();
+        cap.answer("m=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 goog-remb");
+        cap.observe_payload(102);
+        for tick in 0..=100u64 {
+            let now = start + Duration::from_millis(tick * 100);
+            cap.update_arrival_feedback(tick * 10, tick, now);
+            // The Wi-Fi queue grows; the sender also queues a little video.
+            cap.receive(25_000, tick * 12 + 40, Some(tick * 10), now);
+        }
+        assert!(cap.budget.reductions > 0);
+        assert!(cap.target_bps() < VIDEO_CEILING_BPS);
+    }
+
+    #[test]
+    fn without_audio_video_lateness_alone_is_not_congestion() {
+        let start = Instant::now();
+        let mut cap = VideoCeiling::default();
+        cap.answer("m=video 9 UDP/TLS/RTP/SAVPF 102\na=rtcp-fb:102 goog-remb");
+        cap.observe_payload(102);
+        for tick in 0..=100u64 {
+            cap.receive(
+                25_000,
+                tick * 10,
+                None,
+                start + Duration::from_millis(tick * 100),
+            );
+        }
+        assert_eq!(cap.budget.reductions, 0);
+        assert_eq!(cap.target_bps(), VIDEO_CEILING_BPS);
     }
 
     #[test]
@@ -405,7 +510,12 @@ mod tests {
         cap.update_arrival_feedback(10, 1, start + Duration::from_secs(2));
         assert!(!cap.arrival.active);
         for tick in 20..=100 {
-            cap.receive(25_000, tick * 10, start + Duration::from_millis(tick * 100));
+            cap.receive(
+                25_000,
+                tick * 10,
+                Some(tick * 10),
+                start + Duration::from_millis(tick * 100),
+            );
         }
         assert!(cap.target_bps() < VIDEO_CEILING_BPS);
         cap.update_arrival_feedback(20, 2, start + Duration::from_secs(11));

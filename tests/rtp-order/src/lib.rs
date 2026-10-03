@@ -35,6 +35,13 @@ mod streaming {
             pub queued: std::sync::atomic::AtomicUsize,
             pub resyncs: std::sync::atomic::AtomicUsize,
             pub edge: Mutex<live_edge::LiveEdge>,
+            /// Nonzero: a sender model runs the worker's AU queue with this
+            /// capacity. Entries: (AU complete, RTP timestamp, generation).
+            pub capacity: std::sync::atomic::AtomicUsize,
+            pub queue: Mutex<std::collections::VecDeque<(std::time::Instant, u32, usize)>>,
+            pub full: std::sync::atomic::AtomicUsize,
+            /// Set by a sender model when an AU misses the local deadline.
+            pub recovery: std::sync::atomic::AtomicBool,
         }
         impl VideoDecodeWorker {
             pub fn observe_media(&self, ts: u32, seq: u16, at: std::time::Instant) -> bool {
@@ -60,15 +67,23 @@ mod streaming {
             }
             pub fn discard_queued(&self) {
                 self.queued.store(0, std::sync::atomic::Ordering::Relaxed);
+                self.queue.lock().unwrap().clear();
             }
             pub fn begin_resync(&self) {
                 self.resyncs
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             pub fn take_recovery_request(&self) -> bool {
-                false
+                self.recovery
+                    .swap(false, std::sync::atomic::Ordering::Relaxed)
+            }
+            fn modeled(&self) -> bool {
+                self.capacity.load(std::sync::atomic::Ordering::Relaxed) != 0
             }
             pub fn queued_frames(&self) -> usize {
+                if self.modeled() {
+                    return self.queue.lock().unwrap().len();
+                }
                 self.queued.load(std::sync::atomic::Ordering::Relaxed)
             }
             pub fn submit_refresh_access_unit(
@@ -79,6 +94,11 @@ mod streaming {
             ) -> SubmitResult {
                 self.cutovers
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if self.modeled() {
+                    // As the worker: a new generation, and the queue is cut.
+                    self.begin_resync();
+                    self.queue.lock().unwrap().clear();
+                }
                 self.submit_access_unit(data, at, ts)
             }
             pub fn submit_access_unit(
@@ -87,6 +107,16 @@ mod streaming {
                 at: std::time::Instant,
                 ts: u32,
             ) -> SubmitResult {
+                use std::sync::atomic::Ordering::Relaxed;
+                let capacity = self.capacity.load(Relaxed);
+                if capacity != 0 {
+                    let mut queue = self.queue.lock().unwrap();
+                    if queue.len() >= capacity {
+                        self.full.fetch_add(1, Relaxed);
+                        return SubmitResult::QueueFull;
+                    }
+                    queue.push_back((at, ts, self.resyncs.load(Relaxed)));
+                }
                 self.submitted.lock().unwrap().push(data);
                 self.submitted_times.lock().unwrap().push((at, ts));
                 SubmitResult::Submitted
@@ -119,6 +149,16 @@ mod streaming {
 #[path = "../../../src/streaming/audio_timing.rs"]
 pub(crate) mod audio_timing;
 
+// The production receiver bitrate request, for the sender model (HA07).
+// feedback.rs keeps its own private copy of congestion.rs; this one gives the
+// model the HA06 budget at its 2 Mbps maximum.
+#[cfg(test)]
+#[allow(clippy::duplicate_mod)]
+#[path = "../../../src/api/streaming/rtc/congestion.rs"]
+mod congestion;
+#[cfg(test)]
+#[path = "../../../src/api/streaming/rtc/feedback.rs"]
+mod feedback;
 #[path = "../../../src/api/streaming/rtc/reorder.rs"]
 mod reorder;
 #[path = "../../../src/api/streaming/rtc/rtp.rs"]

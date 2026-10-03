@@ -155,10 +155,14 @@ impl DirectVideoOutput {
     // Revalidate an already uploaded picture every draw, including its epoch.
     // A texture is not a continuing authorization to display historical video:
     // only a current picture is drawn as live and reported as presented.
+    // HA07: a picture goes stale when the decoder has produced nothing newer
+    // for MAX_LOCAL_VIDEO_AGE (a local stall), not because catching up made it
+    // older than that since its AU completed.
     pub(crate) fn can_draw(&self, timing: timing::FrameTiming, now: Instant) -> bool {
         self.state.lock().is_ok_and(|state| {
             timing.epoch >= state.minimum_epoch
-                && now.saturating_duration_since(timing.received_at) <= policy::MAX_LOCAL_VIDEO_AGE
+                && now.saturating_duration_since(timing.decoded_at) <= policy::MAX_LOCAL_VIDEO_AGE
+                && now.saturating_duration_since(timing.received_at) <= policy::MAX_LOCAL_CATCH_UP
                 && self.can_present_media(timing.rtp_timestamp, now)
         })
     }
@@ -245,9 +249,11 @@ impl DirectVideoOutput {
         };
         let (index, generation, decoded_at, timing) = state.pending.take()?;
         self.frame_signal.set_pending(false);
+        // The same local limits as can_draw: never select what cannot be drawn.
         if let Some(timing) = timing
             && (timing.epoch < state.minimum_epoch
-                || now.saturating_duration_since(timing.received_at) > policy::MAX_LOCAL_VIDEO_AGE
+                || now.saturating_duration_since(timing.decoded_at) > policy::MAX_LOCAL_VIDEO_AGE
+                || now.saturating_duration_since(timing.received_at) > policy::MAX_LOCAL_CATCH_UP
                 || !self.can_present_media(timing.rtp_timestamp, now))
         {
             metrics::METRICS
@@ -342,7 +348,7 @@ impl DirectVideoTargetGuard<'_> {
             });
             if timing.epoch < state.minimum_epoch
                 || regressed
-                || age > policy::MAX_LOCAL_VIDEO_AGE
+                || age > policy::MAX_LOCAL_CATCH_UP
                 || !self
                     .output
                     .can_present_media(timing.rtp_timestamp, Instant::now())

@@ -424,10 +424,12 @@ fn decode_queued_access_unit(
         return false;
     }
 
-    // A short Cloud burst is valid reference work. Once the entire local budget
-    // is exhausted, abandon the epoch once and reacquire a complete IDR; never
-    // drop a P picture and feed its dependants as though nothing happened.
-    if access_unit.received_at.elapsed() > super::policy::MAX_LOCAL_VIDEO_AGE
+    // A burst is valid reference work: while the decoder catches up after a
+    // sender drain, every AU is decoded (HA07). Only work beyond the catch-up
+    // limit or the live edge's ceiling abandons the epoch once and reacquires
+    // a complete IDR; never drop a P picture and feed its dependants as though
+    // nothing happened.
+    if access_unit.received_at.elapsed() > super::policy::MAX_LOCAL_CATCH_UP
         || !direct_output.media_useful(access_unit.rtp_timestamp, Instant::now())
     {
         let epoch = access_unit.generation + 1;

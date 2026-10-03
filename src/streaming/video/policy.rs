@@ -7,11 +7,21 @@ use std::time::{Duration, Instant};
 // AUs within a few milliseconds. Keep the complete reference chain while the
 // decoder catches up; a six-frame limit repeatedly destroyed healthy chains.
 // Both limits apply, including to streams made up of very small AUs.
-pub(crate) const AU_QUEUE_CAPACITY: usize = 32;
+// HA07: 128, up from 32. When the Xbox drains a backlog it delivers up to
+// 2.7 s of video per second (HA06-22), while AVCDEC completes about 95 AUs
+// per second. The 32-AU queue overflowed at 195 s and forced a keyframe wait.
+pub(crate) const AU_QUEUE_CAPACITY: usize = 128;
 pub(crate) const AU_QUEUE_BYTES: usize = 4 * 1024 * 1024;
-// Shared local receive-to-selection ceiling, matching the audio freshness
-// ceiling. This excludes capture/network/kernel delay and is not an end-to-end SLA.
+// How long the displayed picture stays live with nothing newer from the
+// decoder (a local stall), and the freshness needed to anchor the live-edge
+// clock. Since HA07 it no longer expires pictures that are merely behind.
 pub(crate) const MAX_LOCAL_VIDEO_AGE: Duration = Duration::from_millis(240);
+// HA07: the longest an AU or decoded picture may wait locally while the
+// decoder works through a sender drain. HA06-22's drains left pictures
+// 240-330 ms old at output. The 240 ms rule expired every one of them, so the
+// screen stopped for up to 0.66 s at a time, and expired AUs forced keyframe
+// waits. The live edge's presentation deadline still bounds total lateness.
+pub(crate) const MAX_LOCAL_CATCH_UP: Duration = super::live_edge::LAG_CEILING;
 pub(crate) const AU_PRESSURE_AGE: Duration = Duration::from_millis(50);
 
 // Metadata is NOT firmware readiness. Prefer a queued AU (which can also return

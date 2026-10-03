@@ -72,3 +72,17 @@ on the same backoff. A broken reference chain (loss, decoder deadline) while liv
 is an incident (recovery_begin). AU local age (picture_expired, presentation_expired,
 au_deadline_recovery, status receiveToGPU/decoded/selected ages) starts when the AU
 completes, not at its first packet. Status line "Live edge:" ends "lag-ceiling:2500ms".
+
+HA07 request and catch-up policy (no new stage names):
+Status "REMB:" now reads "... delay:<video>ms path:<shared>ms cuts:...". delay is
+video's added arrival delay; path is the part audio shares (the lower of video's
+and the latest audio delay, 0 without audio in the last second). Only path can
+lower the request, so receiver_ceiling_delay_ms a = path delay at the change.
+"SDP video ceiling:3000k" (b=AS:3000, TIAS 3000000); the REMB starts at and
+recovers toward 3000k. The control-channel maxBitrateKbps hint stays 2000.
+Local catch-up: au_deadline_recovery, picture_expired and presentation_expired
+fire only past 2500 ms local age (MAX_LOCAL_CATCH_UP), not 240 ms. A picture is
+live while the decoder produced it within 240 ms: video_hold_begin a is still the
+picture's local age, but the hold now starts 240 ms after the last decoded
+picture, not 240 ms after its AU completed. The AU queue holds 128 AUs, not 32
+(queue_frame_limit a = 128).
