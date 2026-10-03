@@ -20,6 +20,23 @@ pub(crate) const REQUEST_COOLDOWN: Duration = Duration::from_millis(300);
 // documented for videoKeyframeRequested or RTCP PLI.
 const REQUEST_GAP: Duration = REQUEST_COOLDOWN;
 pub(crate) const REQUEST_CEILING: Duration = Duration::from_secs(1);
+// While video keeps arriving at least this late, the sender is working through
+// a backlog. In HA04-20 the Xbox answered all 12 requests made into one with a
+// two-frame keyframe (37-48 KB) that queued behind it, arrived 0.6-1.7 s
+// later, and lengthened it. Requests wait until video is this current again
+// (the clock's healthy-path bound): asking as soon as it is within
+// INGRESS_BUDGET lands the keyframe behind most of a budget of queue, and the
+// frames behind it then exceed MEDIA_BUDGET. Silence (no new media) and
+// current-but-undecodable video keep the backoff. Lateness that stays within
+// BACKLOG..=INGRESS_BUDGET for REQUEST_CEILING is a slower path, not a
+// draining backlog; requests resume, since such a keyframe is admissible.
+pub(crate) const BACKLOG: Duration = Duration::from_millis(INGRESS_BUDGET.as_millis() as u64 / 2);
+// A recovery keyframe is judged by when it started arriving, and for this long
+// after it is admitted, frames up to MEDIA_BUDGET are accepted while the
+// keyframe and the frames queued behind it finish arriving: at the 500 kbps
+// floor HA04-20's keyframe pairs took 300-350 ms on their own. Then the usual
+// INGRESS_BUDGET rule, with its CONFIRMATION, applies again.
+pub(crate) const CATCH_UP: Duration = Duration::from_secs(1);
 
 /// Wait before the request following `sent` requests in one incident.
 fn request_gap(sent: u32) -> Duration {
@@ -51,6 +68,8 @@ pub(crate) enum Suppression {
     AwaitingPicture = 2,
     /// The media clock is untrusted; no keyframe can restore it. Restart.
     ClockUncertain = 3,
+    /// Video is arriving at least BACKLOG late: a keyframe would queue behind it.
+    Backlog = 4,
 }
 
 /// A modular RTP timeline in monotonic time. Empty probes must not be observed.
@@ -229,9 +248,21 @@ pub(crate) struct LiveEdge {
     admitted_at: Option<Instant>,
     // Media exceeded the ingress budget since current media last arrived.
     stalled: bool,
+    // First arrival of the most recent media timestamps, for judging a frame
+    // by when it started arriving rather than by its own transmission time.
+    arrivals: [Option<(u32, Instant)>; 4],
+    next_arrival: usize,
+    // Since when new frames have started arriving BACKLOG..=INGRESS_BUDGET late.
+    late_since: Option<Instant>,
+    // When the allowance after a recovery keyframe ends (see CATCH_UP).
+    catch_up: Option<Instant>,
+    // A diagnostic for the caller to record: (trace stage, value).
+    event: Option<(&'static str, u64)>,
     pub(crate) incidents: u64,
     pub(crate) recovered: u64,
     pub(crate) requested: u64,
+    pub(crate) caught_up: u64,
+    pub(crate) catch_up_late: u64,
 }
 
 impl Default for LiveEdge {
@@ -244,9 +275,16 @@ impl Default for LiveEdge {
             requests: 0,
             admitted_at: None,
             stalled: false,
+            arrivals: [None; 4],
+            next_arrival: 0,
+            late_since: None,
+            catch_up: None,
+            event: None,
             incidents: 0,
             recovered: 0,
             requested: 0,
+            caught_up: 0,
+            catch_up_late: 0,
         }
     }
 }
@@ -262,7 +300,65 @@ impl LiveEdge {
 
     pub(crate) fn observe(&mut self, ts: u32, seq: u16, received: Instant, now: Instant) -> bool {
         let advanced = self.clock.observe(ts, seq, received);
+        if advanced {
+            self.arrivals[self.next_arrival % self.arrivals.len()] = Some((ts, received));
+            self.next_arrival = self.next_arrival.wrapping_add(1);
+            let late = self.clock.delay(ts, received).unwrap_or(Duration::MAX);
+            if (BACKLOG..=INGRESS_BUDGET).contains(&late) {
+                self.late_since.get_or_insert(received);
+            } else {
+                self.late_since = None;
+            }
+        }
         self.evaluate(now, advanced)
+    }
+
+    /// A diagnostic produced by the last observe/poll, for the caller to trace.
+    pub(crate) fn take_event(&mut self) -> Option<(&'static str, u64)> {
+        self.event.take()
+    }
+
+    /// Lateness of `ts` when its first packet arrived: the queue it waited
+    /// behind, not its own transmission. Unknown first arrivals use `now`.
+    fn arrival_delay(&self, ts: u32, now: Instant) -> Option<Duration> {
+        let first = self
+            .arrivals
+            .iter()
+            .flatten()
+            .find(|(timestamp, _)| *timestamp == ts)
+            .map_or(now, |(_, at)| (*at).min(now));
+        self.clock.delay(ts, first)
+    }
+
+    /// Video is still arriving, but its newest frame started arriving at
+    /// least BACKLOG late: the sender is working through a backlog. Within
+    /// INGRESS_BUDGET, only until that lateness has persisted REQUEST_CEILING.
+    fn backlogged(&self, now: Instant) -> bool {
+        let Some(((ts, _), received)) = self.clock.anchor.zip(self.clock.last_received) else {
+            return false;
+        };
+        let late = self.clock.delay(ts, received).unwrap_or(Duration::MAX);
+        now.saturating_duration_since(received) < INGRESS_BUDGET
+            && (late > INGRESS_BUDGET
+                || (late >= BACKLOG
+                    && self.late_since.is_some_and(|since| {
+                        now.saturating_duration_since(since) < REQUEST_CEILING
+                    })))
+    }
+
+    fn catching_up(&self, now: Instant) -> bool {
+        self.catch_up.is_some_and(|deadline| now < deadline)
+    }
+
+    fn begin_incident(&mut self) {
+        self.state = State::AwaitingKeyframe;
+        self.pressure = None;
+        self.request_at = None;
+        self.requests = 0;
+        self.admitted_at = None;
+        self.catch_up = None;
+        self.stalled = true;
+        self.incidents += 1;
     }
 
     /// The last media timestamp also ages while packets stop or repeat. This
@@ -288,18 +384,32 @@ impl LiveEdge {
         };
         let delay = self.clock.delay(ts, now).unwrap_or(Duration::MAX);
         if matches!(self.state, State::Live | State::AwaitingPicture) {
+            if let Some(deadline) = self.catch_up
+                && now >= deadline
+            {
+                // The allowance after a recovery keyframe is over. From here
+                // the usual 240 ms rule applies, with its usual confirmation.
+                self.catch_up = None;
+                if delay > INGRESS_BUDGET {
+                    self.catch_up_late += 1;
+                } else {
+                    self.caught_up += 1;
+                }
+                self.event = Some((
+                    "live_edge_catch_up_end_ms",
+                    u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                ));
+            }
             if delay <= INGRESS_BUDGET {
+                self.pressure = None;
+            } else if delay <= MEDIA_BUDGET && self.catch_up.is_some() {
+                // The admitted keyframe, and the frames queued behind it at
+                // the sender, are still arriving: not a new backlog yet.
                 self.pressure = None;
             } else {
                 let since = *self.pressure.get_or_insert(now);
                 if delay > MEDIA_BUDGET || now.saturating_duration_since(since) >= CONFIRMATION {
-                    self.state = State::AwaitingKeyframe;
-                    self.pressure = None;
-                    self.request_at = None;
-                    self.requests = 0;
-                    self.admitted_at = None;
-                    self.stalled = true;
-                    self.incidents += 1;
+                    self.begin_incident();
                     return true;
                 }
             }
@@ -343,9 +453,9 @@ impl LiveEdge {
     pub(crate) fn ingress_useful(&self, ts: u32, now: Instant) -> bool {
         self.useful(ts, now)
             && (!self.recovering()
+                || (self.state == State::AwaitingPicture && self.catching_up(now))
                 || self
-                    .clock
-                    .delay(ts, now)
+                    .arrival_delay(ts, now)
                     .is_some_and(|d| d <= INGRESS_BUDGET))
     }
 
@@ -358,6 +468,7 @@ impl LiveEdge {
         if self.state == State::AwaitingKeyframe && self.admit(ts, idr_with_parameters, now) {
             self.state = State::AwaitingPicture;
             self.admitted_at = Some(now);
+            self.catch_up = now.checked_add(CATCH_UP);
         }
     }
 
@@ -393,6 +504,9 @@ impl LiveEdge {
         // This happens once per source, not once per IDR or recovery. Delay
         // before the first playable picture remains unknown, not measured live.
         self.clock = MediaClock::new(90_000);
+        self.arrivals = [None; 4];
+        self.late_since = None;
+        self.catch_up = None;
         self.clock.anchor = Some((ts, received));
         self.clock.last_received = Some(received);
         self.state = State::Live;
@@ -405,6 +519,7 @@ impl LiveEdge {
         if self.state == State::AwaitingPicture {
             self.state = State::AwaitingKeyframe;
             self.admitted_at = None;
+            self.catch_up = None;
         }
     }
 
@@ -413,6 +528,9 @@ impl LiveEdge {
         let since = match self.state {
             State::Unmeasured | State::Live => return Request::Idle,
             State::ClockUncertain => return Request::Suppressed(Suppression::ClockUncertain),
+            State::AwaitingKeyframe if self.backlogged(now) => {
+                return Request::Suppressed(Suppression::Backlog);
+            }
             State::AwaitingKeyframe => self.request_at.map(|at| (at, request_gap(self.requests))),
             // Give the admitted IDR time to produce a presented picture. If it
             // silently never does, keep asking rather than wait forever.
@@ -482,13 +600,15 @@ impl LiveEdge {
             })
             .unwrap_or_default();
         format!(
-            "Live edge:{:?}{timing} incidents:{} current-picture-recoveries:{} requests:{} backoff:{}ms total:{} (relative, not capture age)",
+            "Live edge:{:?}{timing} incidents:{} current-picture-recoveries:{} requests:{} backoff:{}ms total:{} catch-ups ok/late:{}/{} (relative, not capture age)",
             self.state,
             self.incidents,
             self.recovered,
             self.requests,
             request_gap(self.requests).as_millis(),
-            self.requested
+            self.requested,
+            self.caught_up,
+            self.catch_up_late
         )
     }
 }

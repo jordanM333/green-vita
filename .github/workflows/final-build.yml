@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: "-C target-feature=-neon"
-      GREENVITA_BUILD_NUMBER: "HA04-${{ github.run_number }}"
+      GREENVITA_BUILD_NUMBER: "HA05-${{ github.run_number }}"
       GREENVITA_BUILD_SHA: ${{ github.sha }}
     container:
       image: ghcr.io/vita-rust/vitasdk-rs@sha256:351f167c6c0c502baf92502b779cc4b52e9f82ac83efd172911c3ce37b3199cc
@@ -65,7 +65,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'push' && github.ref == 'refs/heads/architecture-review-20260926' && contains(github.event.head_commit.message, '[hardware-acceptance-vpk]')
         with:
-          name: GreenVita-HA04-${{ github.sha }}
+          name: GreenVita-HA05-${{ github.sha }}
           path: |
             target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk
             acceptance-provenance.json

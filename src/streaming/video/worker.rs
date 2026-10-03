@@ -231,17 +231,23 @@ impl VideoDecodeWorker {
     }
 
     pub(crate) fn observe_media(&self, ts: u32, seq: u16, received: Instant, now: Instant) -> bool {
-        self.direct_output
-            .live_edge
-            .lock()
-            .is_ok_and(|mut edge| edge.observe(ts, seq, received, now))
+        self.direct_output.live_edge.lock().is_ok_and(|mut edge| {
+            let incident = edge.observe(ts, seq, received, now);
+            if let Some((stage, value)) = edge.take_event() {
+                super::trace::record(stage, ts, value);
+            }
+            incident
+        })
     }
 
     pub(crate) fn poll_media(&self, now: Instant) -> bool {
-        self.direct_output
-            .live_edge
-            .lock()
-            .is_ok_and(|mut edge| edge.poll(now))
+        self.direct_output.live_edge.lock().is_ok_and(|mut edge| {
+            let incident = edge.poll(now);
+            if let Some((stage, value)) = edge.take_event() {
+                super::trace::record(stage, 0, value);
+            }
+            incident
+        })
     }
 
     pub(crate) fn media_ingress_useful(&self, ts: u32, now: Instant) -> bool {

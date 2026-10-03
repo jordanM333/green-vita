@@ -74,6 +74,19 @@ class Contracts(unittest.TestCase):
         self.assertIn("self.held_video = !current;", surface)
         self.assertNotIn("MAX_REQUESTS", live_edge)
 
+    def test_ha05_backlog_and_catch_up_paths_use_the_tested_decisions(self):
+        # rtp.rs, worker.rs and session.rs compile only for the Vita target;
+        # the rtp-order host tests drive LiveEdge through the same calls.
+        rtp = (ROOT / "src/api/streaming/rtc/rtp.rs").read_text()
+        worker = (ROOT / "src/streaming/video/worker.rs").read_text()
+        live_edge = (ROOT / "src/streaming/video/live_edge.rs").read_text()
+        self.assertIn("let now = Instant::now().max(received_at);", rtp)
+        self.assertIn("worker.media_admits(completed.timestamp, random_access, now)", rtp)
+        self.assertIn("worker.media_submitted(completed.timestamp, random_access, now)", rtp)
+        self.assertEqual(worker.count("edge.take_event()"), 2)
+        self.assertIn("Backlog = 4,", live_edge)
+        self.assertIn("State::AwaitingKeyframe if self.backlogged(now) =>", live_edge)
+
     def test_no_unowned_session_sweep(self):
         for path in ["src/app/entry.rs", "src/app/stream_session/connection.rs"]:
             text = (ROOT / path).read_text()

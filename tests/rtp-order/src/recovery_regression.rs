@@ -9,6 +9,9 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use streaming::video::VideoDecodeWorker;
 
+#[path = "sender_backlog.rs"]
+mod sender_backlog;
+
 const FRAME_US: u64 = 16_667;
 const PUMP: Duration = Duration::from_millis(4);
 // libx264 baseline 1280x720 parameter sets (PPS 0 -> SPS 0).
@@ -45,6 +48,7 @@ struct Link {
     demand: bool,
     last_sent: Option<Instant>,
     requests: Vec<Instant>,
+    suppressed: usize,
     stale_quarantines: usize,
     late_ignored: usize,
     sent: Vec<(u32, rtp::Packet)>,
@@ -63,6 +67,7 @@ impl Link {
             demand: false,
             last_sent: None,
             requests: Vec::new(),
+            suppressed: 0,
             stale_quarantines: 0,
             late_ignored: 0,
             sent: Vec::new(),
@@ -153,9 +158,13 @@ impl Link {
                 .lock()
                 .unwrap()
                 .keyframe_request(demand, self.last_sent, now);
-        if let Request::Send(_) = decision {
-            self.last_sent = Some(now);
-            self.requests.push(now);
+        match decision {
+            Request::Send(_) => {
+                self.last_sent = Some(now);
+                self.requests.push(now);
+            }
+            Request::Suppressed(_) => self.suppressed += 1,
+            Request::Idle | Request::Wait => {}
         }
     }
 
@@ -344,7 +353,10 @@ fn post_idr_frames_that_only_follow_pre_idr_loss_do_not_reenter_recovery() {
     for packet in stale.into_iter().chain(harmless) {
         link.receive(packet, now);
     }
-    assert_eq!(link.late_ignored, 30, "stale pre-IDR media not recognized");
+    // HA05: during the catch-up allowance only media beyond MEDIA_BUDGET fails
+    // the ingress screen (frames 100-109 and 230-235); the 14 newer packets
+    // pass it and are dropped by reorder/assembly as already passed.
+    assert_eq!(link.late_ignored, 16, "stale pre-IDR media not recognized");
     assert_eq!(
         link.stale_quarantines, 0,
         "pre-IDR media re-entered recovery"
@@ -366,14 +378,20 @@ fn post_idr_frames_that_only_follow_pre_idr_loss_do_not_reenter_recovery() {
 #[test]
 fn stale_media_beyond_the_admitted_idr_still_quarantines() {
     // The late-packet exemption is narrow: media the assembler has not passed
-    // that is itself beyond the recovery budget still breaks the chain.
+    // that is itself beyond the budget still breaks the chain. While the
+    // admitted IDR catches up (HA05) that budget is MEDIA_BUDGET.
     let mut link = Link::new();
     link.live(60);
     link.outage(60..240);
     link.frames(240..260);
     assert!(link.deliver(260, &IDR, &[]));
     assert_eq!(link.state(), State::AwaitingPicture);
-    let late = link.at(262) + Duration::from_millis(400);
+    let behind = link.at(261) + Duration::from_millis(400);
+    let packet = link.send(261, &[P], &[]).remove(0);
+    link.receive(packet, behind);
+    assert_eq!(link.stale_quarantines, 0, "within the catch-up allowance");
+    assert_eq!(link.state(), State::AwaitingPicture);
+    let late = link.at(262) + Duration::from_millis(500);
     let packet = link.send(262, &[P], &[]).remove(0);
     link.receive(packet, late);
     assert_eq!(link.stale_quarantines, 1);

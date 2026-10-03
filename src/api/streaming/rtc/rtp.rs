@@ -887,7 +887,10 @@ impl VideoRtp {
         }
 
         let random_access = unit.has_idr && unit.resolution.is_some() && unit.has_pps;
-        if !worker.media_admits(completed.timestamp, random_access, Instant::now()) {
+        // Never judge an AU before its completing packet was received. On the
+        // Vita now is always later; host replays drive time through received_at.
+        let now = Instant::now().max(received_at);
+        if !worker.media_admits(completed.timestamp, random_access, now) {
             self.record_damage(worker);
             stats.record_drop(DropReason::IdrWait);
             crate::streaming::video::trace::record("stale_au_rejected", completed.timestamp, 0);
@@ -903,7 +906,7 @@ impl VideoRtp {
             && (self.refresh_pending || worker.queued_frames() >= 8);
         // Transition before publishing to the decoder thread. A failed enqueue
         // returns to keyframe wait through record_damage; the clock is retained.
-        worker.media_submitted(completed.timestamp, random_access, Instant::now());
+        worker.media_submitted(completed.timestamp, random_access, now);
         let submitted = if cutover {
             worker.submit_refresh_access_unit(
                 data.to_vec(),

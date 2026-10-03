@@ -1,6 +1,8 @@
 //! Actual returned timing observations, fed to production media-clock policy.
 //! No payload exists here: never claim to replay decoding or sender recovery.
-use crate::live_edge::{LiveEdge, MediaClock, REQUEST_CEILING, REQUEST_COOLDOWN, State};
+use crate::live_edge::{
+    BACKLOG, LiveEdge, MediaClock, REQUEST_COOLDOWN, Request, State, Suppression,
+};
 use std::time::{Duration, Instant};
 
 #[test]
@@ -40,7 +42,7 @@ fn returned_diag03_8_onset_blocks_stale_video_and_preserves_current_audio() {
                 incident_lag.get_or_insert(video.added_delay_ms(ts, l).unwrap());
             }
             if video.request_due(l) {
-                requests.push(l);
+                requests.push((l, video.added_delay_ms(ts, d).unwrap()));
             }
             last_video = l;
             let lag = video.added_delay_ms(ts, l).unwrap();
@@ -73,35 +75,36 @@ fn returned_diag03_8_onset_blocks_stale_video_and_preserves_current_audio() {
     assert_eq!(video.recovered, 0);
     assert_eq!(video.incidents, 1);
     // Payloads are absent, so no real IDR can be submitted/confirmed here.
-    // Requests continue through the whole stale window (HA04: no terminal
-    // cap), never closer than the cooldown, and at most one per second once
-    // backed off. A rearm on returning current media restarts the backoff.
-    let gaps: Vec<_> = requests.windows(2).map(|w| w[1] - w[0]).collect();
-    let window = last_video - requests[0];
-    // 300 ms + 600 ms, then 1 s; current timestamps return once in this
-    // window (the pre-HA04 rearm), restarting the backoff: two more short gaps.
-    let bound = 3 + 2 + (window.as_millis() / REQUEST_CEILING.as_millis()) as usize;
+    // HA05: requests go out only while video arrives less than BACKLOG late
+    // (it was briefly current again 0.3-0.7 s after the onset), and none into
+    // the plateau that follows: each keyframe would queue behind it (HA04
+    // sent 12 here). They are deferred, never abandoned.
+    let times: Vec<_> = requests.iter().map(|(at, _)| *at).collect();
+    let gaps: Vec<_> = times.windows(2).map(|w| w[1] - w[0]).collect();
     assert!(gaps.iter().all(|gap| *gap >= REQUEST_COOLDOWN), "{gaps:?}");
     assert!(
-        gaps.iter()
-            .all(|gap| *gap <= REQUEST_CEILING + Duration::from_millis(50))
+        requests
+            .iter()
+            .all(|(_, late)| *late < BACKLOG.as_millis() as u64),
+        "requested into late video: {requests:?}"
     );
+    let onset = start + Duration::from_micros(incident.unwrap());
     assert!(
-        (6..=bound).contains(&requests.len()),
-        "{} > {bound}",
-        requests.len()
+        (1..=2).contains(&requests.len())
+            && times.iter().all(|at| *at - onset < Duration::from_secs(1)),
+        "requested into the stale plateau"
     );
-    assert!(
-        last_video - *requests.last().unwrap() <= REQUEST_CEILING,
-        "gave up"
+    assert_eq!(
+        video.pending_request(last_video),
+        Request::Suppressed(Suppression::Backlog)
     );
+    let window = last_video - *times.last().unwrap();
     println!(
-        "DIAG03-8: video packets={video_packets}, audio packets={audio_packets}, quarantine D={}us at {}ms, max relative video={video_max}ms, audio={}us, rejected={rejected}, requests={} over {}ms (min gap {}ms); actual live recovery=UNPROVEN (no payload/counterfactual sender)",
+        "DIAG03-8: video packets={video_packets}, audio packets={audio_packets}, quarantine D={}us at {}ms, max relative video={video_max}ms, audio={}us, rejected={rejected}, requests={} while video was current, then none for the {}ms plateau; actual live recovery=UNPROVEN (no payload/counterfactual sender)",
         incident.unwrap(),
         incident_lag.unwrap(),
         audio_max.as_micros(),
         requests.len(),
-        window.as_millis(),
-        gaps.iter().min().unwrap().as_millis()
+        window.as_millis()
     );
 }
