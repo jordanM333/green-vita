@@ -907,18 +907,13 @@ impl VideoRtp {
         // Transition before publishing to the decoder thread. A failed enqueue
         // returns to keyframe wait through record_damage; the clock is retained.
         worker.media_submitted(completed.timestamp, random_access, now);
+        // The local budget starts when the AU is complete. A large picture's
+        // own transmission is upstream time, not local queueing (HA05-21: a
+        // 79 KB scene change took 310 ms to arrive and was expired for it).
         let submitted = if cutover {
-            worker.submit_refresh_access_unit(
-                data.to_vec(),
-                completed.first_packet_at,
-                completed.timestamp,
-            )
+            worker.submit_refresh_access_unit(data.to_vec(), now, completed.timestamp)
         } else {
-            worker.submit_access_unit(
-                data.to_vec(),
-                completed.first_packet_at,
-                completed.timestamp,
-            )
+            worker.submit_access_unit(data.to_vec(), now, completed.timestamp)
         };
         match submitted {
             SubmitResult::Submitted => {

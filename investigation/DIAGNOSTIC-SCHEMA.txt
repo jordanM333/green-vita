@@ -50,15 +50,13 @@ sender delay from network/driver delay before the socket. See DIAGNOSTIC-DESIGN.
 HA04 trace stages (other trace rows; a = value, timestamp column = RTP or 0):
 keyframe_request              a 0. One sent request (control message + RTCP PLI).
 keyframe_request_backoff_ms   a = minimum wait before the next request: 300, 600,
-                              then 1000 while video waits. Requests never stop
-                              while video is silent or current (HA05: see 4).
+                              then 1000 while video waits. Requests never stop.
 keyframe_request_suppressed   a = reason, at most once per reason per second:
                               1 shared 300 ms cooldown, 2 admitted IDR's 1 s grace
                               before its first picture, 3 clock uncertain (restart),
-                              4 (HA05) video still arriving >=120 ms late: a sender
-                              backlog; a keyframe would queue behind it. Lasts until
-                              video is current, or 1 s within 120-240 ms (a slower
-                              path, not a backlog), then the backoff resumes.
+                              4 (HA06) in flight: the previous keyframe was asked for
+                              less than the current video lateness + 300 ms ago and
+                              can still be queued behind the sender's backlog.
 stale_late_rtp_ignored        late/retransmitted media older than the AU being
                               assembled; dropped without restarting recovery.
 video_hold_begin              last good picture held on screen (not live); a = its
@@ -66,10 +64,11 @@ video_hold_begin              last good picture held on screen (not live); a = i
                               picture replaced it, 0 if the hold ended otherwise.
 recovery_idr_admitted_ms      now only for real incidents, not the first-IDR wait.
 
-HA05 trace stages:
-live_edge_catch_up_end_ms     1 s after a recovery IDR is admitted (frames up to
-                              480 ms late accepted meanwhile); a = how late video
-                              still was (ms). Over 240: the usual rule resumes and
-                              confirms a new incident after 120 ms.
-Status line "Live edge:" adds "catch-ups ok/late:N/M". A recovery keyframe is
-judged by its first packet's lateness, not its own transmission time.
+HA06 playback policy (no new stage names):
+Late video is decoded and shown; it catches up as the sender drains. Only video
+arriving more than 2500 ms late (LAG_CEILING) is an incident (live_edge_quarantine).
+Silence is held, not an incident: keyframes are requested after 1 s without video
+on the same backoff. A broken reference chain (loss, decoder deadline) while live
+is an incident (recovery_begin). AU local age (picture_expired, presentation_expired,
+au_deadline_recovery, status receiveToGPU/decoded/selected ages) starts when the AU
+completes, not at its first packet. Status line "Live edge:" ends "lag-ceiling:2500ms".

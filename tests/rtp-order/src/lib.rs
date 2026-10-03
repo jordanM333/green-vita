@@ -499,14 +499,15 @@ mod repair_integration {
     }
 
     #[test]
-    fn two_second_ingress_age_is_preserved_through_reorder_assembly_and_decoder_submission() {
+    fn local_age_starts_when_an_out_of_order_au_completes() {
         let old = Instant::now() - Duration::from_secs(2);
         let mut video = video_rtp::VideoRtp::new(1280, 720);
         let worker = streaming::video::VideoDecodeWorker::default();
         let mut order = reorder::PacketOrder::default();
         let mut keyframe = false;
         // Arrive out of sequence across u16 wrap; the earliest socket timestamp
-        // belongs to a later fragment. Completion must preserve the minimum.
+        // belongs to a later fragment. HA06: the local budget starts when the
+        // AU completes; its media age stays with the live-edge clock.
         let now = Instant::now();
         let first = order
             .push(
@@ -537,7 +538,10 @@ mod repair_integration {
         video.receive_at(&worker, middle.0, middle.1, &mut keyframe);
         let last = order.pop_ready(now).unwrap();
         video.receive_at(&worker, last.0, last.1, &mut keyframe);
-        assert_eq!(*worker.submitted_times.lock().unwrap(), vec![(old, 1234)]);
+        let submitted = worker.submitted_times.lock().unwrap().clone();
+        assert_eq!(submitted.len(), 1);
+        assert_eq!(submitted[0].1, 1234);
+        assert!(submitted[0].0 >= now, "local age must not start at the first packet");
         assert!(!keyframe);
         let summary = video.take_assembly_summary();
         assert!(summary.contains("samples:1"));
@@ -622,16 +626,17 @@ mod repair_integration {
         let now = Instant::now();
         {
             let mut edge = worker.edge.lock().unwrap();
+            // HA06: only video beyond LAG_CEILING (2.5 s) is abandoned.
             edge.establish(
                 0,
-                now - Duration::from_secs(2),
-                now - Duration::from_secs(2),
+                now - Duration::from_secs(3),
+                now - Duration::from_secs(3),
             );
             edge.observe(
                 0,
                 10,
-                now - Duration::from_secs(2),
-                now - Duration::from_secs(2),
+                now - Duration::from_secs(3),
+                now - Duration::from_secs(3),
             );
             assert!(edge.observe(1500, 13, now, now));
         }

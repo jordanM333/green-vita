@@ -113,7 +113,6 @@ impl Trace {
                 | "keyframe_cutover_units"
                 | "video_hold_begin"
                 | "video_hold_end"
-                | "live_edge_catch_up_end_ms"
         ) || (stage == "au_drop_reason" && value != 5)
         {
             self.incident(time, stage, timestamp, value);

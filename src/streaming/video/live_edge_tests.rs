@@ -51,8 +51,8 @@ fn fast_forward_catchup_is_an_earlier_edge_not_an_invalid_clock() {
     edge.observe(54_000, 1, now, now);
     assert_eq!(edge.state(), State::Live);
     assert!(edge.can_present(54_000, now));
-    // This earlier baseline still rejects a subsequent real delay.
-    let delayed = now + Duration::from_secs(2);
+    // This earlier baseline still detects a subsequent delay beyond the ceiling.
+    let delayed = now + Duration::from_secs(3);
     assert!(edge.observe(55_500, 2, delayed, delayed));
     assert!(!edge.can_present(55_500, delayed));
     assert!(
@@ -89,7 +89,7 @@ fn gaps(requests: &[Instant]) -> Vec<Duration> {
 }
 
 #[test]
-fn frozen_timestamps_and_a_silent_stream_expire_without_repeated_flushes() {
+fn a_silent_stream_keeps_asking_for_a_keyframe_without_an_incident() {
     let start = Instant::now();
     for duplicate_packets in [false, true] {
         let mut edge = LiveEdge::default();
@@ -108,13 +108,15 @@ fn frozen_timestamps_and_a_silent_stream_expire_without_repeated_flushes() {
             if edge.request_due(now) {
                 requests.push(now);
             }
-            if tick > 48 {
-                assert!(!edge.can_present(123, now));
-            }
+            // The last picture is too old to present only beyond the ceiling.
+            assert_eq!(edge.can_present(123, now), now - start <= LAG_CEILING);
         }
-        // One quarantine, never a periodic purge. Requests never stop while
-        // video waits, but back off 300 ms -> 600 ms -> 1 s and stay there.
-        assert_eq!(transitions, 1);
+        // Silence is not an incident: if video resumes, its reference chain is
+        // intact. Requests start after SILENCE and never stop, backing off
+        // 300 ms -> 600 ms -> 1 s.
+        assert_eq!(transitions, 0);
+        assert_eq!(edge.state(), State::Live);
+        assert_eq!(requests[0] - start, SILENCE);
         let gaps = gaps(&requests);
         assert_eq!(
             gaps[..2],
@@ -126,20 +128,24 @@ fn frozen_timestamps_and_a_silent_stream_expire_without_repeated_flushes() {
         );
         assert!(end - *requests.last().unwrap() <= REQUEST_CEILING);
         assert!(requests.len() > 55, "{} requests", requests.len());
-        assert_eq!(edge.state(), State::AwaitingKeyframe);
+        // Video returns: no keyframe is needed, and the schedule resets.
+        let back = end + Duration::from_millis(10);
+        let ts = 123u32.wrapping_add((back - start).as_micros() as u32 * 9 / 100);
+        assert!(!edge.observe(ts, 9_000, back, back));
+        assert!(edge.admit(ts, false, back));
+        assert!(!edge.request_due(back));
     }
 }
 
 #[test]
-fn observed_deficit_cannot_become_persistent_stale_playback_even_with_empty_queues() {
+fn a_sender_backlog_plays_late_and_catches_up_without_a_keyframe() {
     let start = Instant::now();
     let mut edge = LiveEdge::default();
-    let mut requests = Vec::new();
-    let mut detected_at = None;
     let mut last = start;
-    // Controlled model of the measured 1.595s added delay, then a 30-minute
-    // stale plateau. This is timing replay, not a synthetic Xbox/AVCDEC claim.
-    for frame in 0..108_000u32 {
+    // Controlled model of the measured 1.595 s added delay (DIAG03-8), held
+    // for 30 minutes, then drained at twice real time. Timing replay only.
+    let mut frame = 0u32;
+    while frame < 108_000 {
         let lag_us = u64::from(frame.saturating_sub(120))
             .saturating_mul(8_000)
             .min(1_595_000);
@@ -148,57 +154,47 @@ fn observed_deficit_cannot_become_persistent_stale_playback_even_with_empty_queu
         if frame == 0 {
             edge.establish(ts, now, now);
         }
-        if edge.observe(ts, frame as u16, now, now) {
-            detected_at.get_or_insert(lag_us);
-        }
-        if edge.request_due(now) {
-            requests.push(now);
-        }
-        if lag_us > 480_000 {
-            assert!(!edge.admit(ts, false, now));
-            assert!(
-                !edge.admit(ts, true, now),
-                "obsolete IDR must not reset the media baseline"
-            );
-            assert!(!edge.can_present(ts, now));
-        }
+        assert!(!edge.observe(ts, frame as u16, now, now), "frame {frame}");
+        assert!(edge.admit(ts, false, now));
+        assert!(edge.can_present(ts, now));
+        assert!(!edge.request_due(now));
         last = now;
+        frame += 1;
     }
-    assert!(detected_at.unwrap() < 480_000);
-    assert_eq!(edge.incidents, 1, "no periodic purge");
-    assert_eq!(
-        edge.recovered, 0,
-        "no live IDR was supplied; recovery is not proved"
-    );
-    // HA05: video kept arriving 1.6 s late for the whole plateau, so nothing
-    // was requested into it: a keyframe would queue behind it (HA04-20). The
-    // request is deferred, not abandoned.
-    assert!(
-        requests.is_empty(),
-        "{} requests into a backlog",
-        requests.len()
-    );
-    assert_eq!(
-        edge.pending_request(last),
-        Request::Suppressed(Suppression::Backlog)
-    );
-    assert_eq!(edge.state(), State::AwaitingKeyframe);
-    // Actual current media returns 100 ms later. Dependent pictures alone
-    // cannot restart; the first request goes out at once.
-    let current = last + Duration::from_millis(100);
+    assert_eq!(edge.added_delay_ms(1500 * (frame - 1), last), Some(1595));
+    // The backlog drains: frames arrive twice as fast until they are current.
+    loop {
+        let captured = start + Duration::from_micros(u64::from(frame) * 1_000_000 / 60);
+        let now = (last + Duration::from_micros(8_333)).max(captured);
+        let ts = frame * 1500;
+        assert!(!edge.observe(ts, frame as u16, now, now));
+        assert!(edge.can_present(ts, now));
+        last = now;
+        frame += 1;
+        if now == captured {
+            break;
+        }
+    }
+    assert_eq!(edge.added_delay_ms(1500 * (frame - 1), last), Some(0));
+    assert_eq!(edge.state(), State::Live);
+    assert_eq!((edge.incidents, edge.requested), (0, 0));
+    // Beyond the ceiling is an incident, and only a current keyframe recovers.
+    let late = last + LAG_CEILING + Duration::from_millis(100);
+    let ts = frame * 1500;
+    assert!(edge.observe(ts, frame as u16, late, late));
+    assert!(!edge.can_present(ts, late));
+    assert!(edge.request_due(late));
+    let current = late + Duration::from_millis(100);
     let ts = (current.duration_since(start).as_micros() * 90 / 1000) as u32;
-    edge.observe(ts, 0, current, current);
+    edge.observe(ts, frame.wrapping_add(1) as u16, current, current);
     assert!(!edge.admit(ts, false, current));
-    assert!(edge.request_due(current), "current media restarts requests");
     assert!(edge.admit(ts, true, current));
     edge.submitted(ts, true, current);
     assert_eq!(edge.recovered, 0, "admission is not presentation");
     assert!(edge.presented(ts, current + Duration::from_millis(80)));
-    assert_eq!(edge.state(), State::Live);
-    assert_eq!(edge.recovered, 1);
-    println!(
-        "1595ms model: quarantine at {}us; 30min plateau blocked with no keyframe requested into it; current media: one request, current-IDR output restores LIVE",
-        detected_at.unwrap()
+    assert_eq!(
+        (edge.state(), edge.incidents, edge.recovered),
+        (State::Live, 1, 1)
     );
 }
 
@@ -222,7 +218,7 @@ fn legitimate_jitter_duplicates_reorder_bursts_and_idle_do_not_rebase_or_trigger
     let now = start + Duration::from_secs(70);
     edge.observe(70 * 90_000, 3601, now, now);
     assert!(edge.admit(70 * 90_000, false, now));
-    assert!(!edge.can_present(70 * 90_000, now + MEDIA_BUDGET + Duration::from_millis(1)));
+    assert!(!edge.can_present(70 * 90_000, now + LAG_CEILING + Duration::from_millis(1)));
     assert_eq!(edge.incidents, 0);
 }
 
@@ -252,9 +248,11 @@ fn failed_or_expired_keyframe_does_not_report_recovery_or_restart_request_budget
     let mut edge = LiveEdge::default();
     edge.establish(0, start, start);
     edge.observe(0, 0, start, start);
-    // Silence (no new media), not a backlog: requests follow the backoff.
+    // A broken reference chain is an incident; requests follow the backoff.
     let now = start + Duration::from_secs(2);
-    assert!(edge.poll(now));
+    edge.observe(178_500, 1, now, now);
+    edge.damage();
+    assert_eq!(edge.state(), State::AwaitingKeyframe);
     assert!(edge.request_due(now));
     edge.observe(180_000, 2, now, now);
     edge.submitted(180_000, true, now);
@@ -266,7 +264,7 @@ fn failed_or_expired_keyframe_does_not_report_recovery_or_restart_request_budget
     assert!(edge.request_due(now + Duration::from_millis(300)));
     assert!(!edge.presented(180_000, now));
     edge.submitted(180_000, true, now);
-    assert!(!edge.presented(180_000, now + MEDIA_BUDGET + Duration::from_millis(1)));
+    assert!(!edge.presented(180_000, now + LAG_CEILING + Duration::from_millis(1)));
     assert_eq!(edge.recovered, 0);
 }
 
@@ -317,76 +315,75 @@ fn delayed_sender_reports_cannot_calibrate_away_a_stale_plateau() {
         if frame % 60 == 0 {
             edge.sender_report(frame * 1500, (u64::from(frame) / 60) << 32, now);
         }
+        // The lag is measured and never calibrated away (HA06 plays it).
         if frame > 120 {
-            assert!(!edge.admit(frame * 1500, true, now));
+            assert_eq!(edge.added_delay_ms(frame * 1500, now), Some(1595));
         }
     }
-    assert_eq!(edge.recovered, 0);
+    assert_eq!((edge.incidents, edge.recovered), (0, 0));
 }
 
 #[test]
-fn a_recovery_keyframe_is_judged_by_its_first_packet_and_may_catch_up_for_one_second() {
-    let at = |ms: u64| Instant::now() + Duration::from_millis(ms);
-    let start = at(0);
+fn a_keyframe_requested_into_a_backlog_is_not_requested_again_until_it_can_arrive() {
+    let start = Instant::now();
     let after = |ms: u64| start + Duration::from_millis(ms);
-    let ts = |ms: u32| ms * 90;
+    let ts = |ms: u64| (ms * 90) as u32;
     let mut edge = LiveEdge::default();
     edge.establish(0, start, start);
     edge.observe(0, 0, start, start);
-    // Silence: an incident, and a request on the HA04 schedule.
-    assert!(edge.poll(after(1_000)));
-    assert!(edge.request_due(after(1_000)));
-    // The keyframe captured at 1.1 s starts arriving 100 ms late, but takes
-    // 230 ms to transmit: its last packet is 330 ms late.
-    edge.observe(ts(1_100), 1, after(1_200), after(1_200));
-    assert!(edge.ingress_useful(ts(1_100), after(1_430)));
-    assert!(edge.admit(ts(1_100), true, after(1_430)));
-    edge.submitted(ts(1_100), true, after(1_430));
-    assert_eq!(edge.state(), State::AwaitingPicture);
-    // Frames queued behind it arrive up to MEDIA_BUDGET late: accepted, and
-    // no new incident, while the allowance lasts.
-    let mut seq = 2;
-    for (captured, arrived) in [(1_117, 1_530), (1_133, 1_540), (1_150, 1_545)] {
-        assert!(!edge.observe(ts(captured), seq, after(arrived), after(arrived)));
-        assert!(edge.ingress_useful(ts(captured), after(arrived)));
-        seq += 1;
+    // A sender backlog: video arrives 800 ms late and keeps playing.
+    let mut seq = 1u16;
+    let mut frame = |edge: &mut LiveEdge, captured: u64| {
+        let arrived = after(captured + 800);
+        assert!(!edge.observe(ts(captured), seq, arrived, arrived));
+        seq = seq.wrapping_add(1);
+        arrived
+    };
+    for captured in (16..=2_000).step_by(16) {
+        let arrived = frame(&mut edge, captured);
+        assert!(edge.can_present(ts(captured), arrived));
     }
-    assert!(edge.presented(ts(1_117), after(1_560)));
-    assert_eq!(edge.state(), State::Live);
-    for step in 0..50u32 {
-        let captured = 1_167 + step * 16;
-        assert!(!edge.observe(
-            ts(captured),
-            seq,
-            after(u64::from(captured) + 300),
-            after(u64::from(captured) + 300)
-        ));
-        seq += 1;
-    }
-    assert_eq!(
-        (edge.incidents, edge.caught_up, edge.catch_up_late),
-        (1, 0, 0)
-    );
-    // Beyond MEDIA_BUDGET the allowance does not apply.
-    assert!(!edge.ingress_useful(ts(1_900), after(2_400)));
-    // The allowance ends 1 s after admission. Still 300 ms late: the usual
-    // rule resumes and confirms a new incident after CONFIRMATION.
-    let mut incident = None;
-    for step in 0..20u32 {
-        let captured = 2_000 + step * 16;
-        let arrived = after(u64::from(captured) + 300);
-        if edge.observe(ts(captured), seq, arrived, arrived) {
-            incident = Some(u64::from(captured) + 300);
-            break;
+    // Loss breaks the chain: an incident, and one request at once.
+    edge.damage();
+    let sent = after(2_800);
+    assert!(matches!(
+        edge.keyframe_request(false, None, sent),
+        Request::Send(_)
+    ));
+    // The next backoff slot (300 ms) is held until the keyframe could have
+    // come through the 800 ms backlog: lateness + cooldown.
+    let mut next = None;
+    for captured in (2_016..=3_400).step_by(16) {
+        let now = frame(&mut edge, captured);
+        match edge.keyframe_request(false, Some(sent), now) {
+            Request::Send(_) => {
+                next = Some(now - sent);
+                break;
+            }
+            Request::Wait => assert!(now - sent < Duration::from_millis(300)),
+            Request::Suppressed(reason) => assert_eq!(reason, Suppression::InFlight),
+            Request::Idle => panic!("idle while recovering"),
         }
-        seq += 1;
     }
-    assert_eq!((edge.caught_up, edge.catch_up_late), (0, 1));
-    let incident = incident.expect("late video after the allowance is an incident");
-    // Pressure starts at the first frame after the allowance (2444 ms).
+    let next = next.expect("requests stopped");
     assert!(
-        (2_430 + 120..2_430 + 120 + 40).contains(&incident),
-        "{incident}"
+        next >= REQUEST_COOLDOWN + Duration::from_millis(800),
+        "{next:?}"
     );
-    assert_eq!(edge.incidents, 2);
+    assert!(
+        next < REQUEST_COOLDOWN + Duration::from_millis(816),
+        "{next:?}"
+    );
+    // The keyframe starts arriving 800 ms late and takes 290 ms to arrive: it
+    // is judged by its first packet, admitted, and recovers.
+    let first = after(2_810 + 800);
+    edge.observe(ts(2_810), seq, first, first);
+    let done = first + Duration::from_millis(290);
+    assert!(edge.admit(ts(2_810), true, done));
+    edge.submitted(ts(2_810), true, done);
+    assert!(edge.presented(ts(2_810), done + Duration::from_millis(20)));
+    assert_eq!(
+        (edge.state(), edge.incidents, edge.recovered),
+        (State::Live, 1, 1)
+    );
 }

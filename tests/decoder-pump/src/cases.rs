@@ -128,9 +128,9 @@ fn production_surface_holds_the_last_good_frame_through_recovery_until_session_e
     }
     assert_eq!(output.live_edge_state(), live_edge::State::Live);
     assert_eq!(pixel(&surface), [0, 255, 0]);
-    // Video stalls: the live edge declares an incident and RTP recovery
-    // starts a new decode epoch. Neither may blank the uploaded picture.
-    assert!(output.live_edge.lock().unwrap().poll(Instant::now() + Duration::from_millis(600)));
+    // The reference chain breaks: the live edge declares an incident and RTP
+    // recovery starts a new decode epoch. Neither may blank the uploaded picture.
+    output.live_edge.lock().unwrap().damage();
     assert_eq!(output.live_edge_state(), live_edge::State::AwaitingKeyframe);
     output.invalidate_before_epoch(1);
     assert!(surface.needs_expiry_redraw(), "the switch to the held frame is urgent");
@@ -247,8 +247,9 @@ fn stale_before_socket_is_rejected_by_real_worker_with_fresh_local_arrival() {
     let (output, _pixels) = surfaces();
     let mut worker = VideoDecodeWorker::spawn(config(), output.clone()).unwrap();
     let now = Instant::now();
-    output.live_edge.lock().unwrap().establish(0, now - Duration::from_secs(2), now - Duration::from_secs(2));
-    worker.observe_media(0, 0, now - Duration::from_secs(2), now - Duration::from_secs(2));
+    // HA06: video later than LAG_CEILING (2.5 s) is stale; later video plays.
+    output.live_edge.lock().unwrap().establish(0, now - Duration::from_secs(3), now - Duration::from_secs(3));
+    worker.observe_media(0, 0, now - Duration::from_secs(3), now - Duration::from_secs(3));
     worker.observe_media(1500, 1, now, now);
     let expired = metrics::METRICS.expired_access_unit.load(Ordering::Relaxed);
     worker.submit_access_unit(vec![1], now, 1500);
@@ -269,7 +270,7 @@ fn uploaded_texture_expires_and_old_epoch_completion_cannot_close_new_recovery()
         submitted_at: now, decoded_at: now, epoch: 0 };
     assert!(output.can_draw(timing, now));
     assert!(!output.can_draw(timing, now + Duration::from_millis(241)));
-    let later = now + Duration::from_secs(2);
+    let later = now + Duration::from_secs(3);
     {
         let mut edge = output.live_edge.lock().unwrap();
         edge.observe(1500, 1, later, later);

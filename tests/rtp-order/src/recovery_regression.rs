@@ -3,7 +3,7 @@
 //! order as media.rs/session.rs; only the decoder sink and Xbox sender are
 //! modeled. Synthetic H.264 bytes: no hardware decode or sender response is claimed.
 use super::*;
-use crate::live_edge::{REQUEST_CEILING, REQUEST_COOLDOWN, Request, State};
+use crate::live_edge::{LAG_CEILING, REQUEST_CEILING, REQUEST_COOLDOWN, Request, State};
 use bytes::Bytes;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -233,6 +233,17 @@ impl Link {
         self.worker.submitted.lock().unwrap().len()
     }
 
+    /// AUs carrying an IDR slice that reached the decoder.
+    fn idr_submissions(&self) -> usize {
+        self.worker
+            .submitted
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|au| au.windows(4).any(|w| w == [0, 0, 1, 0x65]))
+            .count()
+    }
+
     fn state(&self) -> State {
         self.worker.edge.lock().unwrap().state()
     }
@@ -247,13 +258,20 @@ impl Link {
 fn first_idr_broken_by_further_loss_keeps_requests_going_until_decoding_resumes() {
     let mut link = Link::new();
     link.live(60);
-    // A 3 s Wi-Fi outage, as in HA03-19 (105.5 -> 108.3 s).
+    // A 3 s Wi-Fi outage, as in HA03-19 (105.5 -> 108.3 s). HA06: silence is
+    // held, not an incident, and keyframes are requested after SILENCE.
     link.outage(60..240);
-    assert_eq!(link.state(), State::AwaitingKeyframe);
+    assert_eq!(link.state(), State::Live);
     let outage_requests = link.requests.len();
-    // Current P frames return. The next two requested IDRs each lose their
+    assert!(
+        outage_requests >= 3,
+        "{outage_requests} requests in silence"
+    );
+    // Current P frames return across the lost packets: the broken reference
+    // chain is the incident. The next two requested IDRs each lose their
     // middle fragment to further loss: neither may be admitted.
     link.frames(240..260);
+    assert_eq!(link.state(), State::AwaitingKeyframe);
     assert!(!link.frame(260, &IDR, &[3]), "broken IDR was admitted");
     link.frames(261..330);
     let second_broken = link.at(330);
@@ -292,8 +310,8 @@ fn first_idr_broken_by_further_loss_keeps_requests_going_until_decoding_resumes(
         "{spacing:?}"
     );
     assert!(admitted_at - *during.last().unwrap() <= REQUEST_CEILING + PUMP);
-    // Broken IDRs never reached the decoder; the intact one cut over once.
-    assert_eq!(link.worker.cutovers.load(Ordering::Relaxed), 1);
+    // Broken IDRs never reached the decoder: startup and the intact one did.
+    assert_eq!(link.idr_submissions(), 2);
     assert_eq!(link.incidents_and_recoveries(), (1, 1));
     // Live again: no demand and no further requests.
     link.frames(451..520);
@@ -332,7 +350,7 @@ fn post_idr_frames_that_only_follow_pre_idr_loss_do_not_reenter_recovery() {
         State::AwaitingPicture,
         "IDR admitted after the hole expired"
     );
-    assert_eq!(link.worker.cutovers.load(Ordering::Relaxed), 1);
+    assert_eq!(link.idr_submissions(), 2);
     let submitted = link.submitted();
     let resyncs = link.worker.resyncs.load(Ordering::Relaxed);
     // Still before its first picture: pre-IDR media now arrives late (NACK
@@ -353,10 +371,10 @@ fn post_idr_frames_that_only_follow_pre_idr_loss_do_not_reenter_recovery() {
     for packet in stale.into_iter().chain(harmless) {
         link.receive(packet, now);
     }
-    // HA05: during the catch-up allowance only media beyond MEDIA_BUDGET fails
-    // the ingress screen (frames 100-109 and 230-235); the 14 newer packets
-    // pass it and are dropped by reorder/assembly as already passed.
-    assert_eq!(link.late_ignored, 16, "stale pre-IDR media not recognized");
+    // HA06: only media beyond LAG_CEILING fails the ingress screen (frames
+    // 100-109); the 20 newer packets pass it and are dropped by reorder and
+    // assembly as already passed. Neither restarts recovery.
+    assert_eq!(link.late_ignored, 10, "stale pre-IDR media not recognized");
     assert_eq!(
         link.stale_quarantines, 0,
         "pre-IDR media re-entered recovery"
@@ -378,8 +396,8 @@ fn post_idr_frames_that_only_follow_pre_idr_loss_do_not_reenter_recovery() {
 #[test]
 fn stale_media_beyond_the_admitted_idr_still_quarantines() {
     // The late-packet exemption is narrow: media the assembler has not passed
-    // that is itself beyond the budget still breaks the chain. While the
-    // admitted IDR catches up (HA05) that budget is MEDIA_BUDGET.
+    // that is itself beyond the budget still breaks the chain. HA06: late
+    // video plays, so that budget is LAG_CEILING.
     let mut link = Link::new();
     link.live(60);
     link.outage(60..240);
@@ -389,9 +407,9 @@ fn stale_media_beyond_the_admitted_idr_still_quarantines() {
     let behind = link.at(261) + Duration::from_millis(400);
     let packet = link.send(261, &[P], &[]).remove(0);
     link.receive(packet, behind);
-    assert_eq!(link.stale_quarantines, 0, "within the catch-up allowance");
+    assert_eq!(link.stale_quarantines, 0, "late video is not stale");
     assert_eq!(link.state(), State::AwaitingPicture);
-    let late = link.at(262) + Duration::from_millis(500);
+    let late = link.at(262) + LAG_CEILING + Duration::from_millis(100);
     let packet = link.send(262, &[P], &[]).remove(0);
     link.receive(packet, late);
     assert_eq!(link.stale_quarantines, 1);

@@ -54,7 +54,7 @@ pub(crate) fn show(
                 ui.colored_label(theme.text_bright, crate::diagnostic::status());
                 use crate::streaming::video::live_edge::State;
                 let message = match streaming.direct_video_output().live_edge_state() {
-                    State::AwaitingKeyframe => Some("Video delayed — waiting for a current keyframe. Controls and audio remain active."),
+                    State::AwaitingKeyframe => Some("Video interrupted — waiting for a keyframe. Controls and audio remain active."),
                     State::AwaitingPicture => Some("Decoding current video — recovery not yet confirmed."),
                     State::Unmeasured => Some("Waiting for the first playable picture; video timing is not established."),
                     State::ClockUncertain => Some("Video timing changed unexpectedly. Exit the stream and start it again; stale playback is blocked."),

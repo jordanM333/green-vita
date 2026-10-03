@@ -141,10 +141,12 @@ impl VideoDecodeWorker {
         metrics::METRICS.au_queue_depth.store(0, Ordering::Relaxed);
     }
 
+    /// `complete_at`: when the AU's last packet was received. The local video
+    /// budget measures queueing from there (HA06), not transmission time.
     pub fn submit_access_unit(
         &self,
         data: Vec<u8>,
-        first_packet_at: Instant,
+        complete_at: Instant,
         rtp_timestamp: u32,
     ) -> SubmitResult {
         // The producer retains a receiver for keyframe cutover, so channel
@@ -164,7 +166,7 @@ impl VideoDecodeWorker {
         let access_unit = QueuedAccessUnit {
             data,
             queued_at: Instant::now(),
-            received_at: first_packet_at,
+            received_at: complete_at,
             rtp_timestamp,
             generation: self.generation.load(Ordering::Acquire),
             reservation: Some(reservation),
@@ -231,23 +233,17 @@ impl VideoDecodeWorker {
     }
 
     pub(crate) fn observe_media(&self, ts: u32, seq: u16, received: Instant, now: Instant) -> bool {
-        self.direct_output.live_edge.lock().is_ok_and(|mut edge| {
-            let incident = edge.observe(ts, seq, received, now);
-            if let Some((stage, value)) = edge.take_event() {
-                super::trace::record(stage, ts, value);
-            }
-            incident
-        })
+        self.direct_output
+            .live_edge
+            .lock()
+            .is_ok_and(|mut edge| edge.observe(ts, seq, received, now))
     }
 
     pub(crate) fn poll_media(&self, now: Instant) -> bool {
-        self.direct_output.live_edge.lock().is_ok_and(|mut edge| {
-            let incident = edge.poll(now);
-            if let Some((stage, value)) = edge.take_event() {
-                super::trace::record(stage, 0, value);
-            }
-            incident
-        })
+        self.direct_output
+            .live_edge
+            .lock()
+            .is_ok_and(|mut edge| edge.poll(now))
     }
 
     pub(crate) fn media_ingress_useful(&self, ts: u32, now: Instant) -> bool {
