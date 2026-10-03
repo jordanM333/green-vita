@@ -58,6 +58,22 @@ class Contracts(unittest.TestCase):
             env["GIT_CONFIG_VALUE_0"] = str(checkout / "another-checkout")
             self.assertNotEqual(git("rev-parse", "HEAD", checked=False).returncode, 0)
 
+    def test_ha04_recovery_paths_use_the_tested_decisions(self):
+        # session.rs and media.rs compile only for the Vita target; their host
+        # tests exercise LiveEdge::keyframe_request and VideoRtp::reject_stale.
+        session = (ROOT / "src/api/streaming/rtc/session.rs").read_text()
+        media = (ROOT / "src/api/streaming/rtc/media.rs").read_text()
+        surface = (ROOT / "src/shell/surface.rs").read_text()
+        live_edge = (ROOT / "src/streaming/video/live_edge.rs").read_text()
+        self.assertIn("edge.keyframe_request(requested, self.last_keyframe_request, now)", session)
+        self.assertIn('"keyframe_request_backoff_ms"', session)
+        self.assertIn('"keyframe_request_suppressed"', session)
+        self.assertNotIn("request_due(", session)
+        self.assertEqual(media.count(".reject_stale(&self.decoder, packet.header.timestamp)"), 2)
+        self.assertNotIn("self.rtp.quarantine(&self.decoder);\n                self.stats.dropped", media)
+        self.assertIn("self.held_video = !current;", surface)
+        self.assertNotIn("MAX_REQUESTS", live_edge)
+
     def test_no_unowned_session_sweep(self):
         for path in ["src/app/entry.rs", "src/app/stream_session/connection.rs"]:
             text = (ROOT / path).read_text()

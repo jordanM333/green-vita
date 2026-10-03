@@ -60,6 +60,20 @@ pub(crate) struct Recovery {
 }
 
 impl Recovery {
+    /// A new decoder has neither parameter sets nor a reference picture:
+    /// submit nothing before a complete IDR. Not a recovery incident.
+    pub(crate) fn awaiting_first_idr() -> Self {
+        Self {
+            waiting: true,
+            ..Self::default()
+        }
+    }
+
+    /// Waiting because damage invalidated decoded work (not the first IDR).
+    pub(crate) fn incident(&self) -> bool {
+        self.waiting && self.started.is_some()
+    }
+
     /// Returns true only on the transition: invalidate queued work once.
     pub(crate) fn damage(&mut self) -> bool {
         let changed = !self.waiting;
@@ -122,6 +136,21 @@ mod tests {
         assert!(state.waiting());
         state.submitted(true);
         assert!(!state.waiting());
+    }
+    #[test]
+    fn a_new_decoder_waits_for_its_first_idr_without_an_incident() {
+        let mut state = Recovery::awaiting_first_idr();
+        assert!(!state.accepts(false));
+        assert!(state.accepts(true));
+        assert!(!state.incident());
+        // Damage before the first IDR has no decoded work to invalidate.
+        assert!(!state.damage());
+        assert!(!state.incident());
+        state.submitted(true);
+        assert!(!state.waiting());
+        assert!(state.summary(Instant::now()).contains("IDRadmitted:0"));
+        assert!(state.damage());
+        assert!(state.incident());
     }
     #[test]
     fn input_priority_does_not_disable_idle_or_output_debt_draining() {

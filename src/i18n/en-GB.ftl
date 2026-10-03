@@ -77,6 +77,7 @@ error-start-stream = Failed to start stream
 error-webrtc-negotiation = WebRTC negotiation failed
 error-stream-state = Failed to check stream state
 error-home-signin-required = Xbox requires sign-in on the console. Complete its password prompt, then start Home streaming again.
+streaming-video-reconnecting = Reconnecting video…
 error-webrtc-session = WebRTC session failed
 error-stream-ended = Stream session ended
 error-technical-details = Technical details: { $error }

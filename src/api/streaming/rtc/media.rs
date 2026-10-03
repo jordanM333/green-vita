@@ -32,6 +32,7 @@ struct VideoStats {
     empty_packets: u64,
     idr: u64,
     post_damage_submitted: u64,
+    stale_late_ignored: u64,
     decode_errors: u64,
     last_decode_error: Option<String>,
     last_sample_duration_us: Option<u64>,
@@ -192,13 +193,19 @@ impl VideoReceiver {
                 .decoder
                 .media_ingress_useful(packet.header.timestamp, now)
             {
-                self.rtp.quarantine(&self.decoder);
-                self.stats.dropped += 1;
-                crate::streaming::video::trace::record(
-                    "stale_rtp_rejected",
-                    packet.header.timestamp,
-                    0,
-                );
+                if self
+                    .rtp
+                    .reject_stale(&self.decoder, packet.header.timestamp)
+                {
+                    self.stats.dropped += 1;
+                    crate::streaming::video::trace::record(
+                        "stale_rtp_rejected",
+                        packet.header.timestamp,
+                        0,
+                    );
+                } else {
+                    self.stats.stale_late_ignored += 1;
+                }
                 return;
             }
         }
@@ -257,8 +264,14 @@ impl VideoReceiver {
                 .decoder
                 .media_ingress_useful(packet.header.timestamp, Instant::now())
         {
-            self.rtp.quarantine(&self.decoder);
-            self.stats.dropped += 1;
+            if self
+                .rtp
+                .reject_stale(&self.decoder, packet.header.timestamp)
+            {
+                self.stats.dropped += 1;
+            } else {
+                self.stats.stale_late_ignored += 1;
+            }
             return;
         }
         crate::diagnostic::packet(
@@ -425,7 +438,7 @@ impl VideoReceiver {
             "SPS:{encoded_resolution} decoder:{}x{} output:{}x{} source-fps:{source_fps}\n{buffering}\n{order_timing}\n{assembly}\n\
              RTP pk:{} jump:{}/~{} late:{} dup:{} empty:{}\n{}\n\
              AU done:{} sent:{} drop:{} seq:{} FU:{} mal:{} q:{} SPS:{} IDRwait:{} other:{}\n\
-             IDR count:{} age:{idr_age} postDamageSent:{} wait:{} decoderErr:{}\n\
+             IDR count:{} age:{idr_age} postDamageSent:{} wait:{} decoderErr:{} staleLateIgnored:{}\n\
              {}\n{performance}{last_error}",
             config.decode_width,
             config.decode_height,
@@ -452,6 +465,7 @@ impl VideoReceiver {
             self.stats.post_damage_submitted,
             u8::from(self.rtp.waiting_for_keyframe()),
             self.stats.decode_errors,
+            self.stats.stale_late_ignored,
             self.rtp.recovery_summary(now),
         ))
     }

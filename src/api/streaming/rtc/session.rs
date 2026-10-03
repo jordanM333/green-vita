@@ -3,6 +3,7 @@ use crate::api::streaming::rtc::media::{AudioReceiver, VideoReceiver};
 use crate::api::streaming::rtc::peer::RTCPeerConnection;
 use crate::api::streaming::rtc::transport::RtcTransport;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
+use crate::streaming::video::live_edge::{Request, Suppression};
 use crate::streaming::video::metrics::METRICS;
 use crate::streaming::video::{DecoderConfig, DirectVideoOutput};
 use anyhow::{Context, Result};
@@ -20,7 +21,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-const KEYFRAME_REQUEST_COOLDOWN: Duration = Duration::from_millis(300);
 const INITIAL_VIDEO_GRACE: Duration = Duration::from_millis(500);
 const INITIAL_VIDEO_KEYFRAME_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -83,6 +83,7 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     pub(crate) video: VideoReceiver,
     pub(crate) audio: AudioReceiver,
     last_keyframe_request: Option<Instant>,
+    last_keyframe_suppression: Option<(Suppression, Instant)>,
     initial_video_watchdog_started_at: Option<Instant>,
     last_initial_video_keyframe_request: Option<Instant>,
     pub status: String,
@@ -118,6 +119,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             video,
             audio: AudioReceiver::new(config.audio_sample_rate, config.audio_payload_type),
             last_keyframe_request: None,
+            last_keyframe_suppression: None,
             initial_video_watchdog_started_at: None,
             last_initial_video_keyframe_request: None,
             status: "Negotiating WebRTC connection".to_owned(),
@@ -590,32 +592,45 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     }
 
     fn request_keyframe(&mut self, requested: bool, now: Instant) {
-        let cooldown_elapsed = self.last_keyframe_request.is_none_or(|requested_at| {
-            now.duration_since(requested_at) >= KEYFRAME_REQUEST_COOLDOWN
-        });
-        if !cooldown_elapsed {
-            return;
-        }
-        let requested = self
+        // While recovering, the live edge's bounded backoff decides; it never
+        // runs out. Otherwise transport/decoder demand is sent at the cooldown.
+        let decision = self
             .direct_output
             .live_edge
             .lock()
-            .map(|mut edge| {
-                if edge.recovering() {
-                    edge.request_due(now)
-                } else {
-                    requested
+            .map(|mut edge| edge.keyframe_request(requested, self.last_keyframe_request, now))
+            .unwrap_or(Request::Idle);
+        match decision {
+            Request::Send(backoff) => {
+                self.last_keyframe_request = Some(now);
+                self.last_keyframe_suppression = None;
+                crate::streaming::video::trace::record("keyframe_request", 0, 0);
+                crate::streaming::video::trace::record(
+                    "keyframe_request_backoff_ms",
+                    0,
+                    backoff.as_millis() as u64,
+                );
+                self.backend.notify_keyframe_requested(&mut self.peer);
+                self.video.request_keyframe(&mut self.peer);
+            }
+            Request::Suppressed(reason) => {
+                // An admitted IDR's grace is only a skip if something asked.
+                let wanted = requested || reason != Suppression::AwaitingPicture;
+                // Bounded diagnostics: each reason at most once per second.
+                let repeated = self.last_keyframe_suppression.is_some_and(|(last, at)| {
+                    last == reason && now.saturating_duration_since(at) < Duration::from_secs(1)
+                });
+                if wanted && !repeated {
+                    self.last_keyframe_suppression = Some((reason, now));
+                    crate::streaming::video::trace::record(
+                        "keyframe_request_suppressed",
+                        0,
+                        reason as u64,
+                    );
                 }
-            })
-            .unwrap_or(false);
-        if !requested {
-            return;
+            }
+            Request::Idle | Request::Wait => {}
         }
-
-        self.last_keyframe_request = Some(now);
-        crate::streaming::video::trace::record("keyframe_request", 0, 0);
-        self.backend.notify_keyframe_requested(&mut self.peer);
-        self.video.request_keyframe(&mut self.peer);
     }
 }
 

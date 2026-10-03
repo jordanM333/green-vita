@@ -46,3 +46,17 @@ seconds, then freezes. 180-second timeout is NOT REPRODUCED DURING CAPTURE.
 The analyzer must not bridge stream resets/discontinuities or infer healthy media
 from missing records. This cannot determine fixed startup latency or separate
 sender delay from network/driver delay before the socket. See DIAGNOSTIC-DESIGN.md.
+
+HA04 trace stages (other trace rows; a = value, timestamp column = RTP or 0):
+keyframe_request              a 0. One sent request (control message + RTCP PLI).
+keyframe_request_backoff_ms   a = minimum wait before the next request: 300, 600,
+                              then 1000 while video waits. Requests never stop.
+keyframe_request_suppressed   a = reason, at most once per reason per second:
+                              1 shared 300 ms cooldown, 2 admitted IDR's 1 s grace
+                              before its first picture, 3 clock uncertain (restart).
+stale_late_rtp_ignored        late/retransmitted media older than the AU being
+                              assembled; dropped without restarting recovery.
+video_hold_begin              last good picture held on screen (not live); a = its
+                              local age in us. video_hold_end a = 1 if a current
+                              picture replaced it, 0 if the hold ended otherwise.
+recovery_idr_admitted_ms      now only for real incidents, not the first-IDR wait.

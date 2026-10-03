@@ -11,9 +11,47 @@ pub(crate) const INGRESS_BUDGET: Duration = super::policy::MAX_LOCAL_VIDEO_AGE;
 pub(crate) const MEDIA_BUDGET: Duration = Duration::from_millis(480);
 // Two maximum negotiated reorder horizons (60 ms), not one late fragment.
 const CONFIRMATION: Duration = Duration::from_millis(120);
-// Existing PLI admission cooldown, with bounded exponential retry per incident.
-const REQUEST_GAP: Duration = Duration::from_millis(300);
-const MAX_REQUESTS: u8 = 3;
+// Existing PLI admission cooldown, shared by every keyframe request path.
+pub(crate) const REQUEST_COOLDOWN: Duration = Duration::from_millis(300);
+// Recovery requests back off 300 ms -> 600 ms -> 1 s and then repeat at the
+// ceiling until decoding resumes. HA03-19 showed a terminal three-request cap
+// leaving video black for the rest of a session: the Xbox sends an IDR only on
+// request. The ceiling is a local rate limit. No server or protocol limit is
+// documented for videoKeyframeRequested or RTCP PLI.
+const REQUEST_GAP: Duration = REQUEST_COOLDOWN;
+pub(crate) const REQUEST_CEILING: Duration = Duration::from_secs(1);
+
+/// Wait before the request following `sent` requests in one incident.
+fn request_gap(sent: u32) -> Duration {
+    REQUEST_GAP
+        .saturating_mul(1 << sent.saturating_sub(1).min(8))
+        .min(REQUEST_CEILING)
+}
+
+/// One keyframe-request decision. Waiting out the backoff is the schedule,
+/// not a suppression.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Request {
+    /// Not recovering; transport/decoder demand decides.
+    Idle,
+    /// Send now; the next request waits at least this long.
+    Send(Duration),
+    /// The bounded backoff has not elapsed.
+    Wait,
+    /// A request is wanted but deliberately not sent.
+    Suppressed(Suppression),
+}
+
+/// Diagnostic codes recorded as keyframe_request_suppressed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Suppression {
+    /// The shared cooldown since the previous request (any path).
+    Cooldown = 1,
+    /// An admitted IDR has REQUEST_CEILING to produce a presented picture.
+    AwaitingPicture = 2,
+    /// The media clock is untrusted; no keyframe can restore it. Restart.
+    ClockUncertain = 3,
+}
 
 /// A modular RTP timeline in monotonic time. Empty probes must not be observed.
 #[derive(Clone)]
@@ -185,10 +223,15 @@ pub(crate) struct LiveEdge {
     state: State,
     pressure: Option<Instant>,
     request_at: Option<Instant>,
-    requests: u8,
-    fresh_request: bool,
+    // Requests in the current incident: the backoff position, never a cap.
+    requests: u32,
+    // When the recovery IDR entered the decoder (AwaitingPicture only).
+    admitted_at: Option<Instant>,
+    // Media exceeded the ingress budget since current media last arrived.
+    stalled: bool,
     pub(crate) incidents: u64,
     pub(crate) recovered: u64,
+    pub(crate) requested: u64,
 }
 
 impl Default for LiveEdge {
@@ -199,9 +242,11 @@ impl Default for LiveEdge {
             pressure: None,
             request_at: None,
             requests: 0,
-            fresh_request: false,
+            admitted_at: None,
+            stalled: false,
             incidents: 0,
             recovered: 0,
+            requested: 0,
         }
     }
 }
@@ -252,17 +297,21 @@ impl LiveEdge {
                     self.pressure = None;
                     self.request_at = None;
                     self.requests = 0;
-                    self.fresh_request = false;
+                    self.admitted_at = None;
+                    self.stalled = true;
                     self.incidents += 1;
                     return true;
                 }
             }
-        } else if self.state == State::AwaitingKeyframe && advanced && delay <= INGRESS_BUDGET {
-            // If the initial requests were buried in obsolete media, request a
-            // replacement once on actual return of current media, not forever.
-            if !self.fresh_request && self.requests >= MAX_REQUESTS {
-                self.fresh_request = true;
-                self.request_at = None;
+        } else if self.state == State::AwaitingKeyframe {
+            if delay > INGRESS_BUDGET {
+                self.stalled = true;
+            } else if advanced && self.stalled {
+                // Requests sent into a stall may have been lost or answered
+                // with obsolete media. Once current media returns, restart the
+                // backoff: the next request follows the previous one by the
+                // cooldown, not by up to 1 s.
+                self.stalled = false;
                 self.requests = 0;
             }
         }
@@ -308,6 +357,7 @@ impl LiveEdge {
     pub(crate) fn submitted(&mut self, ts: u32, idr_with_parameters: bool, now: Instant) {
         if self.state == State::AwaitingKeyframe && self.admit(ts, idr_with_parameters, now) {
             self.state = State::AwaitingPicture;
+            self.admitted_at = Some(now);
         }
     }
 
@@ -320,8 +370,14 @@ impl LiveEdge {
 
     pub(crate) fn presented(&mut self, ts: u32, now: Instant) -> bool {
         if self.state == State::AwaitingPicture && self.can_present(ts, now) {
+            // An admitted IDR produced a current picture: decoding resumed, so
+            // the next incident starts its backoff from the shortest gap.
             self.state = State::Live;
             self.pressure = None;
+            self.request_at = None;
+            self.requests = 0;
+            self.admitted_at = None;
+            self.stalled = false;
             self.recovered += 1;
             return true;
         }
@@ -344,25 +400,70 @@ impl LiveEdge {
     }
 
     pub(crate) fn damage(&mut self) {
+        // The admitted IDR failed before a current picture. Keep asking on the
+        // incident's existing schedule; that schedule never runs out.
         if self.state == State::AwaitingPicture {
             self.state = State::AwaitingKeyframe;
+            self.admitted_at = None;
         }
     }
 
+    /// What `request` would do now, without committing a request.
+    pub(crate) fn pending_request(&self, now: Instant) -> Request {
+        let since = match self.state {
+            State::Unmeasured | State::Live => return Request::Idle,
+            State::ClockUncertain => return Request::Suppressed(Suppression::ClockUncertain),
+            State::AwaitingKeyframe => self.request_at.map(|at| (at, request_gap(self.requests))),
+            // Give the admitted IDR time to produce a presented picture. If it
+            // silently never does, keep asking rather than wait forever.
+            State::AwaitingPicture => match self.request_at.max(self.admitted_at) {
+                Some(at) if now.saturating_duration_since(at) < REQUEST_CEILING => {
+                    return Request::Suppressed(Suppression::AwaitingPicture);
+                }
+                _ => None,
+            },
+        };
+        if since.is_some_and(|(at, gap)| now.saturating_duration_since(at) < gap) {
+            Request::Wait
+        } else {
+            Request::Send(request_gap(self.requests.saturating_add(1)))
+        }
+    }
+
+    /// Bounded backoff, never a terminal stop, while video waits for a keyframe.
+    pub(crate) fn request(&mut self, now: Instant) -> Request {
+        let decision = self.pending_request(now);
+        if let Request::Send(_) = decision {
+            self.request_at = Some(now);
+            self.requests = self.requests.saturating_add(1);
+            self.requested = self.requested.saturating_add(1);
+        }
+        decision
+    }
+
+    #[cfg(test)]
     pub(crate) fn request_due(&mut self, now: Instant) -> bool {
-        if self.state != State::AwaitingKeyframe || self.requests >= MAX_REQUESTS {
-            return false;
+        matches!(self.request(now), Request::Send(_))
+    }
+
+    /// The single per-pump decision for every keyframe request path. `demand`
+    /// is transport/decoder demand, which applies while not recovering;
+    /// `last_sent` is the shared cooldown clock (recovery, demand, refresh).
+    pub(crate) fn keyframe_request(
+        &mut self,
+        demand: bool,
+        last_sent: Option<Instant>,
+        now: Instant,
+    ) -> Request {
+        let cooled =
+            last_sent.is_none_or(|at| now.saturating_duration_since(at) >= REQUEST_COOLDOWN);
+        match self.pending_request(now) {
+            Request::Idle if demand && cooled => Request::Send(REQUEST_COOLDOWN),
+            Request::Idle if demand => Request::Suppressed(Suppression::Cooldown),
+            Request::Send(_) if cooled => self.request(now),
+            Request::Send(_) => Request::Suppressed(Suppression::Cooldown),
+            decision => decision,
         }
-        let gap = REQUEST_GAP * (1u32 << self.requests.saturating_sub(1));
-        if self
-            .request_at
-            .is_some_and(|last| now.saturating_duration_since(last) < gap)
-        {
-            return false;
-        }
-        self.request_at = Some(now);
-        self.requests += 1;
-        true
     }
 
     pub(crate) fn summary(&self) -> String {
@@ -381,8 +482,13 @@ impl LiveEdge {
             })
             .unwrap_or_default();
         format!(
-            "Live edge:{:?}{timing} incidents:{} current-picture-recoveries:{} requests:{}/{} (relative, not capture age)",
-            self.state, self.incidents, self.recovered, self.requests, MAX_REQUESTS
+            "Live edge:{:?}{timing} incidents:{} current-picture-recoveries:{} requests:{} backoff:{}ms total:{} (relative, not capture age)",
+            self.state,
+            self.incidents,
+            self.recovered,
+            self.requests,
+            request_gap(self.requests).as_millis(),
+            self.requested
         )
     }
 }

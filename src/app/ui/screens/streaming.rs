@@ -317,6 +317,30 @@ pub(crate) fn show(
             });
     }
 
+    // The picture on screen is the held last good frame, not live video.
+    // Painted directly: a new Area is invisible for its first (sizing) pass,
+    // and held redraws only refresh the UI every 250 ms.
+    if streaming
+        .direct_video_output()
+        .video_held(std::time::Instant::now())
+    {
+        use crate::streaming::mic_button;
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("video_reconnecting"),
+        ));
+        let galley = painter.layout_no_wrap(
+            i18n.text("streaming-video-reconnecting"),
+            egui::FontId::proportional(13.0),
+            egui::Color32::WHITE,
+        );
+        let corner = ctx.screen_rect().right_bottom()
+            - egui::vec2(16.0, mic_button::HEIGHT + mic_button::BOTTOM + 10.0);
+        let rect = egui::Rect::from_min_max(corner - galley.size(), corner);
+        painter.rect_filled(rect.expand(4.0), 4.0, egui::Color32::from_black_alpha(160));
+        painter.galley(rect.min, galley, egui::Color32::WHITE);
+    }
+
     if streaming.media_reconnecting || streaming.media_refresh_failed {
         egui::Area::new(egui::Id::new("video_lag_help"))
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 36.0))

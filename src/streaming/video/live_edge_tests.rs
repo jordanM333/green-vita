@@ -83,6 +83,11 @@ fn rejected_audio_report_cannot_mute_fresh_samples_or_excuse_delayed_audio() {
     assert!(clock.deadline(144_000).unwrap() < now);
 }
 
+/// Gaps between consecutive request instants.
+fn gaps(requests: &[Instant]) -> Vec<Duration> {
+    requests.windows(2).map(|w| w[1] - w[0]).collect()
+}
+
 #[test]
 fn frozen_timestamps_and_a_silent_stream_expire_without_repeated_flushes() {
     let start = Instant::now();
@@ -91,7 +96,8 @@ fn frozen_timestamps_and_a_silent_stream_expire_without_repeated_flushes() {
         edge.observe(123, 1, start, start);
         edge.establish(123, start, start);
         let mut transitions = 0;
-        let mut requests = 0;
+        let mut requests = Vec::new();
+        let end = start + Duration::from_secs(60);
         for tick in 1..=6000u16 {
             let now = start + Duration::from_millis(u64::from(tick) * 10);
             transitions += u32::from(if duplicate_packets {
@@ -99,13 +105,27 @@ fn frozen_timestamps_and_a_silent_stream_expire_without_repeated_flushes() {
             } else {
                 edge.poll(now)
             });
-            requests += u32::from(edge.request_due(now));
+            if edge.request_due(now) {
+                requests.push(now);
+            }
             if tick > 48 {
                 assert!(!edge.can_present(123, now));
             }
         }
+        // One quarantine, never a periodic purge. Requests never stop while
+        // video waits, but back off 300 ms -> 600 ms -> 1 s and stay there.
         assert_eq!(transitions, 1);
-        assert_eq!(requests, 3);
+        let gaps = gaps(&requests);
+        assert_eq!(
+            gaps[..2],
+            [Duration::from_millis(300), Duration::from_millis(600)]
+        );
+        assert!(
+            gaps[2..].iter().all(|gap| *gap == REQUEST_CEILING),
+            "{gaps:?}"
+        );
+        assert!(end - *requests.last().unwrap() <= REQUEST_CEILING);
+        assert!(requests.len() > 55, "{} requests", requests.len());
         assert_eq!(edge.state(), State::AwaitingKeyframe);
     }
 }
@@ -114,7 +134,7 @@ fn frozen_timestamps_and_a_silent_stream_expire_without_repeated_flushes() {
 fn observed_deficit_cannot_become_persistent_stale_playback_even_with_empty_queues() {
     let start = Instant::now();
     let mut edge = LiveEdge::default();
-    let mut requests = 0;
+    let mut requests = Vec::new();
     let mut detected_at = None;
     let mut last = start;
     // Controlled model of the measured 1.595s added delay, then a 30-minute
@@ -131,7 +151,9 @@ fn observed_deficit_cannot_become_persistent_stale_playback_even_with_empty_queu
         if edge.observe(ts, frame as u16, now, now) {
             detected_at.get_or_insert(lag_us);
         }
-        requests += u64::from(edge.request_due(now));
+        if edge.request_due(now) {
+            requests.push(now);
+        }
         if lag_us > 480_000 {
             assert!(!edge.admit(ts, false, now));
             assert!(
@@ -143,30 +165,60 @@ fn observed_deficit_cannot_become_persistent_stale_playback_even_with_empty_queu
         last = now;
     }
     assert!(detected_at.unwrap() < 480_000);
-    assert_eq!(edge.incidents, 1);
+    assert_eq!(edge.incidents, 1, "no periodic purge");
     assert_eq!(
         edge.recovered, 0,
         "no live IDR was supplied; recovery is not proved"
     );
-    assert_eq!(requests, 3, "no periodic purge or unbounded PLI storm");
-    assert_eq!(edge.state(), State::AwaitingKeyframe);
-    // Actual current media returns. Dependent pictures alone cannot restart.
-    let ts = (last.duration_since(start).as_micros() * 90 / 1000) as u32;
-    edge.observe(ts, 108_000u32 as u16, last, last);
-    assert!(!edge.admit(ts, false, last));
+    // Requests continue for the whole plateau at a bounded rate: never faster
+    // than the cooldown, at most one per second once backed off.
+    let gaps = gaps(&requests);
+    assert!(gaps.iter().all(|gap| *gap >= REQUEST_COOLDOWN), "PLI storm");
+    let late = &gaps[2..];
+    assert!(late.iter().all(|gap| *gap >= REQUEST_CEILING), "PLI storm");
     assert!(
-        edge.request_due(last),
-        "one retry rearmed by an observed fresh edge"
+        late.iter()
+            .all(|gap| *gap < REQUEST_CEILING + Duration::from_millis(20))
     );
-    assert!(edge.admit(ts, true, last));
-    edge.submitted(ts, true, last);
+    assert!(
+        last - *requests.last().unwrap() <= REQUEST_CEILING,
+        "gave up"
+    );
+    assert_eq!(edge.state(), State::AwaitingKeyframe);
+    // Keep the stale plateau running until the next request goes out.
+    let mut frame = 108_000u32;
+    let sent = loop {
+        let now = start + Duration::from_micros(u64::from(frame) * 1_000_000 / 60 + 1_595_000);
+        edge.observe(frame * 1500, frame as u16, now, now);
+        frame += 1;
+        if edge.request_due(now) {
+            break now;
+        }
+    };
+    // Actual current media returns 100 ms later. Dependent pictures alone
+    // cannot restart; the backoff restarts at the cooldown instead of 1 s.
+    let current = sent + Duration::from_millis(100);
+    let ts = (current.duration_since(start).as_micros() * 90 / 1000) as u32;
+    edge.observe(ts, frame as u16, current, current);
+    assert!(!edge.admit(ts, false, current));
+    assert!(!edge.request_due(sent + Duration::from_millis(299)));
+    let rearmed = sent + REQUEST_COOLDOWN;
+    assert!(
+        edge.request_due(rearmed),
+        "current media restarts the backoff"
+    );
+    assert!(edge.admit(ts, true, rearmed));
+    edge.submitted(ts, true, rearmed);
     assert_eq!(edge.recovered, 0, "admission is not presentation");
-    assert!(edge.presented(ts, last + Duration::from_millis(80)));
+    assert!(edge.presented(ts, rearmed + Duration::from_millis(80)));
     assert_eq!(edge.state(), State::Live);
     assert_eq!(edge.recovered, 1);
     println!(
-        "1595ms model: quarantine at {}us; 30min plateau blocked; 3 requests; current-IDR output restores LIVE",
-        detected_at.unwrap()
+        "1595ms model: quarantine at {}us; 30min plateau blocked; {} requests, none closer than {}ms, steady {}ms; current-IDR output restores LIVE",
+        detected_at.unwrap(),
+        requests.len(),
+        gaps.iter().min().unwrap().as_millis(),
+        REQUEST_CEILING.as_millis()
     );
 }
 
@@ -227,6 +279,10 @@ fn failed_or_expired_keyframe_does_not_report_recovery_or_restart_request_budget
     edge.submitted(180_000, true, now);
     edge.damage();
     assert_eq!(edge.state(), State::AwaitingKeyframe);
+    // A failed IDR continues the incident's schedule: neither a fresh burst
+    // nor a stop. The next request follows the existing 300 ms gap.
+    assert!(!edge.request_due(now + Duration::from_millis(299)));
+    assert!(edge.request_due(now + Duration::from_millis(300)));
     assert!(!edge.presented(180_000, now));
     edge.submitted(180_000, true, now);
     assert!(!edge.presented(180_000, now + MEDIA_BUDGET + Duration::from_millis(1)));

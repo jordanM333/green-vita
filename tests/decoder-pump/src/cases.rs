@@ -54,11 +54,22 @@ fn production_surface_upload_draw_and_pixels_survive_startup_expiry_and_restart(
         assert!(start.elapsed() > Duration::from_secs(1));
         std::thread::sleep(policy::MAX_LOCAL_VIDEO_AGE + Duration::from_millis(10));
         assert!(surface.needs_expiry_redraw());
+        // HA04: an expired picture is held (last good frame, marked as
+        // reconnecting), never blanked mid-session and never re-presented.
         surface.draw_scene(true).unwrap();
         surface.paint_egui(1.0, &[], &egui::TexturesDelta::default()).unwrap();
-        assert_eq!(surface.canvas.read_pixels(sdl2::rect::Rect::new(480, 272, 1, 1), sdl2::pixels::PixelFormatEnum::RGB24).unwrap(), [0, 0, 0]);
+        let center = sdl2::rect::Rect::new(480, 272, 1, 1);
+        let last = expected[(119 + session_number) % expected.len()];
+        assert_eq!(surface.canvas.read_pixels(center, sdl2::pixels::PixelFormatEnum::RGB24).unwrap(), last);
+        assert!(output.video_held(Instant::now()));
+        assert!(!surface.needs_expiry_redraw(), "held redraws need no urgent repaint");
         assert!(output.presentation.lock().unwrap().take().is_none());
+        // Real session end still blanks and releases everything.
         surface.sync_video_frame(None).unwrap();
+        surface.draw_scene(true).unwrap();
+        surface.paint_egui(1.0, &[], &egui::TexturesDelta::default()).unwrap();
+        assert_eq!(surface.canvas.read_pixels(center, sdl2::pixels::PixelFormatEnum::RGB24).unwrap(), [0, 0, 0]);
+        assert!(!output.video_held(Instant::now()));
         assert!(FAKE.lock().unwrap().memory.is_empty());
         // SDL's allocator counter observes real texture allocations, unlike
         // the fake CDRAM handle count above.
@@ -67,6 +78,97 @@ fn production_surface_upload_draw_and_pixels_survive_startup_expiry_and_restart(
     assert!(closed_allocations.iter().all(|&count| count > 0), "SDL allocation tracking unavailable");
     println!("SDL allocations after production surface detach: {closed_allocations:?}");
     assert!(closed_allocations[1] <= closed_allocations[0], "SDL allocations grew after stream exit: {closed_allocations:?}");
+}
+
+#[test]
+fn production_surface_holds_the_last_good_frame_through_recovery_until_session_end() {
+    // HA03-19: recovery turned the picture black while audio continued. The
+    // actual surface now holds the last current picture, marked as
+    // reconnecting, without reporting it as presented or as a recovery.
+    reset();
+    let sdl = sdl2::init().unwrap();
+    let subsystem = sdl.video().unwrap();
+    let mut surface = crate::shell::surface::VitaSurface::software_fixture(&subsystem);
+    let output = Arc::new(DirectVideoOutput::new(960, 544));
+    output.decoder_ready.store(true, Ordering::Release);
+    let session = crate::app::StreamingSession(output.clone());
+    surface.sync_video_frame(Some(&session)).unwrap();
+    let center = sdl2::rect::Rect::new(480, 272, 1, 1);
+    let pixel = |surface: &crate::shell::surface::VitaSurface| {
+        surface.canvas.read_pixels(center, sdl2::pixels::PixelFormatEnum::RGB24).unwrap()
+    };
+    let start = Instant::now();
+    let media_ts = |now: Instant| (now.duration_since(start).as_micros() * 90 / 1000) as u32;
+    let mut seq = 0u16;
+    // Publish one decoded picture of a solid BGR565 colour and present it.
+    let mut show = |surface: &mut crate::shell::surface::VitaSurface, color: u16, epoch: u64| {
+        let now = Instant::now();
+        let timestamp = media_ts(now);
+        output.live_edge.lock().unwrap().observe(timestamp, seq, now, now);
+        seq = seq.wrapping_add(1);
+        let lease = output.lock_decode_target().unwrap();
+        let target = lease.target;
+        // SAFETY: the exclusive output lease owns the initialized fake CDRAM
+        // allocation for its full advertised capacity until publication.
+        let bytes = unsafe { std::slice::from_raw_parts_mut(target.ptr as *mut u8, target.capacity as usize) };
+        for value in bytes.as_chunks_mut::<2>().0 { value.copy_from_slice(&color.to_le_bytes()); }
+        let timing = timing::FrameTiming { rtp_timestamp: timestamp, received_at: now,
+            submitted_at: now, decoded_at: now, epoch };
+        lease.publish(Some(timing)).unwrap();
+        surface.sync_video_frame(Some(&session)).unwrap();
+        surface.draw_scene(true).unwrap();
+        surface.paint_egui(1.0, &[], &egui::TexturesDelta::default()).unwrap();
+        (timestamp, now)
+    };
+    for _ in 0..30 {
+        show(&mut surface, 0x07e0, 0); // green
+        let presented = output.presentation.lock().unwrap().take().unwrap();
+        output.confirm_presentation(presented);
+        std::thread::sleep(Duration::from_millis(16));
+    }
+    assert_eq!(output.live_edge_state(), live_edge::State::Live);
+    assert_eq!(pixel(&surface), [0, 255, 0]);
+    // Video stalls: the live edge declares an incident and RTP recovery
+    // starts a new decode epoch. Neither may blank the uploaded picture.
+    assert!(output.live_edge.lock().unwrap().poll(Instant::now() + Duration::from_millis(600)));
+    assert_eq!(output.live_edge_state(), live_edge::State::AwaitingKeyframe);
+    output.invalidate_before_epoch(1);
+    assert!(surface.needs_expiry_redraw(), "the switch to the held frame is urgent");
+    for _ in 0..20 {
+        surface.draw_scene(true).unwrap();
+        surface.paint_egui(1.0, &[], &egui::TexturesDelta::default()).unwrap();
+        assert_eq!(pixel(&surface), [0, 255, 0], "last good frame was not held");
+        assert!(output.video_held(Instant::now()), "reconnecting indicator not raised");
+        assert!(!surface.needs_expiry_redraw(), "held redraws must not force GPU work");
+        assert!(output.presentation.lock().unwrap().take().is_none(), "held frame re-presented");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert_eq!(output.live_edge_state(), live_edge::State::AwaitingKeyframe, "false recovery");
+    assert_eq!(output.live_edge.lock().unwrap().recovered, 0);
+    // A current IDR is admitted; its picture (new epoch) replaces the held
+    // frame, is presented, and confirms recovery.
+    let now = Instant::now();
+    let timestamp = media_ts(now);
+    {
+        let mut edge = output.live_edge.lock().unwrap();
+        edge.observe(timestamp, 9_000, now, now);
+        edge.submitted(timestamp, true, now);
+        assert_eq!(edge.state(), live_edge::State::AwaitingPicture);
+    }
+    show(&mut surface, 0x001f, 1); // red
+    assert_eq!(pixel(&surface), [255, 0, 0]);
+    assert!(!output.video_held(Instant::now()));
+    let presented = output.presentation.lock().unwrap().take().expect("current picture presented");
+    output.confirm_presentation(presented);
+    assert_eq!(output.live_edge_state(), live_edge::State::Live);
+    assert_eq!(output.live_edge.lock().unwrap().recovered, 1);
+    // Real session end: blank and release every resource.
+    surface.sync_video_frame(None).unwrap();
+    surface.draw_scene(true).unwrap();
+    surface.paint_egui(1.0, &[], &egui::TexturesDelta::default()).unwrap();
+    assert_eq!(pixel(&surface), [0, 0, 0]);
+    assert!(!output.video_held(Instant::now()));
+    assert!(FAKE.lock().unwrap().memory.is_empty());
 }
 
 #[test]

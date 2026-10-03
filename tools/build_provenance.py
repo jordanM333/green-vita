@@ -63,7 +63,7 @@ def inspect(vpk, revision, number, diagnostic=False, acceptance=False):
         if acceptance:
             if b"HARDWARE ACCEPTANCE CANDIDATE" not in executable or b"PHYSICAL VITA ACCEPTANCE PENDING" not in executable:
                 raise ValueError("packaged hardware acceptance warning missing")
-            if sfo.get("TITLE") != "GreenVita Acceptance" or not number.startswith(("HA02-", "HA03-")):
+            if sfo.get("TITLE") != "GreenVita Acceptance" or not number.startswith(("HA02-", "HA03-", "HA04-")):
                 raise ValueError("hardware acceptance identity missing")
             if executable[:4] != b"SCE\x00":
                 raise ValueError("packaged executable is not a Vita SELF")

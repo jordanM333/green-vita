@@ -113,6 +113,7 @@ struct Session {
     video_startup: Help,
     microphone: Microphone,
     edge: streaming::video::live_edge::State,
+    held: bool,
 }
 struct Help;
 impl Help {
@@ -140,6 +141,9 @@ impl Session {
     fn live_edge_state(&self) -> streaming::video::live_edge::State {
         self.edge
     }
+    fn video_held(&self, _: std::time::Instant) -> bool {
+        self.held
+    }
     fn can_refresh(&self) -> bool {
         false
     }
@@ -151,6 +155,102 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn held_frame_indicator_is_small_bottom_right_and_only_shown_while_held() {
+        let sdl = sdl2::init().unwrap();
+        let window = sdl
+            .video()
+            .unwrap()
+            .window("presentation test", 960, 544)
+            .hidden()
+            .build()
+            .unwrap();
+        let mut canvas = window.into_canvas().software().build().unwrap();
+        let mut painter = painter::SdlEguiPainter::default();
+        // Production sets only the native scale (shell/mod.rs UI_SCALE).
+        let ctx = egui::Context::default();
+        fonts::configure(&ctx);
+        let mut render = |held: bool| {
+            let app = App {
+                settings: Settings {
+                    locale: false,
+                    show_stream_debug_info: false,
+                },
+                state: AppState::Streaming(Session {
+                    hint_started_at: std::time::Instant::now() - std::time::Duration::from_secs(60),
+                    status: String::new(),
+                    media_reconnecting: false,
+                    media_refresh_failed: false,
+                    video_lag: Help,
+                    video_startup: Help,
+                    microphone: Microphone,
+                    edge: streaming::video::live_edge::State::AwaitingKeyframe,
+                    held,
+                }),
+            };
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(960.0 / 1.3, 544.0 / 1.3),
+                )),
+                ..Default::default()
+            };
+            input
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .native_pixels_per_point = Some(1.3);
+            let out = ctx.run(input, |ctx| {
+                streaming_screen::show(ctx, &app, None, &mut Vec::new())
+            });
+            let primitives = ctx.tessellate(out.shapes, out.pixels_per_point);
+            canvas.set_draw_color(sdl2::pixels::Color::RGB(80, 160, 240));
+            canvas.clear();
+            painter
+                .paint(
+                    &mut canvas,
+                    [960, 544],
+                    out.pixels_per_point,
+                    &primitives,
+                    &out.textures_delta,
+                )
+                .unwrap();
+            canvas
+                .read_pixels(None, sdl2::pixels::PixelFormatEnum::RGB24)
+                .unwrap()
+        };
+        // Settle font uploads and the buttons' fade-in so the two frames
+        // differ only by the label.
+        for _ in 0..30 {
+            render(false);
+        }
+        let live = render(false);
+        let held = render(true);
+        let changed: Vec<usize> = live
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(held.as_chunks::<3>().0)
+            .enumerate()
+            .filter(|(_, (a, b))| a != b)
+            .map(|(index, _)| index)
+            .collect();
+        println!("reconnecting indicator: {} changed pixels", changed.len());
+        if let Ok(dir) = std::env::var("GREENVITA_PRESENTATION_OUTPUT") {
+            std::fs::create_dir_all(&dir).unwrap();
+            image::save_buffer(format!("{dir}/indicator-held.png"), &held, 960, 544, image::ColorType::Rgb8)
+                .unwrap();
+        }
+        assert!(!changed.is_empty(), "no reconnecting indicator while held");
+        assert!(changed.len() < 522_240 / 50, "indicator obscures the held picture");
+        assert!(
+            changed
+                .iter()
+                .all(|index| index % 960 >= 480 && index / 960 >= 272),
+            "indicator outside the bottom-right quadrant"
+        );
+    }
+
     #[test]
     fn actual_streaming_overlay_keeps_video_visible_after_status_update() {
         let sdl = sdl2::init().unwrap();
@@ -180,6 +280,7 @@ mod tests {
                 video_startup: Help,
                 microphone: Microphone,
                 edge: streaming::video::live_edge::State::Live,
+                held: false,
             }),
         };
         let status = include_str!("../status.txt");

@@ -44,7 +44,7 @@ impl VitaSurface {
         let canvas = video.window("surface fixture", WIDTH, HEIGHT).hidden().build().unwrap()
             .into_canvas().software().build().unwrap();
         Self { canvas, video_textures: None, video_output_buffers: None,
-            displayed_video_texture: None, displayed_video_timing: None, drew_video: false,
+            displayed_video_texture: None, displayed_video_timing: None, drew_video: false, held_video: false,
             pending_video_present: None, direct_video_output: None,
             video_width: 0, video_height: 0, egui_painter: SdlEguiPainter::default(), pending_probe: None }
     }

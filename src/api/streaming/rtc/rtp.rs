@@ -331,7 +331,11 @@ impl PendingVideoFrame {
         let Some(first) = packets.first() else {
             return FrameAssembly::Pending;
         };
-        if expected_sequence.is_some_and(|expected| first.header.sequence_number != expected)
+        // A gap before the AU may hide its own leading slices. An IDR picture
+        // whose first slice is present cannot be missing one, whatever was lost
+        // before it: pre-IDR loss must not discard the recovery IDR.
+        if (expected_sequence.is_some_and(|expected| first.header.sequence_number != expected)
+            && !starts_idr_picture(&packets))
             || !depacketizer.is_partition_head(&first.payload)
         {
             return FrameAssembly::Pending;
@@ -368,6 +372,42 @@ impl PendingVideoFrame {
             marker_sequence,
         }
     }
+}
+
+/// The first slice in the AU is an IDR slice with first_mb_in_slice 0 (its
+/// leading ue(v) bit is 1). Leading non-VCL NALs and padding are skipped; SPS
+/// and PPS are supplied separately when recovery needs them.
+fn starts_idr_picture(packets: &[&Packet]) -> bool {
+    // (nal type, first slice-header byte, starts that NAL)
+    let first_vcl = packets.iter().find_map(|packet| {
+        let payload = &packet.payload;
+        let kind = *payload.first()? & 0x1f;
+        match kind {
+            1..=5 => Some((kind, payload.get(1).copied(), true)),
+            24 => {
+                let mut offset = 1;
+                while offset + 2 < payload.len() {
+                    let size =
+                        (usize::from(payload[offset]) << 8) | usize::from(payload[offset + 1]);
+                    let nal = payload.get(offset + 2..offset + 2 + size)?;
+                    if (1..=5).contains(&(nal.first()? & 0x1f)) {
+                        return Some((nal[0] & 0x1f, nal.get(1).copied(), true));
+                    }
+                    offset += 2 + size;
+                }
+                None
+            }
+            28 if (1..=5).contains(&(*payload.get(1)? & 0x1f)) => Some((
+                payload[1] & 0x1f,
+                payload.get(2).copied(),
+                payload[1] & 0x80 != 0,
+            )),
+            _ => None,
+        }
+    });
+    first_vcl.is_some_and(|(kind, header, start)| {
+        kind == 5 && start && header.is_some_and(|byte| byte & 0x80 != 0)
+    })
 }
 
 // The rtc-rs depacketizer buffers FU-A bytes until an end fragment but does not require a
@@ -453,7 +493,9 @@ impl VideoRtp {
             last_frame_timestamp: None,
             source_frame_duration_us: None,
             stream_too_large: false,
-            recovery: Recovery::default(),
+            // HA03-19 submitted.h264 began with a slice referencing PPS 0 before
+            // any parameter set: a mid-GOP picture reached a fresh decoder.
+            recovery: Recovery::awaiting_first_idr(),
             decoder_capacity: (decode_width, decode_height),
             last_sps_resolution: None,
             sps_buffering: None,
@@ -470,6 +512,9 @@ impl VideoRtp {
     pub(super) fn source_changed(&mut self, worker: &VideoDecodeWorker) {
         let (width, height) = self.decoder_capacity;
         *self = Self::new(width, height);
+        // Unlike a new decoder, the running one holds old-source work: this is
+        // an incident, so the transition below still invalidates that epoch.
+        self.recovery = Recovery::default();
         self.refresh_pending = true;
         self.record_damage(worker);
     }
@@ -487,6 +532,32 @@ impl VideoRtp {
         self.refresh_pending = true;
         self.record_damage(worker);
         worker.discard_queued();
+    }
+
+    /// Handle one packet that failed the live-edge ingress deadline. Stale
+    /// media normally quarantines the reference chain. A packet the assembler
+    /// has already passed (late or retransmitted media from before the current
+    /// AU, e.g. pre-IDR loss repaired after an outage) cannot join any future
+    /// AU: dropping it must not undo an admitted recovery IDR (HA03-19).
+    pub(super) fn reject_stale(&mut self, worker: &VideoDecodeWorker, timestamp: u32) -> bool {
+        if self.precedes_assembly(timestamp) {
+            crate::streaming::video::trace::record("stale_late_rtp_ignored", timestamp, 0);
+            return false;
+        }
+        self.quarantine(worker);
+        true
+    }
+
+    /// Exactly the timestamps `receive_at` discards as late.
+    fn precedes_assembly(&self, timestamp: u32) -> bool {
+        match &self.pending {
+            Some(pending) => {
+                pending.timestamp != timestamp && !timestamp_is_newer(timestamp, pending.timestamp)
+            }
+            None => self
+                .last_frame_timestamp
+                .is_some_and(|last| !timestamp_is_newer(timestamp, last)),
+        }
     }
 
     pub(super) fn waiting_for_keyframe(&self) -> bool {
@@ -733,21 +804,28 @@ impl VideoRtp {
             // Ordinary P AUs keep the existing single inspection pass.
             self.parameters.observe(&data);
         }
-        if (self.refresh_pending || worker.media_recovering())
-            && self.recovery.waiting()
-            && unit.has_idr
-            && !unit.malformed
-        {
-            if let Some(mut prefix) = self.parameters.prefix_for_idr(&data)
-                && prefix.len() + data.len() <= MAX_H264_ACCESS_UNIT_BYTES
-            {
-                prefix.extend_from_slice(&data);
-                data = Bytes::from(prefix);
-                unit = inspect_h264_access_unit(&data);
-            } else {
-                stats.record_drop(DropReason::IdrWait);
-                *keyframe_requested = true;
-                return stats;
+        // An IDR that ends a wait starts a decode epoch (the first one, a new
+        // AVCDEC instance). Its slices must follow the SPS/PPS they reference:
+        // add cached sets the AU does not already carry ahead of its first slice.
+        if self.recovery.waiting() && unit.has_idr && !unit.malformed {
+            match self.parameters.prefix_for_idr(&data) {
+                Some(prefix) if prefix.is_empty() => {}
+                Some(mut prefix) if prefix.len() + data.len() <= MAX_H264_ACCESS_UNIT_BYTES => {
+                    prefix.extend_from_slice(&data);
+                    data = Bytes::from(prefix);
+                    unit = inspect_h264_access_unit(&data);
+                }
+                // Live-edge recovery and refresh incidents require a
+                // self-contained IDR (unchanged; the first-IDR wait is new).
+                _ if (self.refresh_pending || worker.media_recovering())
+                    && self.recovery.incident() =>
+                {
+                    stats.record_drop(DropReason::IdrWait);
+                    *keyframe_requested = true;
+                    return stats;
+                }
+                // Otherwise, as before HA04: no cached set can be added.
+                _ => {}
             }
         }
         if let Some(summary) = unit.buffering
@@ -845,7 +923,7 @@ impl VideoRtp {
                     self.refresh_pending = false;
                     self.refresh_completed += 1;
                 }
-                if unit.has_idr && self.recovery.waiting() {
+                if unit.has_idr && self.recovery.incident() {
                     crate::streaming::video::trace::record(
                         "recovery_idr_admitted_ms",
                         completed.timestamp,
@@ -1004,6 +1082,42 @@ mod tests {
             pending.assemble(&mut H264Packet::default(), Some(10)),
             FrameAssembly::Invalid(DropReason::IncompleteFuA)
         ));
+    }
+
+    #[test]
+    fn only_an_intact_idr_picture_start_tolerates_loss_before_its_access_unit() {
+        // The previous AU ended at sequence 9; 10 and 11 were lost.
+        let complete = |packets: &[Packet]| {
+            let mut pending = PendingVideoFrame::new(packets[0].clone());
+            for packet in &packets[1..] {
+                pending.insert(packet.clone());
+            }
+            matches!(
+                pending.assemble(&mut H264Packet::default(), Some(10)),
+                FrameAssembly::Complete { .. }
+            )
+        };
+        // SPS/PPS may have been lost; the IDR's first slice (mb 0) is present.
+        assert!(complete(&[
+            packet(12, false, &[0x7c, 0x85, 0x88]),
+            packet(13, true, &[0x7c, 0x45, 0x99]),
+        ]));
+        // Parameter sets carried ahead of slice 0 in one STAP-A.
+        assert!(complete(&[packet(
+            12,
+            true,
+            &[0x78, 0, 2, 0x67, 0x42, 0, 2, 0x68, 0xce, 0, 2, 0x65, 0x88],
+        )]));
+        // A P picture after a gap may reference the lost frame.
+        assert!(!complete(&[packet(12, true, &[0x61, 0x88, 0x99])]));
+        // An IDR whose first received slice starts mid-picture lost slice 0.
+        assert!(!complete(&[packet(12, true, &[0x65, 0x48, 0x99])]));
+        assert!(!complete(&[
+            packet(12, false, &[0x7c, 0x85, 0x48]),
+            packet(13, true, &[0x7c, 0x45, 0x99]),
+        ]));
+        // Without a gap nothing changes.
+        assert!(complete(&[packet(10, true, &[0x61, 0x88, 0x99])]));
     }
 
     #[test]

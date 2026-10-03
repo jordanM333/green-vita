@@ -8,6 +8,8 @@ pub use rtp;
 pub(crate) mod live_edge;
 #[cfg(test)]
 mod live_edge_replay;
+#[cfg(test)]
+mod recovery_regression;
 #[path = "../../../src/streaming/video/policy.rs"]
 pub mod policy;
 
@@ -31,9 +33,19 @@ mod streaming {
             pub submitted_times: Mutex<Vec<(std::time::Instant, u32)>>,
             pub cutovers: std::sync::atomic::AtomicUsize,
             pub queued: std::sync::atomic::AtomicUsize,
+            pub resyncs: std::sync::atomic::AtomicUsize,
             pub edge: Mutex<live_edge::LiveEdge>,
         }
         impl VideoDecodeWorker {
+            pub fn observe_media(&self, ts: u32, seq: u16, at: std::time::Instant) -> bool {
+                self.edge.lock().unwrap().observe(ts, seq, at, at)
+            }
+            pub fn poll_media(&self, now: std::time::Instant) -> bool {
+                self.edge.lock().unwrap().poll(now)
+            }
+            pub fn media_ingress_useful(&self, ts: u32, now: std::time::Instant) -> bool {
+                self.edge.lock().unwrap().ingress_useful(ts, now)
+            }
             pub fn media_admits(&self, ts: u32, idr: bool, at: std::time::Instant) -> bool {
                 self.edge.lock().unwrap().admit(ts, idr, at)
             }
@@ -49,7 +61,10 @@ mod streaming {
             pub fn discard_queued(&self) {
                 self.queued.store(0, std::sync::atomic::Ordering::Relaxed);
             }
-            pub fn begin_resync(&self) {}
+            pub fn begin_resync(&self) {
+                self.resyncs
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             pub fn take_recovery_request(&self) -> bool {
                 false
             }
@@ -537,13 +552,17 @@ mod repair_integration {
             packet(10, 1000, false, &[0x7c, 0x85, 0x88]),
             &mut keyframe,
         );
+        // A new decoder already waits for its first IDR (HA04). Refresh is not
+        // packet loss: it adds no keyframe wait and keeps the partial AU.
+        let waiting = video.waiting_for_keyframe();
         video.refresh();
-        assert!(!video.waiting_for_keyframe());
+        assert_eq!(video.waiting_for_keyframe(), waiting);
         video.receive(
             &worker,
             packet(11, 1000, true, &[0x7c, 0x45, 0x99]),
             &mut keyframe,
         );
+        assert!(!video.waiting_for_keyframe());
         video.receive(
             &worker,
             packet(12, 2500, true, &[0x61, 0xaa, 0xbb]),

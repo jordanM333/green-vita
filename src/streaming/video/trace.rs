@@ -106,9 +106,13 @@ impl Trace {
                 | "rtp_gap_released_packets"
                 | "decoder_poll_failed"
                 | "keyframe_request"
+                | "keyframe_request_backoff_ms"
+                | "keyframe_request_suppressed"
                 | "manual_refresh"
                 | "lag_keyframe_request"
                 | "keyframe_cutover_units"
+                | "video_hold_begin"
+                | "video_hold_end"
         ) || (stage == "au_drop_reason" && value != 5)
         {
             self.incident(time, stage, timestamp, value);

@@ -129,6 +129,7 @@ settings-stream-volume-help = Game and incoming chat share this volume. Adjust t
 streaming-lag-home = Video is falling behind. Quick settings → Refresh stream.
 streaming-media-reconnecting = Reconnecting media to your running game…
 streaming-media-refresh-failed = Could not reconnect media. Quick settings → Refresh stream to retry.
+streaming-video-reconnecting = Reconnecting video…
 
 streaming-quick-settings = SETTINGS
 settings-storage-error = Settings could not be loaded or saved. Your existing file was preserved. Check free space and permissions; back up and repair settings.json before retrying.

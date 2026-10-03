@@ -19,7 +19,10 @@ pub struct VitaSurface {
     video_output_buffers: Option<Vec<CdramBlock>>,
     displayed_video_texture: Option<usize>,
     displayed_video_timing: Option<crate::streaming::video::timing::FrameTiming>,
+    // The last draw showed a current picture (presentable) ...
     drew_video: bool,
+    // ... or held the last good picture while it is not current.
+    held_video: bool,
     // Output generation, not submission RTP timestamp: AVCDEC may buffer an input.
     pending_video_present: Option<(
         u64,
@@ -66,6 +69,7 @@ impl VitaSurface {
             displayed_video_texture: None,
             displayed_video_timing: None,
             drew_video: false,
+            held_video: false,
             pending_video_present: None,
             direct_video_output: None,
             video_width: 0,
@@ -91,8 +95,9 @@ impl VitaSurface {
     }
 
     pub(crate) fn needs_expiry_redraw(&self) -> bool {
-        // Only the first black/recovery repaint is urgent. Once that has been
-        // drawn, ordinary status refresh can remain idle and save GPU work.
+        // Only the switch from a current picture to the held one is urgent: it
+        // shows the reconnecting indicator. Held redraws then follow the
+        // ordinary status refresh and save GPU work.
         self.drew_video
             && self.displayed_video_timing.is_some_and(|timing| {
                 self.direct_video_output
@@ -320,6 +325,7 @@ impl VitaSurface {
         self.video_textures = None;
         self.displayed_video_texture = None;
         self.displayed_video_timing = None;
+        self.held_video = false;
         self.pending_video_present = None;
         self.video_width = 0;
         self.video_height = 0;
@@ -328,26 +334,43 @@ impl VitaSurface {
     pub fn draw_scene(&mut self, show_video: bool) -> Result<()> {
         self.canvas.set_draw_color(sdl2::pixels::Color::BLACK);
         self.canvas.clear();
+        let was_held = self.held_video;
         self.drew_video = false;
+        self.held_video = false;
 
         if show_video
-            && self.displayed_video_timing.is_some_and(|timing| {
-                self.direct_video_output
-                    .as_ref()
-                    .is_some_and(|output| output.can_draw(timing, Instant::now()))
-            })
+            && let Some(timing) = self.displayed_video_timing
+            && let Some(output) = self.direct_video_output.as_ref()
             && let Some(index) = self.displayed_video_texture
             && let Some(texture) = self
                 .video_textures
                 .as_ref()
-                .map(|textures| &textures[index])
+                .and_then(|textures| textures.get(index))
         {
+            // Only a revalidated current picture is drawn as live and may be
+            // reported as presented. Otherwise hold the last good frame rather
+            // than blanking: the uploaded texture is a copy no decoder lease
+            // can touch, it never counts as a presentation or recovery, and
+            // the overlay marks it as reconnecting. Detach (session end or a
+            // new output) is the only path that removes it.
+            let current = output.can_draw(timing, Instant::now());
             let destination = self.video_rect();
             self.canvas
                 .copy(texture, None, destination)
                 .map_err(anyhow::Error::msg)
                 .context("failed to draw SDL YUV video frame")?;
-            self.drew_video = true;
+            self.drew_video = current;
+            self.held_video = !current;
+            if self.held_video && !was_held {
+                crate::streaming::video::trace::record(
+                    "video_hold_begin",
+                    timing.rtp_timestamp,
+                    timing.received_at.elapsed().as_micros() as u64,
+                );
+            }
+        }
+        if was_held && !self.held_video {
+            crate::streaming::video::trace::record("video_hold_end", 0, u64::from(self.drew_video));
         }
         if !self.drew_video {
             self.pending_video_present = None;
@@ -417,7 +440,11 @@ impl VitaSurface {
             metrics.gpu_wait_max_us.fetch_max(gpu_us, Ordering::Relaxed);
             crate::streaming::video::trace::record("gpu_queue_wait_us", 0, gpu_us);
             if let Some(sample) = self.pending_probe.take() {
-                crate::diagnostic::display_probe::finish(sample, self.drew_video);
+                // Drawn means the sampled texture reached the canvas, held or current.
+                crate::diagnostic::display_probe::finish(
+                    sample,
+                    self.drew_video || self.held_video,
+                );
             }
             if let Some((generation, decoded_at, timing)) = self.pending_video_present.take() {
                 let rendered_at = Instant::now();

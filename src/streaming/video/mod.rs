@@ -40,6 +40,8 @@ pub(crate) struct VideoTextureTarget {
 struct DirectVideoOutputState {
     targets: Option<Vec<VideoTextureTarget>>,
     displayed: Option<usize>,
+    // Identity of the displayed picture, revalidated by `video_held`.
+    displayed_timing: Option<timing::FrameTiming>,
     pending: Option<(usize, u64, Instant, Option<timing::FrameTiming>)>,
     next_generation: u64,
     decoding: Option<usize>,
@@ -66,6 +68,7 @@ impl DirectVideoOutput {
             state: Mutex::new(DirectVideoOutputState {
                 targets: None,
                 displayed: None,
+                displayed_timing: None,
                 pending: None,
                 next_generation: 0,
                 decoding: None,
@@ -108,6 +111,7 @@ impl DirectVideoOutput {
             }
             state.targets = targets;
             state.displayed = None;
+            state.displayed_timing = None;
             state.pending = None;
             self.frame_signal.set_pending(false);
         }
@@ -149,13 +153,27 @@ impl DirectVideoOutput {
     }
 
     // Revalidate an already uploaded picture every draw, including its epoch.
-    // A texture is not a continuing authorization to display historical video.
+    // A texture is not a continuing authorization to display historical video:
+    // only a current picture is drawn as live and reported as presented.
     pub(crate) fn can_draw(&self, timing: timing::FrameTiming, now: Instant) -> bool {
         self.state.lock().is_ok_and(|state| {
             timing.epoch >= state.minimum_epoch
                 && now.saturating_duration_since(timing.received_at) <= policy::MAX_LOCAL_VIDEO_AGE
                 && self.can_present_media(timing.rtp_timestamp, now)
         })
+    }
+
+    /// The displayed picture is no longer current (stall, recovery or epoch
+    /// change). The surface holds it on screen as the last good frame, marked
+    /// as reconnecting and never re-presented, until a current picture or
+    /// detach replaces it. Revoking targets (session end) clears it.
+    pub(crate) fn video_held(&self, now: Instant) -> bool {
+        let displayed = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|state| state.displayed.and(state.displayed_timing));
+        displayed.is_some_and(|timing| !self.can_draw(timing, now))
     }
 
     pub(crate) fn confirm_presentation(&self, frame: timing::PresentedFrame) {
@@ -245,6 +263,7 @@ impl DirectVideoOutput {
         }
         let target = *state.targets.as_ref()?.get(index)?;
         state.displayed = Some(index);
+        state.displayed_timing = timing;
         if let Some(timing) = timing {
             trace::record(
                 "presentation_selected",

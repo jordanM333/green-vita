@@ -79,29 +79,58 @@ impl Parameters {
         reader.reset();
     }
 
-    /// Prefix exactly the sets referenced by every IDR slice. Parsing the slice
-    /// prefix proves parameter identity, not full hardware decodability.
+    /// Prefix exactly the sets referenced by every IDR slice, or nothing when
+    /// the AU already carries them (SPS before PPS) ahead of its first IDR
+    /// slice: a complete IDR stays byte-identical. Parsing the slice prefix
+    /// proves parameter identity, not full hardware decodability.
     pub(super) fn prefix_for_idr(&self, data: &[u8]) -> Option<Vec<u8>> {
         let mut required = Vec::new();
         let mut invalid = false;
+        let mut slice_seen = false;
+        let mut carried_sps = Vec::new();
+        let mut carried_pps = Vec::new();
         let mut reader = AnnexBReader::accumulate(|nal: RefNal<'_>| {
-            if nal
-                .header()
-                .is_ok_and(|h| h.nal_unit_type() == UnitType::SliceLayerWithoutPartitioningIdr)
-            {
-                let mut bits = nal.rbsp_bits();
-                let id = bits
-                    .read_ue("first_mb_in_slice")
-                    .and_then(|_| bits.read_ue("slice_type"))
-                    .and_then(|_| bits.read_ue("pic_parameter_set_id"));
-                match id {
-                    Ok(id) if id <= 255 => {
-                        if !required.contains(&(id as u8)) {
-                            required.push(id as u8);
+            let Ok(header) = nal.header() else {
+                return NalInterest::Ignore;
+            };
+            match header.nal_unit_type() {
+                UnitType::SliceLayerWithoutPartitioningIdr => {
+                    slice_seen = true;
+                    let mut bits = nal.rbsp_bits();
+                    let id = bits
+                        .read_ue("first_mb_in_slice")
+                        .and_then(|_| bits.read_ue("slice_type"))
+                        .and_then(|_| bits.read_ue("pic_parameter_set_id"));
+                    match id {
+                        Ok(id) if id <= 255 => {
+                            if !required.contains(&(id as u8)) {
+                                required.push(id as u8);
+                            }
                         }
+                        _ => invalid = true,
                     }
-                    _ => invalid = true,
                 }
+                kind @ (UnitType::SeqParameterSet | UnitType::PicParameterSet) if !slice_seen => {
+                    if !nal.is_complete() {
+                        return NalInterest::Buffer;
+                    }
+                    let mut bits = nal.rbsp_bits();
+                    if kind == UnitType::SeqParameterSet {
+                        // profile_idc, constraint flags and level_idc precede the id.
+                        if let Ok(id) = bits
+                            .skip(24, "profile_constraints_level")
+                            .and_then(|_| bits.read_ue("seq_parameter_set_id"))
+                        {
+                            carried_sps.push(id);
+                        }
+                    } else if let Ok(pps) = bits.read_ue("pic_parameter_set_id")
+                        && let Ok(sps) = bits.read_ue("seq_parameter_set_id")
+                        && carried_sps.contains(&sps)
+                    {
+                        carried_pps.push(pps);
+                    }
+                }
+                _ => {}
             }
             NalInterest::Ignore
         });
@@ -109,6 +138,12 @@ impl Parameters {
         reader.reset();
         if invalid || required.is_empty() {
             return None;
+        }
+        if required
+            .iter()
+            .all(|id| carried_pps.contains(&u32::from(*id)))
+        {
+            return Some(Vec::new());
         }
         let mut prefix = Vec::new();
         let mut added_sps = Vec::new();
