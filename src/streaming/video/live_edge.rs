@@ -13,8 +13,6 @@ use std::time::{Duration, Instant};
 
 // The established healthy-path bound, used to calibrate the clock's rate.
 pub(crate) const INGRESS_BUDGET: Duration = super::policy::MAX_LOCAL_VIDEO_AGE;
-// Audio's media deadline (MediaClock::deadline). Video uses LAG_CEILING.
-pub(crate) const MEDIA_BUDGET: Duration = Duration::from_millis(480);
 // Video later than this is not shown and needs a keyframe. It is above the
 // most the Xbox has been seen to queue (HA04-20 1.8 s, RX38 2.0 s), so a sender
 // backlog alone never reaches it: a safety net for path or clock faults.
@@ -173,10 +171,6 @@ impl MediaClock {
 
     pub(crate) fn delay(&self, timestamp: u32, now: Instant) -> Option<Duration> {
         Some(now.saturating_duration_since(self.expected(timestamp)?))
-    }
-
-    pub(crate) fn deadline(&self, timestamp: u32) -> Option<Instant> {
-        self.expected(timestamp)?.checked_add(MEDIA_BUDGET)
     }
 
     /// Slow oscillator calibration from independent, SSRC-matched SRs, only

@@ -138,7 +138,7 @@ fn production_surface_holds_the_last_good_frame_through_recovery_until_session_e
         surface.draw_scene(true).unwrap();
         surface.paint_egui(1.0, &[], &egui::TexturesDelta::default()).unwrap();
         assert_eq!(pixel(&surface), [0, 255, 0], "last good frame was not held");
-        assert!(output.video_held(Instant::now()), "reconnecting indicator not raised");
+        assert!(output.video_held(Instant::now()), "last good frame not held");
         assert!(!surface.needs_expiry_redraw(), "held redraws must not force GPU work");
         assert!(output.presentation.lock().unwrap().take().is_none(), "held frame re-presented");
         std::thread::sleep(Duration::from_millis(25));

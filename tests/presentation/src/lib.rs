@@ -103,7 +103,6 @@ struct Session {
     status: String,
     media_reconnecting: bool,
     media_refresh_failed: bool,
-    video_lag: Help,
     video_startup: Help,
     microphone: Microphone,
     edge: streaming::video::live_edge::State,
@@ -150,7 +149,9 @@ impl Session {
 mod tests {
     use super::*;
     #[test]
-    fn held_frame_indicator_is_small_bottom_right_and_only_shown_while_held() {
+    fn a_held_frame_draws_no_indicator() {
+        // HA09: no banner or indicator over the game while video is held or
+        // late; the last good picture simply stays on screen.
         let sdl = sdl2::init().unwrap();
         let window = sdl
             .video()
@@ -175,7 +176,6 @@ mod tests {
                     status: String::new(),
                     media_reconnecting: false,
                     media_refresh_failed: false,
-                    video_lag: Help,
                     video_startup: Help,
                     microphone: Microphone,
                     edge: streaming::video::live_edge::State::AwaitingKeyframe,
@@ -229,26 +229,17 @@ mod tests {
             .filter(|(_, (a, b))| a != b)
             .map(|(index, _)| index)
             .collect();
-        println!("reconnecting indicator: {} changed pixels", changed.len());
         if let Ok(dir) = std::env::var("GREENVITA_PRESENTATION_OUTPUT") {
             std::fs::create_dir_all(&dir).unwrap();
-            image::save_buffer(format!("{dir}/indicator-held.png"), &held, 960, 544, image::ColorType::Rgb8)
+            image::save_buffer(format!("{dir}/held.png"), &held, 960, 544, image::ColorType::Rgb8)
                 .unwrap();
         }
-        assert!(!changed.is_empty(), "no reconnecting indicator while held");
-        assert!(changed.len() < 522_240 / 50, "indicator obscures the held picture");
-        assert!(
-            changed
-                .iter()
-                .all(|index| index % 960 >= 480 && index / 960 >= 272),
-            "indicator outside the bottom-right quadrant"
-        );
+        assert!(changed.is_empty(), "{} pixels drawn over a held picture", changed.len());
     }
 
     #[test]
     fn live_play_leaves_the_top_of_the_picture_clear() {
-        // HA08: no build label or capture status over the game. Only a video
-        // problem is announced at the top.
+        // HA08: no build label or capture status over the game.
         use streaming::video::live_edge::State;
         let sdl = sdl2::init().unwrap();
         let window = sdl
@@ -273,7 +264,6 @@ mod tests {
                     status: include_str!("../status.txt").to_owned(),
                     media_reconnecting: false,
                     media_refresh_failed: false,
-                    video_lag: Help,
                     video_startup: Help,
                     microphone: Microphone,
                     edge,
@@ -323,8 +313,15 @@ mod tests {
         }
         let live = render(State::Live);
         assert_eq!(covered(&live), 0, "text over the top of live video");
-        let interrupted = render(State::AwaitingKeyframe);
-        assert!(covered(&interrupted) > 0, "an interruption is no longer announced");
+        // HA09: no banner for late, interrupted or recovering video either.
+        for state in [
+            State::Unmeasured,
+            State::AwaitingKeyframe,
+            State::AwaitingPicture,
+            State::ClockUncertain,
+        ] {
+            assert_eq!(covered(&render(state)), 0, "banner over the picture");
+        }
         if let Ok(dir) = std::env::var("GREENVITA_PRESENTATION_OUTPUT") {
             std::fs::create_dir_all(&dir).unwrap();
             image::save_buffer(format!("{dir}/live-top-clear.png"), &live, 960, 544, image::ColorType::Rgb8)
@@ -357,7 +354,6 @@ mod tests {
                 status: String::new(),
                 media_reconnecting: false,
                 media_refresh_failed: false,
-                video_lag: Help,
                 video_startup: Help,
                 microphone: Microphone,
                 edge: streaming::video::live_edge::State::Live,

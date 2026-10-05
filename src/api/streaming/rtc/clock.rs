@@ -1,6 +1,6 @@
 //! Sender RTP/RTCP clock probe. This only measures timestamps; it never delays media.
 use rtcp::sender_report::SenderReport;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const NTP_UNIX_SECONDS: i128 = 2_208_988_800;
 const MAX_REPORT_DISTANCE_SECONDS: i64 = 120;
@@ -43,15 +43,6 @@ impl IngressProbe {
         self.packets += 1;
         self.residence_us += us;
         self.residence_max_us = self.residence_max_us.max(us);
-    }
-
-    /// Added arrival delay of the latest packet, if it arrived within `recent`
-    /// of `now`. HA07 compares audio with video to tell a shared-path queue
-    /// (both late) from the Xbox's own video queue (only video late).
-    pub(super) fn recent_delay_ms(&self, now: Instant, recent: Duration) -> Option<u64> {
-        let timing = self.clock.timing()?;
-        (now.saturating_duration_since(timing.received_at) <= recent)
-            .then_some(timing.added_delay_ms)
     }
 
     pub(super) fn take_summary(&mut self, now: Instant) -> String {
@@ -219,27 +210,6 @@ impl RtpClockProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn recent_delay_is_reported_only_while_packets_keep_arriving() {
-        use std::time::Duration;
-        let start = Instant::now();
-        let mut audio = IngressProbe::new(48_000);
-        assert_eq!(audio.recent_delay_ms(start, Duration::from_secs(1)), None);
-        audio.receive(0, start, start);
-        // 20 ms of media arriving 60 ms later: 40 ms of added delay.
-        audio.receive(960, start + Duration::from_millis(60), start);
-        let last = start + Duration::from_millis(60);
-        assert_eq!(
-            audio.recent_delay_ms(last, Duration::from_secs(1)),
-            Some(40)
-        );
-        assert_eq!(
-            audio.recent_delay_ms(last + Duration::from_millis(1_001), Duration::from_secs(1)),
-            None,
-            "stale audio is not evidence about the path"
-        );
-    }
 
     #[test]
     fn ingress_separates_dequeue_staleness_from_two_second_rtc_residence() {

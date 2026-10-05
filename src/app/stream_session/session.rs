@@ -21,7 +21,6 @@ pub(crate) struct StreamingSession {
     pub(crate) status: String,
     pub(crate) hint_started_at: Instant,
     pub(crate) video_startup: crate::streaming::video::startup::VideoStartup,
-    pub(crate) video_lag: crate::streaming::video::startup::VideoLagHelp,
     pub(crate) media_reconnecting: bool,
     pub(crate) media_refresh_failed: bool,
     pub(in crate::app) pause_selected: usize,
@@ -56,7 +55,6 @@ impl StreamingSession {
             status: "Starting streaming backend".to_owned(),
             hint_started_at: Instant::now(),
             video_startup: crate::streaming::video::startup::VideoStartup::new(Instant::now()),
-            video_lag: Default::default(),
             media_reconnecting: false,
             media_refresh_failed: false,
             pause_selected: 0,
@@ -166,7 +164,6 @@ impl StreamingSession {
                     self.pending_audio_packets.clear();
                     self.latest_video_frame = None;
                     self.video_timing = None;
-                    self.video_lag = Default::default();
                     self.video_startup =
                         crate::streaming::video::startup::VideoStartup::new(Instant::now());
                     self.status = "Reconnecting media to the running Home session…".to_owned();
@@ -181,8 +178,6 @@ impl StreamingSession {
                     self.stream_video_size = Some((width, height));
                 }
                 PlaybackBackendEvent::VideoTiming(timing) => {
-                    self.video_lag
-                        .observe(timing.received_at, timing.added_delay_ms);
                     self.video_timing = Some(timing);
                 }
                 PlaybackBackendEvent::Closed => closed = true,

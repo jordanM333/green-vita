@@ -62,7 +62,7 @@ fn fast_forward_catchup_is_an_earlier_edge_not_an_invalid_clock() {
 }
 
 #[test]
-fn rejected_audio_report_cannot_mute_fresh_samples_or_excuse_delayed_audio() {
+fn a_rejected_report_cannot_invalidate_the_clock_or_excuse_delay() {
     let start = Instant::now();
     let mut clock = MediaClock::new(48_000);
     for packet in 0..150u32 {
@@ -76,11 +76,11 @@ fn rejected_audio_report_cannot_mute_fresh_samples_or_excuse_delayed_audio() {
             clock.sender_report(ts - 960, 2u64 << 32, now);
         }
         assert!(clock.valid());
-        assert!(now + Duration::from_millis(140) <= clock.deadline(ts).unwrap());
+        assert_eq!(clock.delay(ts, now), Some(Duration::ZERO));
     }
     let now = start + Duration::from_millis(4595);
     clock.observe(144_000, 151, now);
-    assert!(clock.deadline(144_000).unwrap() < now);
+    assert_eq!(clock.delay(144_000, now), Some(Duration::from_millis(1595)));
 }
 
 /// Gaps between consecutive request instants.

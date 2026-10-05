@@ -21,10 +21,14 @@
 //! (HA06-22 drains), a picture leaves the decoder when three newer AUs have
 //! been submitted, and an AU or picture is used only within the local limit
 //! since its AU completed: 240 ms through HA06, MAX_LOCAL_CATCH_UP from HA07.
+//!
+//! The Xbox's audio RTP timeline can slip behind its own clock (HA08-24: 316 ms
+//! by its sender reports). Audio's delay measured by RTP progress then
+//! includes the slip; `audio_slip` models it.
 use super::*;
-use crate::congestion::ReceiveBudget;
 use crate::feedback::VideoCeiling;
 use crate::live_edge::LAG_CEILING;
+use crate::receive_budget::ReceiveBudget;
 use std::collections::VecDeque;
 
 // One-way network delay; HA04-20 RTT was 6-17 ms.
@@ -71,35 +75,57 @@ const HA07_LOCAL: Local = Local {
 enum Remb {
     /// HA06: 2 Mbps; any growth in video's added delay lowers the request.
     Ha06,
-    /// HA07: VIDEO_CEILING_BPS; only delay audio shares lowers it.
+    /// HA07-HA08: 3 Mbps; growth in the lower of video's and audio's added
+    /// delay lowers it, and audio's includes any audio timeline slip.
     Ha07,
+    /// HA09 (production): fixed at VIDEO_CEILING_BPS.
+    Ha09,
 }
 
-/// The receiver's request as session.rs computes it, under either policy.
+/// The receiver's request as session.rs computes it under each policy.
 enum Receiver {
-    Ha06(ReceiveBudget),
-    Ha07(VideoCeiling),
+    /// The retired budget, fed video's delay or, with `shared`, the lower of
+    /// video's and audio's.
+    Budget {
+        budget: ReceiveBudget,
+        shared: bool,
+    },
+    Fixed(VideoCeiling),
 }
 
 impl Receiver {
     fn new(policy: Remb) -> Self {
         match policy {
-            Remb::Ha06 => Self::Ha06(ReceiveBudget::new(2_000_000)),
-            Remb::Ha07 => Self::Ha07(VideoCeiling::default()),
+            Remb::Ha06 => Self::Budget {
+                budget: ReceiveBudget::new(2_000_000),
+                shared: false,
+            },
+            Remb::Ha07 => Self::Budget {
+                budget: ReceiveBudget::new(crate::feedback::VIDEO_CEILING_BPS),
+                shared: true,
+            },
+            Remb::Ha09 => Self::Fixed(VideoCeiling::default()),
         }
     }
 
     fn receive(&mut self, video_ms: u64, audio_ms: u64, at: Instant) {
         match self {
-            Self::Ha06(budget) => budget.receive(PACKET_BYTES, video_ms, at),
-            Self::Ha07(ceiling) => ceiling.receive(PACKET_BYTES, video_ms, Some(audio_ms), at),
+            Self::Budget { budget, shared } => {
+                let delay = if *shared {
+                    video_ms.min(audio_ms)
+                } else {
+                    video_ms
+                };
+                budget.receive(PACKET_BYTES, delay, at);
+            }
+            Self::Fixed(ceiling) => ceiling.observe_delay(video_ms),
         }
     }
 
     fn target(&self) -> u32 {
         match self {
-            Self::Ha06(budget) => budget.target(),
-            Self::Ha07(ceiling) => ceiling.target_bps(),
+            Self::Budget { budget, .. } => budget.target(),
+            Self::Fixed(ceiling) => ceiling.target_bps(),
         }
     }
 }
@@ -159,10 +185,16 @@ struct Profile {
     /// The pacer follows this policy's REMB and the queue-time limit.
     /// Otherwise it runs at HA04-20's measured rates.
     remb: Option<Remb>,
+    /// How far the Xbox's audio RTP timeline has slipped behind its clock.
+    audio_slip: fn(Duration) -> Duration,
 }
 
 fn direct(_: Duration) -> Duration {
     NET
+}
+
+fn no_slip(_: Duration) -> Duration {
+    Duration::ZERO
 }
 
 const STEADY: Profile = Profile {
@@ -176,6 +208,7 @@ const STEADY: Profile = Profile {
     path: direct,
     content: None,
     remb: None,
+    audio_slip: no_slip,
 };
 
 /// HA04-20 in sender time: launch 114.6 s, encoder back-off about 118.1 s,
@@ -525,7 +558,9 @@ fn simulate(profile: Profile, local: Local) -> Outcome {
                     .unwrap()
                     .added_delay_ms(timestamp, at)
                     .unwrap_or(0);
-                let audio = (profile.path)(since).saturating_sub(NET).as_millis() as u64;
+                let audio = ((profile.path)(since).saturating_sub(NET)
+                    + (profile.audio_slip)(since))
+                .as_millis() as u64;
                 receiver.receive(video, audio, at);
             }
         }
@@ -786,13 +821,13 @@ fn the_ha06_request_leaves_gameplay_behind_after_one_heavy_scene() {
 }
 
 #[test]
-fn the_ha07_request_keeps_gameplay_current_and_catches_up_after_heavier_scenes() {
-    // Same content, HA07 policy: sender-side lateness never lowers the
-    // request, so the pacer keeps up with moderate and 2.8 Mbps scenes. A
-    // scene above the pacing rate still lags while it lasts (an extrapolated
-    // 3.06 Mbps at 3 Mbps) and is then caught up.
-    let outcome = simulate(gameplay_under(Remb::Ha07), HA07_LOCAL);
-    let report = outcome.report("HA07 request", ms(2_000));
+fn the_fixed_request_keeps_gameplay_current_and_catches_up_after_heavier_scenes() {
+    // Same content, HA09 policy: the request stays at 3 Mbps, so the pacer
+    // keeps up with moderate and 2.8 Mbps scenes. A scene above the pacing
+    // rate still lags while it lasts (an extrapolated 3.06 Mbps at 3 Mbps)
+    // and is then caught up.
+    let outcome = simulate(gameplay_under(Remb::Ha09), HA07_LOCAL);
+    let report = outcome.report("HA09 request", ms(2_000));
     println!("{report}");
     assert_eq!(
         outcome.remb_cuts(),
@@ -818,14 +853,73 @@ fn the_ha07_request_keeps_gameplay_current_and_catches_up_after_heavier_scenes()
     assert!(outcome.final_age() < ms(100), "{report}");
 }
 
+/// HA08-24: the Xbox's audio timeline 316 ms behind its own clock.
+fn slipped(since: Duration) -> Duration {
+    if since < ms(5_000) {
+        Duration::ZERO
+    } else {
+        ms(320)
+    }
+}
+
+#[test]
+fn an_audio_timeline_slip_made_the_ha07_request_cut_and_never_recover() {
+    // HA08-24: fine until heavier play, then lag that never recovered. The
+    // slipped audio read as 320 ms of shared delay; once a heavy scene put
+    // video further behind, the lower of the two rose to 320 ms and the
+    // request fell. It could recover only below 240 ms, which never came.
+    let outcome = simulate(
+        Profile {
+            audio_slip: slipped,
+            ..gameplay_under(Remb::Ha07)
+        },
+        HA07_LOCAL,
+    );
+    let report = outcome.report("HA07 request, slipped audio", ms(2_000));
+    println!("{report}");
+    let (cuts, lowest) = outcome.remb_cuts();
+    assert!(cuts >= 1 && lowest < 2_000_000, "{report}");
+    assert!(
+        outcome.median_age(ms(25_000)..ms(40_000)) < ms(100),
+        "{report}"
+    );
+    assert!(
+        outcome.median_age(ms(50_000)..ms(60_000)) > ms(1_000),
+        "{report}"
+    );
+}
+
+#[test]
+fn the_fixed_request_ignores_an_audio_timeline_slip() {
+    let outcome = simulate(
+        Profile {
+            audio_slip: slipped,
+            ..gameplay_under(Remb::Ha09)
+        },
+        HA07_LOCAL,
+    );
+    let report = outcome.report("HA09 request, slipped audio", ms(2_000));
+    println!("{report}");
+    assert_eq!(
+        outcome.remb_cuts(),
+        (0, crate::feedback::VIDEO_CEILING_BPS),
+        "{report}"
+    );
+    assert!(
+        outcome.median_age(ms(50_000)..ms(60_000)) < ms(100),
+        "{report}"
+    );
+    assert!(outcome.final_age() < ms(100), "{report}");
+}
+
 #[test]
 fn a_drain_faster_than_avcdec_is_caught_up_locally_instead_of_expired() {
     // After the 3.4 Mbps scene the Xbox sends queued light frames faster than
     // AVCDEC's ~95 AUs per second (HA06-22: up to 2.7 s of video per second).
     // HA06's 240 ms limit expired the waiting work: a freeze, an incident and
-    // a keyframe request. HA07 decodes and shows all of it.
-    let ha06 = simulate(gameplay_under(Remb::Ha07), HA06_LOCAL);
-    let ha07 = simulate(gameplay_under(Remb::Ha07), HA07_LOCAL);
+    // a keyframe request. Since HA07 all of it is decoded and shown.
+    let ha06 = simulate(gameplay_under(Remb::Ha09), HA06_LOCAL);
+    let ha07 = simulate(gameplay_under(Remb::Ha09), HA07_LOCAL);
     let report = format!(
         "{}\n{}",
         ha06.report("HA06 local", ms(40_000)),
@@ -843,38 +937,6 @@ fn a_drain_faster_than_avcdec_is_caught_up_locally_instead_of_expired() {
     assert!(ha07.longest_freeze(ms(40_000)) < ms(60), "{report}");
     assert!(
         ha07.median_age(ms(50_000)..ms(60_000)) < ms(100),
-        "{report}"
-    );
-}
-
-/// A Wi-Fi queue that keeps growing: 50 ms more each second for 6 s.
-fn congesting(since: Duration) -> Duration {
-    match since.as_millis() as u64 {
-        0..3_000 => NET,
-        at @ 3_000..9_000 => NET + ms((at - 3_000) / 20),
-        _ => NET + ms(300),
-    }
-}
-
-#[test]
-fn congestion_on_the_shared_path_still_lowers_the_ha07_request() {
-    // HA07 ignores lateness audio does not share, not congestion: a growing
-    // path queue delays audio too, and the request still falls.
-    let outcome = simulate(
-        Profile {
-            path: congesting,
-            content: Some(|_| 1.4),
-            remb: Some(Remb::Ha07),
-            end: ms(15_000),
-            ..STEADY
-        },
-        HA07_LOCAL,
-    );
-    let report = outcome.report("HA07 congested path", ms(3_000));
-    println!("{report}");
-    let (cuts, lowest) = outcome.remb_cuts();
-    assert!(
-        cuts >= 1 && lowest < crate::feedback::VIDEO_CEILING_BPS,
         "{report}"
     );
 }

@@ -91,3 +91,13 @@ HA08 display: the build label and capture status are no longer drawn on screen
 (streaming banner, quick menu, menu header). Captures still run and save as
 before; the label stays in manifest.json. The top banner appears only for a
 video problem. Build identity remains in the opt-in diagnostics overlay.
+
+HA09 request, audio and display policy (no new stage names):
+The REMB is fixed at 3000k; the receiver no longer lowers it. Status reads
+"REMB:<state> target:3000k delay:<video>ms queued:... fail:... over-windows:..."
+(no path:/cuts:; state names unchanged for tools). receiver_ceiling_bps and
+receiver_ceiling_delay_ms are no longer recorded. Audio has no RTP media deadline:
+audio_expired_us and discarded PCM now mean only local age past 240 ms or an output
+queue trim. The status "Ingress A: ... rel+" and "SR offset* A:" stay diagnostic;
+rel+ includes any slip in the Xbox's audio RTP timeline (HA08-24: 316 ms).
+No video banner or held-frame indicator is drawn (video_hold_begin/end still trace).

@@ -90,16 +90,20 @@ class Contracts(unittest.TestCase):
         self.assertIn("pub(crate) const LAG_CEILING: Duration = Duration::from_millis(2_500);", live_edge)
         self.assertIn("State::Live => self.begin_incident(),", live_edge)
 
-    def test_ha07_request_follows_shared_path_delay_only(self):
+    def test_ha09_request_stays_at_the_ceiling(self):
         # session.rs and channel.rs compile only for the Vita target; the
-        # feedback and rtp-order host tests drive VideoCeiling::receive itself.
+        # feedback, rtc-transport and rtp-order host tests drive VideoCeiling.
         session = "".join((ROOT / "src/api/streaming/rtc/session.rs").read_text().split())
+        feedback = "".join((ROOT / "src/api/streaming/rtc/feedback.rs").read_text().split())
         bandwidth = (ROOT / "src/api/streaming/rtc/bandwidth.rs").read_text()
         control = (ROOT / "src/api_xbox/streaming/control/channel.rs").read_text()
-        self.assertIn("constAUDIO_PATH_EVIDENCE:Duration=Duration::from_secs(1);", session)
-        self.assertIn("self.audio_ingress.recent_delay_ms(now,AUDIO_PATH_EVIDENCE);", session)
-        self.assertIn("self.video_ceiling.receive(packet.payload.len(),delay,audio_delay,now,);", session)
-        self.assertIn("self.video_ceiling.path_delay_ms(),", session)
+        self.assertIn("self.video_ceiling.observe_delay(delay);", session)
+        self.assertNotIn("AUDIO_PATH_EVIDENCE", session)
+        self.assertNotIn("recent_delay_ms", session)
+        self.assertIn("pub(crate)fntarget_bps(&self)->u32{VIDEO_CEILING_BPS}", feedback)
+        self.assertNotIn("modcongestion", feedback)
+        self.assertNotIn("ReceiveBudget", feedback)
+        self.assertFalse((ROOT / "src/api/streaming/rtc/congestion.rs").exists())
         self.assertIn("pub(crate) const VIDEO_CEILING_BPS: u32 = 3_000_000;", bandwidth)
         # The startup capability hint is unchanged.
         self.assertEqual(control.count('"maxBitrateKbps": 2000,'), 2)

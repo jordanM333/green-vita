@@ -149,16 +149,13 @@ mod streaming {
 #[path = "../../../src/streaming/audio_timing.rs"]
 pub(crate) mod audio_timing;
 
-// The production receiver bitrate request, for the sender model (HA07).
-// feedback.rs keeps its own private copy of congestion.rs; this one gives the
-// model the HA06 budget at its 2 Mbps maximum.
-#[cfg(test)]
-#[allow(clippy::duplicate_mod)]
-#[path = "../../../src/api/streaming/rtc/congestion.rs"]
-mod congestion;
+// The production receiver bitrate request and, for comparison, the retired
+// budget behind the HA06 and HA07 requests (sender model).
 #[cfg(test)]
 #[path = "../../../src/api/streaming/rtc/feedback.rs"]
 mod feedback;
+#[cfg(test)]
+mod receive_budget;
 #[path = "../../../src/api/streaming/rtc/reorder.rs"]
 mod reorder;
 #[path = "../../../src/api/streaming/rtc/rtp.rs"]
@@ -206,6 +203,43 @@ mod tests {
         assert!(!ready.is_empty());
         assert_eq!(ready[0].received_at, old);
         assert!(!ready[0].fits_playback(Instant::now(), Duration::ZERO, Duration::ZERO));
+    }
+
+    #[test]
+    fn an_audio_timeline_slip_never_discards_current_audio() {
+        // HA08-24: the Xbox's audio RTP timeline fell 316 ms behind its own
+        // clock. Judged by RTP progress, every later packet looked late; a
+        // slip past the old 480 ms media deadline discarded all audio for
+        // the rest of the session. Audio is judged by local age only (HA09).
+        let mut audio = video_rtp::AudioRtp::new(48_000, 0);
+        let start = Instant::now();
+        let mut released = 0;
+        for index in 0..300u32 {
+            // From packet 100 the timeline has slipped 1 s: each packet
+            // arrives a second later than its RTP time says.
+            let slip = if index >= 100 {
+                Duration::from_secs(1)
+            } else {
+                Duration::ZERO
+            };
+            let at = start + Duration::from_millis(u64::from(index) * 20) + slip;
+            let mut ready = Vec::new();
+            audio.receive(
+                packet(index as u16, index * 960, false, &[0xf8, 0xff, 0xfe]),
+                at,
+                &mut ready,
+            );
+            for sample in ready {
+                assert!(sample.media_deadline.is_none());
+                assert!(sample.fits_playback(
+                    sample.received_at,
+                    Duration::from_millis(80),
+                    Duration::from_millis(20)
+                ));
+                released += 1;
+            }
+        }
+        assert!(released >= 290, "{released} of 300 released");
     }
 
     #[derive(Default)]

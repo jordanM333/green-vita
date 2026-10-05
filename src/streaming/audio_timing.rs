@@ -7,7 +7,8 @@ pub(crate) const MAX_LOCAL_AUDIO_AGE: Duration = Duration::from_millis(240);
 pub(crate) struct TimedAudio<T> {
     pub(crate) data: T,
     pub(crate) received_at: Instant,
-    // Independent RTP deadline; None only for sources without media timestamps.
+    // Optional media deadline. Xbox audio has none since HA09: its RTP
+    // timeline slips behind its own clock, so RTP lateness is not staleness.
     pub(crate) media_deadline: Option<Instant>,
 }
 

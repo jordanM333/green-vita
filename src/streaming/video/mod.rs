@@ -146,6 +146,8 @@ impl DirectVideoOutput {
             .is_ok_and(|edge| edge.can_present(timestamp, now))
     }
 
+    // Shown on screen until HA09; the host tests assert the state through this.
+    #[allow(dead_code)]
     pub(crate) fn live_edge_state(&self) -> live_edge::State {
         self.live_edge
             .lock()
@@ -168,9 +170,11 @@ impl DirectVideoOutput {
     }
 
     /// The displayed picture is no longer current (stall, recovery or epoch
-    /// change). The surface holds it on screen as the last good frame, marked
-    /// as reconnecting and never re-presented, until a current picture or
-    /// detach replaces it. Revoking targets (session end) clears it.
+    /// change). The surface holds it on screen as the last good frame, never
+    /// re-presented, until a current picture or detach replaces it. Revoking
+    /// targets (session end) clears it. No indicator is drawn since HA09; the
+    /// host tests assert the hold through this.
+    #[allow(dead_code)]
     pub(crate) fn video_held(&self, now: Instant) -> bool {
         let displayed = self
             .state

@@ -43,26 +43,10 @@ pub(crate) fn show(
             });
         }
 
-        // Only a video problem is shown here; live play keeps the top clear.
-        // Build identity and capture state stay in the opt-in diagnostics
+        // No banner over the game for late, held or recovering video (HA09):
+        // the last good picture stays on screen until a current one replaces
+        // it. Build identity and capture state stay in the opt-in diagnostics
         // overlay and the saved capture files.
-        use crate::streaming::video::live_edge::State;
-        let message = match streaming.direct_video_output().live_edge_state() {
-            State::AwaitingKeyframe => Some("Video interrupted — waiting for a keyframe. Controls and audio remain active."),
-            State::AwaitingPicture => Some("Decoding current video — recovery not yet confirmed."),
-            State::Unmeasured => Some("Waiting for the first playable picture; video timing is not established."),
-            State::ClockUncertain => Some("Video timing changed unexpectedly. Exit the stream and start it again; stale playback is blocked."),
-            State::Live if streaming.video_lag.needs_help(std::time::Instant::now()) => Some("Video is unavailable or delayed — controls remain active."),
-            _ => None,
-        };
-        if let Some(message) = message {
-            egui::Frame::default()
-                .fill(egui::Color32::from_black_alpha(192))
-                .inner_margin(egui::Margin::same(4))
-                .show(ui, |ui| {
-                    ui.colored_label(theme.text_bright, message);
-                });
-        }
 
         // Keep collecting metrics when hidden so the quick menu can restore the live overlay
         // without restarting the stream or resetting its counters.
@@ -315,30 +299,6 @@ pub(crate) fn show(
                     commands.push(crate::app::command::NavigationCommand::OpenPauseOverlay.into());
                 }
             });
-    }
-
-    // The picture on screen is the held last good frame, not live video.
-    // Painted directly: a new Area is invisible for its first (sizing) pass,
-    // and held redraws only refresh the UI every 250 ms.
-    if streaming
-        .direct_video_output()
-        .video_held(std::time::Instant::now())
-    {
-        use crate::streaming::mic_button;
-        let painter = ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Foreground,
-            egui::Id::new("video_reconnecting"),
-        ));
-        let galley = painter.layout_no_wrap(
-            i18n.text("streaming-video-reconnecting"),
-            egui::FontId::proportional(13.0),
-            egui::Color32::WHITE,
-        );
-        let corner = ctx.screen_rect().right_bottom()
-            - egui::vec2(16.0, mic_button::HEIGHT + mic_button::BOTTOM + 10.0);
-        let rect = egui::Rect::from_min_max(corner - galley.size(), corner);
-        painter.rect_filled(rect.expand(4.0), 4.0, egui::Color32::from_black_alpha(160));
-        painter.galley(rect.min, galley, egui::Color32::WHITE);
     }
 
     if streaming.media_reconnecting || streaming.media_refresh_failed {

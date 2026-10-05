@@ -501,12 +501,6 @@ impl AudioReceiver {
         self.ssrc = Some(ssrc);
     }
 
-    pub(crate) fn sender_report(&mut self, ssrc: u32, ts: u32, ntp: u64, at: Instant) {
-        if self.ssrc == Some(ssrc) {
-            self.rtp.sender_report(ts, ntp, at);
-        }
-    }
-
     pub(crate) fn handles(&self, track_id: &MediaStreamTrackId) -> bool {
         self.track_id.as_ref() == Some(track_id)
     }

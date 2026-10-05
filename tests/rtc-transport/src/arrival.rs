@@ -289,14 +289,13 @@ fn encrypted_feedback(accept: bool, growing: bool) {
                 delivered += 1;
                 ceiling.observe_payload(packet.header.payload_type);
                 // Inject a controller observation, not simulated network delay.
-                // It is shared-path delay (audio equally late), the only kind
-                // that lowers the request since HA07.
+                // Since HA09 delay is reported only; the request stays fixed.
                 let delay = if growing {
                     start.elapsed().as_millis() as u64 / 10
                 } else {
                     1991
                 };
-                ceiling.receive(packet.payload.len(), delay, Some(delay), Instant::now());
+                ceiling.observe_delay(delay);
             }
         }
         let now = Instant::now();
@@ -327,25 +326,16 @@ fn encrypted_feedback(accept: bool, growing: bool) {
         assert!(seen.twcc.iter().all(|p| p.media_ssrc == 12345));
         assert!(seen.twcc.iter().map(|p| p.recv_deltas.len()).sum::<usize>() >= 19);
         assert!(seen.remb.len() >= 2);
-        if growing {
-            assert!(
-                seen.remb
-                    .iter()
-                    .any(|bps| *bps < crate::feedback::VIDEO_CEILING_BPS),
-                "a reduced constraint must reach the sender while TWCC continues: {:?}",
-                seen.remb
-            );
-            assert!(ceiling.target_bps() < crate::feedback::VIDEO_CEILING_BPS);
-        } else {
-            assert_eq!(ceiling.target_bps(), crate::feedback::VIDEO_CEILING_BPS);
-            assert!(
-                seen.remb
-                    .iter()
-                    .all(|bps| *bps == crate::feedback::VIDEO_CEILING_BPS),
-                "fixed offset alone must not repeatedly constrain quality: {:?}",
-                seen.remb
-            );
-        }
+        // Growing or fixed delay, the request that reaches the sender stays at
+        // the ceiling; congestion control is the sender's, fed by TWCC (HA09).
+        assert_eq!(ceiling.target_bps(), crate::feedback::VIDEO_CEILING_BPS);
+        assert!(
+            seen.remb
+                .iter()
+                .all(|bps| *bps == crate::feedback::VIDEO_CEILING_BPS),
+            "the request must stay at the ceiling: {:?}",
+            seen.remb
+        );
     } else {
         assert!(seen.twcc.is_empty(), "peer declined the extension");
     }
@@ -360,7 +350,7 @@ fn declined_arrival_feedback_keeps_media_and_receiver_reports_working() {
 }
 
 #[test]
-fn growth_constraint_reaches_sender_over_srtcp_while_twcc_remains_active() {
+fn growing_delay_keeps_the_ceiling_at_the_sender_while_twcc_remains_active() {
     encrypted_feedback(true, true);
 }
 

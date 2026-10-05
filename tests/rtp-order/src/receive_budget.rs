@@ -1,3 +1,8 @@
+//! The receiver's growth-based REMB budget through HA08, retired from
+//! production in HA09 (the request is now fixed at the ceiling; see
+//! feedback.rs). Kept here so the sender model can reproduce the HA06 and HA07
+//! policies and the lag they caused (HA06-22, HA08-24).
+//!
 //! Growth-based receiver constraint, independent of transport-feedback activity.
 //! Absolute arrival offset is not evidence of continuing queue growth. A step
 //! after a pause must not be repeatedly spent as new congestion evidence.

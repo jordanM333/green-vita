@@ -72,14 +72,19 @@ impl VideoSampleStats {
     }
 }
 
+/// Audio is judged by its local age only (HA09). The Xbox's audio RTP
+/// timeline slips behind its own clock: in HA08-24 its sender reports showed
+/// 316 ms fewer RTP ticks than wall time over 176 s, while video kept exact
+/// time. Judged by RTP progress, every later packet looked 316 ms late, and a
+/// slip past the 480 ms media deadline would have discarded all audio for the
+/// rest of the session. Local age and the output queue trims bound latency.
 pub(super) struct AudioRtp {
     samples: SampleBuilder<OpusPacket>,
     payload_type: u8,
     sample_rate: u32,
     last_sequence: Option<u16>,
     latest_timestamp: Option<u32>,
-    arrivals: std::collections::VecDeque<(u32, Instant, Instant)>,
-    clock: crate::streaming::video::live_edge::MediaClock,
+    arrivals: std::collections::VecDeque<(u32, Instant)>,
 }
 
 impl AudioRtp {
@@ -96,7 +101,6 @@ impl AudioRtp {
             last_sequence: None,
             latest_timestamp: None,
             arrivals: Default::default(),
-            clock: crate::streaming::video::live_edge::MediaClock::new(sample_rate),
         }
     }
 
@@ -130,12 +134,10 @@ impl AudioRtp {
         }
 
         let timestamp = packet.header.timestamp;
-        self.clock.observe(timestamp, sequence, received_at);
         // Retain the first arrival, including duplicates and packets held by
         // SampleBuilder. Never assign a new age when an old sample is released.
-        if !self.arrivals.iter().any(|(ts, _, _)| *ts == timestamp) {
-            let deadline = self.clock.deadline(timestamp).unwrap_or(received_at);
-            self.arrivals.push_back((timestamp, received_at, deadline));
+        if !self.arrivals.iter().any(|(ts, _)| *ts == timestamp) {
+            self.arrivals.push_back((timestamp, received_at));
             if self.arrivals.len() > 128 {
                 self.arrivals.pop_front();
             }
@@ -172,25 +174,18 @@ impl AudioRtp {
             let Some(index) = self
                 .arrivals
                 .iter()
-                .position(|(ts, _, _)| *ts == sample.packet_timestamp)
+                .position(|(ts, _)| *ts == sample.packet_timestamp)
             else {
                 // Unattributable samples cannot pass the local age contract.
                 continue;
             };
-            let (_, received_at, deadline) =
-                self.arrivals.remove(index).expect("index found above");
+            let (_, received_at) = self.arrivals.remove(index).expect("index found above");
             audio_packets.push(TimedAudio {
                 data: sample.data,
                 received_at,
-                media_deadline: Some(deadline),
+                media_deadline: None,
             });
         }
-    }
-}
-
-impl AudioRtp {
-    pub(super) fn sender_report(&mut self, ts: u32, ntp: u64, at: Instant) {
-        self.clock.sender_report(ts, ntp, at);
     }
 }
 

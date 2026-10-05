@@ -23,9 +23,6 @@ use std::time::{Duration, Instant};
 
 const INITIAL_VIDEO_GRACE: Duration = Duration::from_millis(500);
 const INITIAL_VIDEO_KEYFRAME_INTERVAL: Duration = Duration::from_millis(500);
-/// Audio this recent is evidence about the shared path; Xbox audio arrives
-/// every 20 ms even in silence.
-const AUDIO_PATH_EVIDENCE: Duration = Duration::from_secs(1);
 
 pub(crate) struct RtcSessionConfig {
     pub mode: &'static str,
@@ -454,12 +451,6 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                 }
             } else if self.audio.is_source(report.ssrc) {
                 self.audio_clock.sender_report(&report);
-                self.audio.sender_report(
-                    report.ssrc,
-                    report.rtp_time,
-                    report.ntp_time,
-                    received_at,
-                );
             }
         }
         while let Some((dequeued_at, message)) = self.peer.poll_read_with_timestamp() {
@@ -511,30 +502,9 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                                         edge.added_delay_ms(timing.timestamp, delivered_at)
                                     })
                                     .unwrap_or(timing.added_delay_ms);
-                                let before = self.video_ceiling.target_bps();
-                                let now = Instant::now();
-                                // HA07: only delay audio shares lowers the request.
-                                let audio_delay =
-                                    self.audio_ingress.recent_delay_ms(now, AUDIO_PATH_EVIDENCE);
-                                self.video_ceiling.receive(
-                                    packet.payload.len(),
-                                    delay,
-                                    audio_delay,
-                                    now,
-                                );
-                                let after = self.video_ceiling.target_bps();
-                                if after != before {
-                                    crate::streaming::video::trace::record(
-                                        "receiver_ceiling_bps",
-                                        timing.timestamp,
-                                        u64::from(after),
-                                    );
-                                    crate::streaming::video::trace::record(
-                                        "receiver_ceiling_delay_ms",
-                                        timing.timestamp,
-                                        self.video_ceiling.path_delay_ms(),
-                                    );
-                                }
+                                // Reported only: the request stays at the
+                                // ceiling (HA09, feedback.rs).
+                                self.video_ceiling.observe_delay(delay);
                             }
                         }
                         self.video.receive(
