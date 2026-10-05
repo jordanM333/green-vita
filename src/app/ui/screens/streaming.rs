@@ -43,26 +43,26 @@ pub(crate) fn show(
             });
         }
 
-        egui::Frame::default()
-            .fill(egui::Color32::from_black_alpha(192))
-            .inner_margin(egui::Margin::same(4))
-            .show(ui, |ui| {
-                ui.colored_label(
-                    theme.text_bright,
-                    crate::diagnostic::LABEL,
-                );
-                ui.colored_label(theme.text_bright, crate::diagnostic::status());
-                use crate::streaming::video::live_edge::State;
-                let message = match streaming.direct_video_output().live_edge_state() {
-                    State::AwaitingKeyframe => Some("Video interrupted — waiting for a keyframe. Controls and audio remain active."),
-                    State::AwaitingPicture => Some("Decoding current video — recovery not yet confirmed."),
-                    State::Unmeasured => Some("Waiting for the first playable picture; video timing is not established."),
-                    State::ClockUncertain => Some("Video timing changed unexpectedly. Exit the stream and start it again; stale playback is blocked."),
-                    State::Live if streaming.video_lag.needs_help(std::time::Instant::now()) => Some("Video is unavailable or delayed — controls remain active."),
-                    _ => None,
-                };
-                if let Some(message) = message { ui.colored_label(theme.text_bright, message); }
-            });
+        // Only a video problem is shown here; live play keeps the top clear.
+        // Build identity and capture state stay in the opt-in diagnostics
+        // overlay and the saved capture files.
+        use crate::streaming::video::live_edge::State;
+        let message = match streaming.direct_video_output().live_edge_state() {
+            State::AwaitingKeyframe => Some("Video interrupted — waiting for a keyframe. Controls and audio remain active."),
+            State::AwaitingPicture => Some("Decoding current video — recovery not yet confirmed."),
+            State::Unmeasured => Some("Waiting for the first playable picture; video timing is not established."),
+            State::ClockUncertain => Some("Video timing changed unexpectedly. Exit the stream and start it again; stale playback is blocked."),
+            State::Live if streaming.video_lag.needs_help(std::time::Instant::now()) => Some("Video is unavailable or delayed — controls remain active."),
+            _ => None,
+        };
+        if let Some(message) = message {
+            egui::Frame::default()
+                .fill(egui::Color32::from_black_alpha(192))
+                .inner_margin(egui::Margin::same(4))
+                .show(ui, |ui| {
+                    ui.colored_label(theme.text_bright, message);
+                });
+        }
 
         // Keep collecting metrics when hidden so the quick menu can restore the live overlay
         // without restarting the stream or resetting its counters.

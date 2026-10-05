@@ -79,11 +79,6 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
             }
             ui.add_space(12.0);
             let home = app.state.streaming().is_some_and(|s| s.can_refresh());
-            ui.label(egui::RichText::new(format!("RX Test {} · {} streaming",
-                crate::build_info::NUMBER, if home { "Home" } else { "Cloud" }))
-                .color(theme.text));
-            ui.label(crate::diagnostic::status());
-            ui.add_space(6.0);
             ui.set_max_width(240.0);
             for (index, item) in menu_items(app).iter().copied().enumerate() {
                 if index > 0 {

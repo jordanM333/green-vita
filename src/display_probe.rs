@@ -17,6 +17,8 @@ const ENCODED_CAP: usize = 8 * 1024 * 1024;
 const AU_CAP: usize = 1024;
 const SAMPLE_CAP: usize = 40;
 static CAPTURE: Mutex<Option<Capture>> = Mutex::new(None);
+// 0 ready, 1 sampling, 2 complete, 3 saved, 4 previous capture preserved,
+// 5 save failed. Not shown on screen since HA08.
 static STATE: AtomicU8 = AtomicU8::new(0);
 static SKIPPED: AtomicU64 = AtomicU64::new(0);
 
@@ -312,16 +314,6 @@ pub(crate) fn finish(mut sample: Sample, drawn: bool) {
         }
     } else {
         SKIPPED.fetch_add(1, Ordering::Relaxed);
-    }
-}
-pub(crate) fn status() -> &'static str {
-    match STATE.load(Ordering::Relaxed) {
-        1 => "Display capture: playing for 10 seconds; then exit normally",
-        2 => "Display capture complete — exit stream to save",
-        3 => "Display capture saved — copy display folder with VitaShell",
-        4 => "Previous display capture preserved — copy display folder",
-        5 => "Display capture save failed — partial folder preserved",
-        _ => "Display capture ready — start Cloud and play for 15 seconds",
     }
 }
 pub(crate) fn save() {

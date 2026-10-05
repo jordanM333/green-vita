@@ -86,3 +86,8 @@ live while the decoder produced it within 240 ms: video_hold_begin a is still th
 picture's local age, but the hold now starts 240 ms after the last decoded
 picture, not 240 ms after its AU completed. The AU queue holds 128 AUs, not 32
 (queue_frame_limit a = 128).
+
+HA08 display: the build label and capture status are no longer drawn on screen
+(streaming banner, quick menu, menu header). Captures still run and save as
+before; the label stays in manifest.json. The top banner appears only for a
+video problem. Build identity remains in the opt-in diagnostics overlay.

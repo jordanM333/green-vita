@@ -12,8 +12,7 @@ use std::time::Instant;
 #[path = "display_probe.rs"]
 pub(crate) mod display_probe;
 
-pub(crate) const LABEL: &str =
-    "HARDWARE ACCEPTANCE CANDIDATE — PHYSICAL VITA ACCEPTANCE PENDING — HA07 LIVE VIDEO UNVERIFIED";
+pub(crate) const LABEL: &str = "HARDWARE ACCEPTANCE CANDIDATE — PHYSICAL VITA ACCEPTANCE PENDING — HA08 CLEAN DISPLAY UNVERIFIED";
 const PRE_US: u64 = 12_000_000;
 const POST_US: u64 = 10_000_000;
 const LIMIT_US: u64 = 180_000_000;
@@ -443,9 +442,6 @@ pub(crate) fn track(media: u8, ssrc: u32) {
 }
 pub(crate) fn snapshot(status: &str) {
     with_capture(|c| c.snapshot(c.us(Instant::now()), status));
-}
-pub(crate) fn status() -> &'static str {
-    display_probe::status()
 }
 #[allow(dead_code)]
 fn latency_status() -> &'static str {

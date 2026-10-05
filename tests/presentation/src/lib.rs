@@ -57,12 +57,6 @@ mod i18n {
         }
     }
 }
-mod diagnostic {
-    pub const LABEL: &str = "HARDWARE ACCEPTANCE CANDIDATE — PHYSICAL VITA ACCEPTANCE PENDING";
-    pub fn status() -> &'static str {
-        "Capturing automatically — keep playing normally"
-    }
-}
 mod build_info {
     pub const NUMBER: &str = "HA02-17";
 }
@@ -249,6 +243,93 @@ mod tests {
                 .all(|index| index % 960 >= 480 && index / 960 >= 272),
             "indicator outside the bottom-right quadrant"
         );
+    }
+
+    #[test]
+    fn live_play_leaves_the_top_of_the_picture_clear() {
+        // HA08: no build label or capture status over the game. Only a video
+        // problem is announced at the top.
+        use streaming::video::live_edge::State;
+        let sdl = sdl2::init().unwrap();
+        let window = sdl
+            .video()
+            .unwrap()
+            .window("presentation test", 960, 544)
+            .hidden()
+            .build()
+            .unwrap();
+        let mut canvas = window.into_canvas().software().build().unwrap();
+        let mut painter = painter::SdlEguiPainter::default();
+        let ctx = egui::Context::default();
+        fonts::configure(&ctx);
+        let mut render = |edge: State| {
+            let app = App {
+                settings: Settings {
+                    locale: false,
+                    show_stream_debug_info: false,
+                },
+                state: AppState::Streaming(Session {
+                    hint_started_at: std::time::Instant::now() - std::time::Duration::from_secs(60),
+                    status: include_str!("../status.txt").to_owned(),
+                    media_reconnecting: false,
+                    media_refresh_failed: false,
+                    video_lag: Help,
+                    video_startup: Help,
+                    microphone: Microphone,
+                    edge,
+                    held: false,
+                }),
+            };
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(960.0 / 1.3, 544.0 / 1.3),
+                )),
+                ..Default::default()
+            };
+            input
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .native_pixels_per_point = Some(1.3);
+            let out = ctx.run(input, |ctx| {
+                streaming_screen::show(ctx, &app, None, &mut Vec::new())
+            });
+            let primitives = ctx.tessellate(out.shapes, out.pixels_per_point);
+            canvas.set_draw_color(sdl2::pixels::Color::RGB(80, 160, 240));
+            canvas.clear();
+            painter
+                .paint(
+                    &mut canvas,
+                    [960, 544],
+                    out.pixels_per_point,
+                    &primitives,
+                    &out.textures_delta,
+                )
+                .unwrap();
+            canvas
+                .read_pixels(None, sdl2::pixels::PixelFormatEnum::RGB24)
+                .unwrap()
+        };
+        // Pixels changed in the top half of the screen.
+        let covered = |pixels: &[u8]| {
+            pixels.as_chunks::<3>().0[..960 * 272]
+                .iter()
+                .filter(|p| **p != [80, 160, 240])
+                .count()
+        };
+        for _ in 0..30 {
+            render(State::Live);
+        }
+        let live = render(State::Live);
+        assert_eq!(covered(&live), 0, "text over the top of live video");
+        let interrupted = render(State::AwaitingKeyframe);
+        assert!(covered(&interrupted) > 0, "an interruption is no longer announced");
+        if let Ok(dir) = std::env::var("GREENVITA_PRESENTATION_OUTPUT") {
+            std::fs::create_dir_all(&dir).unwrap();
+            image::save_buffer(format!("{dir}/live-top-clear.png"), &live, 960, 544, image::ColorType::Rgb8)
+                .unwrap();
+        }
     }
 
     #[test]
