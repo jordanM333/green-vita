@@ -109,6 +109,9 @@ pub struct Settings {
     pub stream_volume_percent: u8,
     /// Globally swaps only the rear L2/L3 and R2/R3 zones; front touch is unchanged.
     pub swap_rear_touch_trigger_stick: bool,
+    /// Capture from the Vita's raw audio-in port instead of the voice port.
+    /// The Vita still chooses the built-in or headset microphone itself.
+    pub microphone_raw_input: bool,
     pub catalog: crate::catalog_preferences::CatalogPreferences,
     pub game_profiles: HashMap<String, GameProfile>,
 }
@@ -142,6 +145,7 @@ impl Default for Settings {
             show_stream_debug_info: false,
             stream_volume_percent: 100,
             swap_rear_touch_trigger_stick: false,
+            microphone_raw_input: false,
             game_profiles: HashMap::new(),
             catalog: Default::default(),
         }

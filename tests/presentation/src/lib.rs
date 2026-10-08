@@ -100,6 +100,7 @@ enum AppState {
 }
 struct Session {
     hint_started_at: std::time::Instant,
+    controls_shown_at: std::time::Instant,
     status: String,
     media_reconnecting: bool,
     media_refresh_failed: bool,
@@ -126,6 +127,9 @@ impl Microphone {
         true
     }
     fn set_on(&self, _: bool) {}
+    fn level(&self) -> f32 {
+        0.0
+    }
 }
 impl Session {
     fn direct_video_output(&self) -> &Self {
@@ -178,6 +182,7 @@ mod tests {
                     media_refresh_failed: false,
                     video_startup: Help,
                     microphone: Microphone,
+                    controls_shown_at: std::time::Instant::now(),
                     edge: streaming::video::live_edge::State::AwaitingKeyframe,
                     held,
                 }),
@@ -238,6 +243,85 @@ mod tests {
     }
 
     #[test]
+    fn bottom_buttons_fade_ten_seconds_after_the_last_touch() {
+        let sdl = sdl2::init().unwrap();
+        let window = sdl
+            .video()
+            .unwrap()
+            .window("presentation test", 960, 544)
+            .hidden()
+            .build()
+            .unwrap();
+        let mut canvas = window.into_canvas().software().build().unwrap();
+        let mut painter = painter::SdlEguiPainter::default();
+        let ctx = egui::Context::default();
+        fonts::configure(&ctx);
+        let mut render = |since_touch: std::time::Duration| {
+            let now = std::time::Instant::now();
+            let app = App {
+                settings: Settings {
+                    locale: false,
+                    show_stream_debug_info: false,
+                },
+                state: AppState::Streaming(Session {
+                    hint_started_at: now - std::time::Duration::from_secs(60),
+                    controls_shown_at: now - since_touch,
+                    status: String::new(),
+                    media_reconnecting: false,
+                    media_refresh_failed: false,
+                    video_startup: Help,
+                    microphone: Microphone,
+                    edge: streaming::video::live_edge::State::Live,
+                    held: false,
+                }),
+            };
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(960.0 / 1.3, 544.0 / 1.3),
+                )),
+                ..Default::default()
+            };
+            input
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .native_pixels_per_point = Some(1.3);
+            let out = ctx.run(input, |ctx| {
+                streaming_screen::show(ctx, &app, None, &mut Vec::new())
+            });
+            let primitives = ctx.tessellate(out.shapes, out.pixels_per_point);
+            canvas.set_draw_color(sdl2::pixels::Color::RGB(80, 160, 240));
+            canvas.clear();
+            painter
+                .paint(
+                    &mut canvas,
+                    [960, 544],
+                    out.pixels_per_point,
+                    &primitives,
+                    &out.textures_delta,
+                )
+                .unwrap();
+            canvas
+                .read_pixels(None, sdl2::pixels::PixelFormatEnum::RGB24)
+                .unwrap()
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .filter(|p| **p != [80, 160, 240])
+                .count()
+        };
+        for _ in 0..30 {
+            render(std::time::Duration::ZERO);
+        }
+        let shown = render(std::time::Duration::from_secs(9));
+        assert!(shown > 1000, "buttons not drawn: {shown} pixels");
+        assert!(render(std::time::Duration::from_millis(10_500)) > 0, "buttons vanished before the fade");
+        assert_eq!(render(std::time::Duration::from_secs(11)), 0, "buttons still drawn after the fade");
+        assert!(render(std::time::Duration::ZERO) > 1000, "a touch did not bring them back");
+    }
+
+    #[test]
     fn live_play_leaves_the_top_of_the_picture_clear() {
         // HA08: no build label or capture status over the game.
         use streaming::video::live_edge::State;
@@ -266,6 +350,7 @@ mod tests {
                     media_refresh_failed: false,
                     video_startup: Help,
                     microphone: Microphone,
+                    controls_shown_at: std::time::Instant::now(),
                     edge,
                     held: false,
                 }),
@@ -356,6 +441,7 @@ mod tests {
                 media_refresh_failed: false,
                 video_startup: Help,
                 microphone: Microphone,
+                controls_shown_at: std::time::Instant::now(),
                 edge: streaming::video::live_edge::State::Live,
                 held: false,
             }),

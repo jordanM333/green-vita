@@ -90,6 +90,20 @@ class Contracts(unittest.TestCase):
         self.assertIn("pub(crate) const LAG_CEILING: Duration = Duration::from_millis(2_500);", live_edge)
         self.assertIn("State::Live => self.begin_incident(),", live_edge)
 
+    def test_ha10_hidden_buttons_and_mic_input_port(self):
+        # The shell's touch routing has no host harness and the capture port
+        # code compiles only for the Vita; mic_button, microphone and the
+        # presentation harness test the rest.
+        shell = (ROOT / "src/shell/mod.rs").read_text()
+        capture = (ROOT / "src/streaming/microphone_capture.rs").read_text()
+        self.assertIn("(true, false) => Hit::HiddenButton,", shell)
+        self.assertIn("streaming.reveal_controls();", shell)
+        self.assertIn("vitasdk_sys::SCE_AUDIO_IN_PORT_TYPE_RAW", capture)
+        self.assertIn("if mic.input() == MicInput::Raw {", capture)
+        # The voice port stays the default and the fallback.
+        self.assertIn("let port = open(VOICE);", capture)
+        self.assertIn("mic.set_opened(ticket, detail);", capture)
+
     def test_ha09_request_stays_at_the_ceiling(self):
         # session.rs and channel.rs compile only for the Vita target; the
         # feedback, rtc-transport and rtp-order host tests drive VideoCeiling.

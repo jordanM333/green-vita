@@ -133,8 +133,9 @@ async fn run_inner(app: &mut App) -> Result<()> {
             ) {
                 continue;
             }
-            use crate::streaming::mic_button::{self, Phase, Pointer, Route};
+            use crate::streaming::mic_button::{self, Hit, Phase, Pointer, Route};
             let live_overlay = matches!(&app.state, AppState::Streaming(s) if !s.paused);
+            let controls_shown = matches!(&app.state, AppState::Streaming(s) if s.controls_shown());
             let pointer = match &event {
                 Event::FingerDown {
                     touch_id: 1,
@@ -194,18 +195,28 @@ async fn run_inner(app: &mut App) -> Result<()> {
             };
             let route = pointer
                 .map(|(id, phase, x, y)| {
-                    mic_touch.route(
-                        id,
-                        phase,
-                        live_overlay
-                            && mic_button::contains(
-                                x,
-                                y,
-                                (WIDTH as f32 / UI_SCALE, HEIGHT as f32 / UI_SCALE),
-                            ),
-                    )
+                    let on_button = live_overlay
+                        && mic_button::contains(
+                            x,
+                            y,
+                            (WIDTH as f32 / UI_SCALE, HEIGHT as f32 / UI_SCALE),
+                        );
+                    let hit = match (on_button, controls_shown) {
+                        (false, _) => Hit::Outside,
+                        (true, true) => Hit::Button,
+                        (true, false) => Hit::HiddenButton,
+                    };
+                    mic_touch.route(id, phase, hit)
                 })
                 .unwrap_or(Route::Game);
+            // Any front-screen touch during play shows the bottom buttons again
+            // and restarts their 10 s fade.
+            if live_overlay
+                && matches!(pointer, Some((_, Phase::Down, _, _)))
+                && let AppState::Streaming(streaming) = &mut app.state
+            {
+                streaming.reveal_controls();
+            }
             if route == Route::Game {
                 rear_touch_buttons.handle_event(&event);
             }

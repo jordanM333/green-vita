@@ -101,3 +101,14 @@ audio_expired_us and discarded PCM now mean only local age past 240 ms or an out
 queue trim. The status "Ingress A: ... rel+" and "SR offset* A:" stay diagnostic;
 rel+ includes any slip in the Xbox's audio RTP timeline (HA08-24: 316 ms).
 No video banner or held-frame indicator is drawn (video_hold_begin/end still trace).
+
+HA10 microphone and overlay (no new stage names):
+The once-per-second status line for the microphone now reads
+"Mic on · <port> <grain>@<kHz>k adopt:<n> mute:<n> · level max <n>% ·
+quiet <q>/<f> frames · RTP queued <n> · dropped <n>". <port> is "voice port" or
+"raw port"; a refused raw open is listed first as "raw port refused (<grain>@<kHz>k
+<code>, ...)". adopt is sceAudioInGetAdopt for the opened port type and mute is
+sceAudioInGetStatus(MUTE), both read once when the port opens. Level max and the
+quiet count (20 ms frames whose peak is under 0.2%, about -54 dBFS) cover the time
+since the mic was last turned on or its input port changed. The bottom buttons fade
+10 s after the last front touch; this is not traced.

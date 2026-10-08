@@ -66,20 +66,65 @@ fn capture(
     stop: &AtomicBool,
     clock: Instant,
 ) -> anyhow::Result<()> {
+    use super::microphone::MicInput;
     use anyhow::{Context, ensure};
     use std::collections::VecDeque;
-    // Same hardware format as SDL's Vita capture driver: 512 mono s16 samples,
-    // 16 kHz. Reframe its 32 ms reads into 20 ms Opus packets without resampling.
-    // SAFETY: supported fixed 512-sample mono S16/16 kHz format; no pointers passed.
-    let port = unsafe {
-        vitasdk_sys::sceAudioInOpenPort(
-            vitasdk_sys::SCE_AUDIO_IN_PORT_TYPE_VOICE,
-            512,
-            16000,
-            vitasdk_sys::SCE_AUDIO_IN_PARAM_FORMAT_S16_MONO,
+    // Voice port: same hardware format as SDL's Vita capture driver, 512 mono
+    // s16 samples at 16 kHz, reframed from 32 ms reads into 20 ms Opus packets.
+    // The raw port's accepted formats are not documented, so try 16 kHz first
+    // and then 48 kHz (decimated 3:1 to the same 16 kHz encoder input).
+    const VOICE: (u32, i32, i32) = (vitasdk_sys::SCE_AUDIO_IN_PORT_TYPE_VOICE, 512, 16000);
+    const RAW: [(u32, i32, i32); 4] = [
+        (vitasdk_sys::SCE_AUDIO_IN_PORT_TYPE_RAW, 512, 16000),
+        (vitasdk_sys::SCE_AUDIO_IN_PORT_TYPE_RAW, 256, 16000),
+        (vitasdk_sys::SCE_AUDIO_IN_PORT_TYPE_RAW, 256, 48000),
+        (vitasdk_sys::SCE_AUDIO_IN_PORT_TYPE_RAW, 512, 48000),
+    ];
+    let open = |(kind, grain, freq): (u32, i32, i32)| {
+        // SAFETY: fixed mono S16 format from the list above; no pointers passed.
+        unsafe {
+            vitasdk_sys::sceAudioInOpenPort(
+                kind,
+                grain,
+                freq,
+                vitasdk_sys::SCE_AUDIO_IN_PARAM_FORMAT_S16_MONO,
+            )
+        }
+    };
+    let mut refused = Vec::new();
+    let mut opened = None;
+    if mic.input() == MicInput::Raw {
+        for format in RAW {
+            let port = open(format);
+            if port >= 0 {
+                opened = Some((port, format, "raw port"));
+                break;
+            }
+            refused.push(format!("{}@{}k {port:#x}", format.1, format.2 / 1000));
+        }
+    }
+    let (port, (kind, grain, freq), name) = match opened {
+        Some(opened) => opened,
+        None => {
+            let port = open(VOICE);
+            ensure!(port >= 0, "capture open failed ({port:#x})");
+            (port, VOICE, "voice port")
+        }
+    };
+    // SAFETY: status queries take no pointers and do not touch the port.
+    let (adopt, mute) = unsafe {
+        (
+            vitasdk_sys::sceAudioInGetAdopt(kind),
+            vitasdk_sys::sceAudioInGetStatus(vitasdk_sys::SCE_AUDIO_IN_GETSTATUS_MUTE as i32),
         )
     };
-    ensure!(port >= 0, "capture open failed ({port:#x})");
+    let mut detail = format!("{name} {grain}@{}k adopt:{adopt} mute:{mute}", freq / 1000);
+    if !refused.is_empty() {
+        detail = format!("raw port refused ({}), {detail}", refused.join(", "));
+    }
+    eprintln!("Microphone capture opened: {detail}");
+    mic.set_opened(ticket, detail);
+    let decimate = (freq / 16000) as usize;
     struct Port(i32);
     impl Drop for Port {
         fn drop(&mut self) {
@@ -92,13 +137,16 @@ fn capture(
     let _port = Port(port);
     let mut encoder = super::voice_encoder::VoiceEncoder::new().context("Opus encoder")?;
     let mut pending = VecDeque::with_capacity(832);
-    let mut input = [0i16; 512];
+    let mut input = vec![0i16; grain as usize];
+    let mut decimated = Vec::with_capacity(input.len());
+    let (mut sum, mut summed) = (0i32, 0usize);
     let mut samples = [0i16; 320];
     let mut timestamp = (clock.elapsed().as_micros() * 48 / 1000) as u32;
     while !stop.load(Ordering::Relaxed) && mic.begin_capture() == Some(ticket) {
         let input_started = Instant::now();
-        // SAFETY: port is live, and input is an initialized writable 512-i16
-        // array matching the open format; synchronous input must not retain its pointer.
+        // SAFETY: port is live, and input is an initialized writable buffer of
+        // exactly `grain` i16 samples matching the open format; synchronous
+        // input must not retain its pointer.
         let result = unsafe { vitasdk_sys::sceAudioInInput(port, input.as_mut_ptr().cast()) };
         ensure!(result >= 0, "capture read failed ({result:#x})");
         if mic.begin_capture() != Some(ticket) {
@@ -106,10 +154,26 @@ fn capture(
         }
         if input_started.elapsed() > Duration::from_millis(80) {
             pending.clear();
+            (sum, summed) = (0, 0);
             timestamp = (clock.elapsed().as_micros() * 48 / 1000) as u32;
             continue;
         }
-        pending.extend(input);
+        if decimate > 1 {
+            // Average each run of `decimate` samples: a plain low-pass that is
+            // adequate for speech into the 16 kHz voice encoder.
+            decimated.clear();
+            for sample in &input {
+                sum += i32::from(*sample);
+                summed += 1;
+                if summed == decimate {
+                    decimated.push((sum / decimate as i32) as i16);
+                    (sum, summed) = (0, 0);
+                }
+            }
+            pending.extend(decimated.iter().copied());
+        } else {
+            pending.extend(input.iter().copied());
+        }
         while pending.len() >= samples.len() {
             for sample in &mut samples {
                 *sample = pending.pop_front().unwrap();

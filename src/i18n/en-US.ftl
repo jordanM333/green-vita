@@ -107,6 +107,8 @@ catalog-add-favorite = Add to Favorites
 catalog-remove-favorite = Remove from Favorites
 paused-microphone = Microphone
 paused-mic-on = Microphone: On
+paused-mic-input-voice = Mic input: Standard
+paused-mic-input-raw = Mic input: Raw (test)
 paused-mic-off = Microphone: Off
 paused-mic-unavailable = Microphone: Unavailable in this build
 

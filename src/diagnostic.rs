@@ -12,7 +12,7 @@ use std::time::Instant;
 #[path = "display_probe.rs"]
 pub(crate) mod display_probe;
 
-pub(crate) const LABEL: &str = "HARDWARE ACCEPTANCE CANDIDATE — PHYSICAL VITA ACCEPTANCE PENDING — HA09 FINAL CANDIDATE UNVERIFIED";
+pub(crate) const LABEL: &str = "HARDWARE ACCEPTANCE CANDIDATE — PHYSICAL VITA ACCEPTANCE PENDING — HA10 FINAL CANDIDATE UNVERIFIED";
 const PRE_US: u64 = 12_000_000;
 const POST_US: u64 = 10_000_000;
 const LIMIT_US: u64 = 180_000_000;

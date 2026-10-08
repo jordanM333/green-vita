@@ -114,7 +114,10 @@ pub(crate) fn show(
         }
     });
 
-    {
+    // The bottom buttons fade 10 s after the last front-screen touch; the
+    // shell routes the tap that brings them back (see mic_button::Hit).
+    let controls = crate::streaming::mic_button::opacity(streaming.controls_shown_at.elapsed());
+    if controls > 0.0 {
         use crate::streaming::mic_button;
         let screen = ctx.screen_rect().size();
         let screen = (screen.x, screen.y);
@@ -146,6 +149,7 @@ pub(crate) fn show(
             .order(egui::Order::Foreground)
             .movable(false)
             .show(ctx, |ui| {
+                ui.set_opacity(controls);
                 let (rect, response) = ui.allocate_exact_size(
                     egui::vec2(mic_button::WIDTH, mic_button::HEIGHT),
                     egui::Sense::click(),
@@ -205,13 +209,28 @@ pub(crate) fn show(
                     egui::FontId::proportional(10.5),
                     color,
                 );
+                if active {
+                    // Live input level, so a silent microphone is visible
+                    // during play (the quick menu shows the same level).
+                    let track = egui::Rect::from_min_size(
+                        rect.min + egui::vec2(38.0, rect.height() - 7.0),
+                        egui::vec2(rect.width() - 46.0, 3.0),
+                    );
+                    painter.rect_filled(track, 1.5, egui::Color32::from_white_alpha(40));
+                    let level = mic.level().clamp(0.0, 1.0);
+                    if level > 0.0 {
+                        let mut fill = track;
+                        fill.set_width((track.width() * level).max(2.0));
+                        painter.rect_filled(fill, 1.5, color);
+                    }
+                }
                 if response.clicked() && (available || on) {
                     mic.set_on(!on);
                 }
             });
     }
 
-    {
+    if controls > 0.0 {
         use crate::streaming::mic_button;
         let screen = ctx.screen_rect().size();
         let (x, y) = mic_button::position(mic_button::Button::Xbox, (screen.x, screen.y));
@@ -220,6 +239,7 @@ pub(crate) fn show(
             .order(egui::Order::Foreground)
             .movable(false)
             .show(ctx, |ui| {
+                ui.set_opacity(controls);
                 let (rect, response) = ui.allocate_exact_size(
                     egui::vec2(mic_button::WIDTH, mic_button::HEIGHT),
                     egui::Sense::click(),
@@ -261,7 +281,7 @@ pub(crate) fn show(
             });
     }
 
-    {
+    if controls > 0.0 {
         use crate::streaming::mic_button;
         let screen = ctx.screen_rect().size();
         let (x, y) = mic_button::position(mic_button::Button::QuickSettings, (screen.x, screen.y));
@@ -270,6 +290,7 @@ pub(crate) fn show(
             .order(egui::Order::Foreground)
             .movable(false)
             .show(ctx, |ui| {
+                ui.set_opacity(controls);
                 let (rect, response) = ui.allocate_exact_size(
                     egui::vec2(mic_button::WIDTH, mic_button::HEIGHT),
                     egui::Sense::click(),

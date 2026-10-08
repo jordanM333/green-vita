@@ -11,6 +11,7 @@ pub enum Command {
     RefreshStream,
     ToggleDiagnostics,
     ToggleMicrophone,
+    MicrophoneInput,
     Settings,
     PressGuideButton,
     ExitGame,
@@ -28,6 +29,7 @@ fn menu_items(app: &App) -> Vec<Command> {
     if app.state.streaming().is_some_and(|s| s.can_refresh()) {
         items.insert(1, Command::RefreshStream);
     }
+    items.insert(1, Command::MicrophoneInput);
     items.insert(1, Command::ToggleMicrophone);
     items
 }
@@ -39,6 +41,7 @@ impl Command {
             Self::RefreshStream => "\u{21bb}",
             Self::ToggleDiagnostics => "\u{2630}",
             Self::ToggleMicrophone => "M",
+            Self::MicrophoneInput => "\u{2195}",
             Self::Settings => "\u{2699}",
             Self::PressGuideButton => "\u{2302}",
             Self::ExitGame => "\u{2715}",
@@ -51,6 +54,7 @@ impl Command {
             Self::RefreshStream => "paused-refresh-stream",
             Self::ToggleDiagnostics => "paused-diagnostics",
             Self::ToggleMicrophone => "paused-microphone",
+            Self::MicrophoneInput => "paused-mic-input-voice",
             Self::Settings => "menu-settings",
             Self::PressGuideButton => "paused-xbox-button",
             Self::ExitGame => "paused-exit-game",
@@ -100,6 +104,12 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     } else if app.state.streaming().is_some_and(|s|s.microphone.is_on()) {
                         "paused-mic-on"
                     } else { "paused-mic-off" })
+                } else if item == Command::MicrophoneInput {
+                    i18n.text(if app.settings.microphone_raw_input {
+                        "paused-mic-input-raw"
+                    } else {
+                        "paused-mic-input-voice"
+                    })
                 } else if item == Command::ExitGame && home {
                     "Exit stream (keep game running)".to_owned()
                 } else {
@@ -187,6 +197,17 @@ impl App {
             Command::ToggleMicrophone => {
                 if let Some(streaming) = self.state.streaming_mut() {
                     streaming.microphone.set_on(!streaming.microphone.is_on());
+                }
+            }
+            Command::MicrophoneInput => {
+                // Applies at once to the live capture and to later sessions.
+                self.settings.microphone_raw_input = !self.settings.microphone_raw_input;
+                self.settings.save();
+                let input = crate::streaming::microphone::MicInput::from_setting(
+                    self.settings.microphone_raw_input,
+                );
+                if let Some(streaming) = self.state.streaming_mut() {
+                    streaming.microphone.set_input(input);
                 }
             }
             Command::RefreshStream => self.refresh_home_stream(),

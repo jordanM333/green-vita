@@ -211,7 +211,14 @@ impl App {
                         return_selected: session.return_selected,
                     },
                 ) {
-                    Ok(streaming) => Ok(AppState::Streaming(Box::new(streaming))),
+                    Ok(streaming) => {
+                        streaming.microphone.set_input(
+                            crate::streaming::microphone::MicInput::from_setting(
+                                self.settings.microphone_raw_input,
+                            ),
+                        );
+                        Ok(AppState::Streaming(Box::new(streaming)))
+                    }
                     Err(error) => {
                         let _ = session.stream.stop().await;
                         eprintln!("Failed to start WebRTC session: {error:#}");

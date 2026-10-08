@@ -5,6 +5,30 @@ use std::time::{Duration, Instant};
 
 const MAX_PENDING_CLIPS: usize = 3;
 const MAX_CLIP_AGE: Duration = Duration::from_millis(80);
+/// A 20 ms frame whose peak stays under about -54 dBFS counts as quiet.
+const QUIET_PEAK: f32 = 0.002;
+
+/// Which Vita audio-in port capture opens. The Vita picks the physical
+/// microphone (built-in or headset) itself; the public SceAudioIn API has no
+/// device selection. `Raw` opens the unprocessed port instead of the voice
+/// chat port, which may or may not be routed differently with a headset.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub(crate) enum MicInput {
+    #[default]
+    Voice,
+    Raw,
+}
+impl MicInput {
+    pub(crate) fn from_setting(raw: bool) -> Self {
+        if raw { Self::Raw } else { Self::Voice }
+    }
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Voice => "voice port",
+            Self::Raw => "raw port",
+        }
+    }
+}
 
 #[derive(Default)]
 struct State {
@@ -15,6 +39,12 @@ struct State {
     pending: VecDeque<VoiceClip>,
     peak: f32,
     level_at: Option<Instant>,
+    input: MicInput,
+    /// What capture actually opened, for the status line and captures.
+    opened: Option<String>,
+    frames: u64,
+    quiet_frames: u64,
+    max_peak: f32,
     sent: u64,
     discarded: u64,
     error: Option<String>,
@@ -103,10 +133,42 @@ impl Microphone {
             s.epoch = s.epoch.wrapping_add(1);
             s.pending.clear();
         }
+        if on && !s.on {
+            s.frames = 0;
+            s.quiet_frames = 0;
+            s.max_peak = 0.0;
+        }
         s.on = on;
         s.peak = 0.0;
         s.level_at = None;
         true
+    }
+    pub(crate) fn input(&self) -> MicInput {
+        self.lock_state().input
+    }
+    /// Takes effect at once: an open capture ends with its ticket and the
+    /// worker reopens on the new port. Mute state is unchanged.
+    pub(crate) fn set_input(&self, input: MicInput) {
+        let mut s = self.lock_state();
+        if s.input == input {
+            return;
+        }
+        s.input = input;
+        s.epoch = s.epoch.wrapping_add(1);
+        s.pending.clear();
+        s.peak = 0.0;
+        s.level_at = None;
+        s.opened = None;
+        s.frames = 0;
+        s.quiet_frames = 0;
+        s.max_peak = 0.0;
+    }
+    /// Recorded by the capture worker once its port is open.
+    pub(crate) fn set_opened(&self, ticket: CaptureTicket, opened: String) {
+        let mut s = self.lock_state();
+        if s.epoch == ticket.epoch {
+            s.opened = Some(opened);
+        }
     }
     pub(crate) fn begin_capture(&self) -> Option<CaptureTicket> {
         let s = self.lock_state();
@@ -123,6 +185,11 @@ impl Microphone {
         }
         s.peak = peak;
         s.level_at = Some(Instant::now());
+        s.frames += 1;
+        if peak < QUIET_PEAK {
+            s.quiet_frames += 1;
+        }
+        s.max_peak = s.max_peak.max(peak);
         s.pending.push_back(clip);
     }
     /// Called only by the RTC pump. No old clips survive mute/reconnect, and a
@@ -172,7 +239,17 @@ impl Microphone {
             return "Mic: connecting to Xbox…".into();
         }
         // Local RTP admission is not a remote voice/chat acknowledgement.
-        format!("Mic on · RTP queued {} · dropped {}", s.sent, s.discarded)
+        // Input level since the mic was turned on: all-quiet frames with a
+        // 0% peak mean the Vita delivered silence from that port.
+        format!(
+            "Mic on · {} · level max {:.0}% · quiet {}/{} frames · RTP queued {} · dropped {}",
+            s.opened.as_deref().unwrap_or(s.input.label()),
+            s.max_peak * 100.0,
+            s.quiet_frames,
+            s.frames,
+            s.sent,
+            s.discarded
+        )
     }
 }
 
@@ -276,6 +353,40 @@ mod tests {
         mic.set_ready(true);
         assert!(!mic.is_on());
         assert!(!Microphone::default().is_on());
+    }
+    #[test]
+    fn status_reports_input_level_since_the_mic_was_turned_on() {
+        let mic = enabled();
+        mic.set_opened(mic.begin_capture().unwrap(), "voice port 512@16k".into());
+        mic.publish(clip(&mic), 0.0);
+        mic.publish(clip(&mic), 0.001);
+        mic.publish(clip(&mic), 0.25);
+        let status = mic.status();
+        assert!(status.contains("voice port 512@16k"), "{status}");
+        assert!(status.contains("level max 25%"), "{status}");
+        assert!(status.contains("quiet 2/3 frames"), "{status}");
+        mic.set_on(false);
+        mic.set_on(true);
+        assert!(mic.status().contains("quiet 0/0 frames"));
+    }
+    #[test]
+    fn changing_the_input_port_restarts_capture_without_unmuting() {
+        let mic = enabled();
+        let old = clip(&mic);
+        mic.set_opened(old.ticket, "voice port 512@16k".into());
+        mic.set_input(MicInput::from_setting(true));
+        assert_eq!(mic.input(), MicInput::Raw);
+        assert!(mic.is_on());
+        // The open voice-port capture loses its ticket, so the worker reopens.
+        assert!(mic.begin_capture() != Some(old.ticket));
+        mic.set_opened(old.ticket, "stale".into());
+        assert!(mic.status().contains("raw port"), "{}", mic.status());
+        mic.publish(old, 1.0);
+        mic.send_pending(|_| panic!("audio from the old port"));
+        mic.set_on(false);
+        mic.set_input(MicInput::from_setting(false));
+        assert_eq!(mic.input(), MicInput::Voice);
+        assert!(!mic.is_on());
     }
     #[test]
     fn congestion_is_bounded_and_expired_audio_never_retries() {

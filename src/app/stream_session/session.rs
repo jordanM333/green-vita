@@ -20,6 +20,9 @@ pub(crate) struct StreamingSession {
     pub(crate) microphone: crate::streaming::microphone::Microphone,
     pub(crate) status: String,
     pub(crate) hint_started_at: Instant,
+    /// When the bottom buttons were last revealed (stream start, quick menu
+    /// closed, or a front-screen touch). They fade 10 s after it.
+    pub(crate) controls_shown_at: Instant,
     pub(crate) video_startup: crate::streaming::video::startup::VideoStartup,
     pub(crate) media_reconnecting: bool,
     pub(crate) media_refresh_failed: bool,
@@ -54,6 +57,7 @@ impl StreamingSession {
             microphone,
             status: "Starting streaming backend".to_owned(),
             hint_started_at: Instant::now(),
+            controls_shown_at: Instant::now(),
             video_startup: crate::streaming::video::startup::VideoStartup::new(Instant::now()),
             media_reconnecting: false,
             media_refresh_failed: false,
@@ -89,6 +93,15 @@ impl StreamingSession {
     pub(crate) fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
         self.hint_started_at = Instant::now();
+        self.controls_shown_at = Instant::now();
+    }
+
+    pub(crate) fn controls_shown(&self) -> bool {
+        crate::streaming::mic_button::shown(self.controls_shown_at.elapsed())
+    }
+
+    pub(crate) fn reveal_controls(&mut self) {
+        self.controls_shown_at = Instant::now();
     }
 
     pub(crate) fn take_audio_packets(&mut self) -> Vec<TimedAudio<Bytes>> {
