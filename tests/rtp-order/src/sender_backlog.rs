@@ -78,8 +78,10 @@ enum Remb {
     /// HA07-HA08: 3 Mbps; growth in the lower of video's and audio's added
     /// delay lowers it, and audio's includes any audio timeline slip.
     Ha07,
-    /// HA09 (production): fixed at VIDEO_CEILING_BPS.
+    /// HA09-HA10: fixed at 3 Mbps.
     Ha09,
+    /// HA11 (production): fixed at VIDEO_CEILING_BPS, 4 Mbps.
+    Ha11,
 }
 
 /// The receiver's request as session.rs computes it under each policy.
@@ -90,6 +92,8 @@ enum Receiver {
         budget: ReceiveBudget,
         shared: bool,
     },
+    /// HA09-HA10's fixed 3 Mbps request.
+    Held(u32),
     Fixed(VideoCeiling),
 }
 
@@ -101,10 +105,11 @@ impl Receiver {
                 shared: false,
             },
             Remb::Ha07 => Self::Budget {
-                budget: ReceiveBudget::new(crate::feedback::VIDEO_CEILING_BPS),
+                budget: ReceiveBudget::new(3_000_000),
                 shared: true,
             },
-            Remb::Ha09 => Self::Fixed(VideoCeiling::default()),
+            Remb::Ha09 => Self::Held(3_000_000),
+            Remb::Ha11 => Self::Fixed(VideoCeiling::default()),
         }
     }
 
@@ -118,6 +123,7 @@ impl Receiver {
                 };
                 budget.receive(PACKET_BYTES, delay, at);
             }
+            Self::Held(_) => {}
             Self::Fixed(ceiling) => ceiling.observe_delay(video_ms),
         }
     }
@@ -125,6 +131,7 @@ impl Receiver {
     fn target(&self) -> u32 {
         match self {
             Self::Budget { budget, .. } => budget.target(),
+            Self::Held(bps) => *bps,
             Self::Fixed(ceiling) => ceiling.target_bps(),
         }
     }
@@ -294,7 +301,8 @@ impl Xbox {
             queued_since: 0.0,
             estimate: match profile.remb {
                 Some(Remb::Ha06) => 2_000_000,
-                _ => crate::feedback::VIDEO_CEILING_BPS,
+                Some(Remb::Ha11) => crate::feedback::VIDEO_CEILING_BPS,
+                _ => 3_000_000,
             },
             rembs: VecDeque::new(),
             carry: 0.0,
@@ -829,11 +837,7 @@ fn the_fixed_request_keeps_gameplay_current_and_catches_up_after_heavier_scenes(
     let outcome = simulate(gameplay_under(Remb::Ha09), HA07_LOCAL);
     let report = outcome.report("HA09 request", ms(2_000));
     println!("{report}");
-    assert_eq!(
-        outcome.remb_cuts(),
-        (0, crate::feedback::VIDEO_CEILING_BPS),
-        "{report}"
-    );
+    assert_eq!(outcome.remb_cuts(), (0, 3_000_000), "{report}");
     for current in [ms(2_000)..ms(40_000), ms(50_000)..ms(60_000)] {
         assert!(outcome.median_age(current) < ms(100), "{report}");
     }
@@ -900,11 +904,7 @@ fn the_fixed_request_ignores_an_audio_timeline_slip() {
     );
     let report = outcome.report("HA09 request, slipped audio", ms(2_000));
     println!("{report}");
-    assert_eq!(
-        outcome.remb_cuts(),
-        (0, crate::feedback::VIDEO_CEILING_BPS),
-        "{report}"
-    );
+    assert_eq!(outcome.remb_cuts(), (0, 3_000_000), "{report}");
     assert!(
         outcome.median_age(ms(50_000)..ms(60_000)) < ms(100),
         "{report}"
@@ -939,4 +939,27 @@ fn a_drain_faster_than_avcdec_is_caught_up_locally_instead_of_expired() {
         ha07.median_age(ms(50_000)..ms(60_000)) < ms(100),
         "{report}"
     );
+}
+
+#[test]
+fn the_ha11_request_keeps_the_heavier_scene_current() {
+    // HA10-26: video arrived at 3.2-3.45 Mbps and fell up to 1.1 s behind
+    // whenever a scene needed more than the 3 Mbps request. At 4 Mbps the
+    // pacer keeps up with the same content, so no backlog builds.
+    let outcome = simulate(gameplay_under(Remb::Ha11), HA07_LOCAL);
+    let report = outcome.report("HA11 request", ms(2_000));
+    println!("{report}");
+    assert_eq!(
+        outcome.remb_cuts(),
+        (0, crate::feedback::VIDEO_CEILING_BPS),
+        "{report}"
+    );
+    assert!(outcome.worst_age(ms(2_000)) < ms(300), "{report}");
+    assert!(outcome.longest_freeze(ms(2_000)) < ms(60), "{report}");
+    assert_eq!(
+        (outcome.incidents, outcome.requests.len()),
+        (0, 0),
+        "{report}"
+    );
+    assert!(outcome.final_age() < ms(100), "{report}");
 }

@@ -6,4 +6,8 @@
 //! under a 2 Mbps cap). Below the encoder's rate, a backlog builds until the
 //! Xbox's 2 s queue limit forces faster sending, which leaves video about
 //! 1.3 s behind. The startup capability hint (`maxBitrateKbps`) stays 2000.
-pub(crate) const VIDEO_CEILING_BPS: u32 = 3_000_000;
+//!
+//! HA11: 4 Mbps, up from 3 Mbps. In HA10-26 every lag episode began with video
+//! arriving at 3.2-3.45 Mbps (the 3 Mbps cap plus overhead), with video then
+//! up to 1.1 s behind audio and no packet lost.
+pub(crate) const VIDEO_CEILING_BPS: u32 = 4_000_000;

@@ -112,3 +112,7 @@ sceAudioInGetStatus(MUTE), both read once when the port opens. Level max and the
 quiet count (20 ms frames whose peak is under 0.2%, about -54 dBFS) cover the time
 since the mic was last turned on or its input port changed. The bottom buttons fade
 10 s after the last front touch; this is not traced.
+
+HA11 video ceiling (no new stage names):
+"SDP video ceiling:4000k" (b=AS:4000, TIAS 4000000) and the fixed REMB reads
+"REMB:<state> target:4000k ...". The control-channel maxBitrateKbps hint stays 2000.

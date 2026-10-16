@@ -118,7 +118,7 @@ class Contracts(unittest.TestCase):
         self.assertNotIn("modcongestion", feedback)
         self.assertNotIn("ReceiveBudget", feedback)
         self.assertFalse((ROOT / "src/api/streaming/rtc/congestion.rs").exists())
-        self.assertIn("pub(crate) const VIDEO_CEILING_BPS: u32 = 3_000_000;", bandwidth)
+        self.assertIn("pub(crate) const VIDEO_CEILING_BPS: u32 = 4_000_000;", bandwidth)
         # The startup capability hint is unchanged.
         self.assertEqual(control.count('"maxBitrateKbps": 2000,'), 2)
 
